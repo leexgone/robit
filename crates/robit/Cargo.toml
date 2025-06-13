@@ -2,5 +2,11 @@
 name = "robit"
 version = "0.1.0"
 edition = "2024"
+authors = ["Steven Lee <leexgone@163.com>"]
+license = "Apache-2.0"
+description = "An AI automation assistant for your terminal"
 
 [dependencies]
+clap = { version = "4.5.40", features = ["derive"] }
+serde = "1.0.219"
+toml = "0.8.23"
