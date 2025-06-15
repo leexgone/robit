@@ -1,1 +1,1 @@
-pub const LICENSE: &str = include_str!("../../../LICENSE");
+// pub const LICENSE: &str = include_str!("../../../LICENSE");

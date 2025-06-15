@@ -8,5 +8,7 @@ description = "An AI automation assistant for your terminal"
 
 [dependencies]
 clap = { version = "4.5.40", features = ["derive"] }
+rig-core = "0.13.0"
 serde = "1.0.219"
+tokio = { version = "1.45.1", features = ["rt-multi-thread", "macros"] }
 toml = "0.8.23"
