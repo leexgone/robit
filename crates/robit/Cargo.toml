@@ -7,8 +7,12 @@ license = "Apache-2.0"
 description = "An AI automation assistant for your terminal"
 
 [dependencies]
+anyhow = "1.0.98"
 clap = { version = "4.5.40", features = ["derive"] }
 rig-core = "0.13.0"
 serde = "1.0.219"
 tokio = { version = "1.45.1", features = ["rt-multi-thread", "macros"] }
 toml = "0.8.23"
+
+[dev-dependencies]
+tempfile = "3.20.0"
