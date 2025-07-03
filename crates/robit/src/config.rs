@@ -13,12 +13,16 @@ pub struct LLMConfig {
     pub api_key: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u16,
-    #[serde(default)]
+    #[serde(default = "default_temperature")]
     pub temperature: f32,
 }
 
 fn default_max_tokens() -> u16 {
     4096
+}
+
+fn default_temperature() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -68,6 +72,7 @@ impl Default for AppConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     llm: LLMs,
+    #[serde(default)]
     app: AppConfig,
 }
 
@@ -98,11 +103,18 @@ impl Config {
 }
 
 pub fn load_config() -> Result<Config> {
-    let paths = [
-        Path::new("robit.toml"),
-        Path::new("config/robit.toml"),
-        Path::new("../../config/robit.toml"),
-    ];
+    let paths: Vec<&Path> = if cfg!(debug_assertions) || cfg!(test) {
+        vec![
+            Path::new("robit.toml"),
+            Path::new("config/robit.toml"),
+            Path::new("../../config/robit.toml"),
+        ]
+    } else {
+        vec![
+            Path::new("robit.toml"),
+            Path::new("config/robit.toml"),
+        ]
+    };
 
     let config_path = paths.iter().find(|p| p.exists())
         .ok_or_else(|| anyhow::anyhow!("robit.toml not found in current or config directory"))?;

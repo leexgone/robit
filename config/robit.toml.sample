@@ -1,0 +1,12 @@
+[llm.default]
+model = "deepseek-chat"
+base_url = "https://api.deepseek.com"
+api_key = "sk-xxx"
+max_tokens = 4096
+temperature = 1.0
+
+[llm.chat]
+model = "deepseek-chat"
+
+[llm.reasioner]
+model = "deepseek-reasoner"
