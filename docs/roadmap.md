@@ -10,7 +10,7 @@
 - [ ] 流式响应（SSE）解析与回调
 - [ ] 配置加载（`llms.toml`、`.env`）
 
-**验证**：CLI 直接对话测试，不依赖 Agent。
+**验证**：`cargo run -p robit-chat`（`examples/robit-chat`）启动 REPL 交互式对话测试。
 
 ## 阶段 2：Agent 运行时（`robit-agent`）
 
