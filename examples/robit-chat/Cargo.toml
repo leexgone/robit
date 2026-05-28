@@ -1,0 +1,9 @@
+[package]
+name = "robit-chat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+robit-ai = { path = "../../crates/robit-ai" }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
