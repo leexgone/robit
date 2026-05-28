@@ -8,7 +8,7 @@
 - [ ] 实现 OpenAI 兼容协议的统一 HTTP 客户端
 - [ ] 适配 DeepSeek 提供商（认证、模型列表）
 - [ ] 流式响应（SSE）解析与回调
-- [ ] 配置加载（`llms.json`、`.env`）
+- [ ] 配置加载（`llms.toml`、`.env`）
 
 **验证**：CLI 直接对话测试，不依赖 Agent。
 
@@ -44,6 +44,8 @@
 - [ ] 技能系统实现（Markdown/YAML 模板，系统提示词注入）
 - [ ] 更多 LLM 提供商适配（QWen、其他）
 - [ ] 上下文压缩策略（摘要 / 智能截断）
+- [ ] 代码高亮（引入 `syntect`）
+- [ ] Token 精确计数（引入 `tiktoken-rs`）
 - [ ] 飞书前端（`robit-feishu`）
 - [ ] QQ 前端（`robit-qq`）
 - [ ] 多会话管理完善

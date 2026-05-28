@@ -22,12 +22,25 @@
 | ------ | ------ | ------ |
 | 异步运行时 | `tokio` | 生态成熟，流式 HTTP 支持好 |
 | HTTP 客户端 | `reqwest` | 支持 SSE 流式响应 |
-| 序列化 | `serde` + `serde_json` | — |
+| 序列化 | `serde` + `serde_json` | JSON 处理 |
+| 配置解析 | `toml` | TOML 配置文件解析 |
+| YAML 解析 | `serde_yaml` | 技能文件 frontmatter 解析 |
+| Markdown 解析 | `pulldown-cmark` | TUI Markdown 渲染（MVP 极简版） |
 | TUI 框架 | `ratatui` + `crossterm` | 跨平台，社区活跃 |
 | 错误处理 | `thiserror`（库）+ `anyhow`（应用） | — |
-| 日志 | `tracing` | 结构化日志，异步友好 |
-| CLI 参数 | `clap` | — |
-| Token 计数 | `tiktoken-rs` | 上下文窗口管理 |
+| 日志 | `tracing` + `tracing-subscriber` | 结构化日志，异步友好 |
+| CLI 参数 | `clap` (derive) | — |
+| 异步 trait | `async-trait` | Tool trait 和 Frontend trait |
+| 环境变量 | `dotenvy` | 加载 `~/.robit/.env` |
+| 主目录 | `dirs` | 跨平台获取 `~` 路径 |
+| 正则搜索 | `regex` | `grep` 工具实现 |
+| 文件查找 | `globset` | `find` 工具实现 |
+| 字符编码 | `encoding_rs` | 处理非 UTF-8 文件 |
+
+**后续版本待引入**：
+
+- `syntect` — 代码高亮（MVP 先不做）
+- `tiktoken-rs` — Token 精确计数（MVP 用字符估算 + API 返回的 `usage.total_tokens`）
 
 ## 工具系统
 
@@ -60,16 +73,42 @@
     |--项目本地：cwd/.robit/skills/  # 项目技能目录
     |--全局：~/.robit/
     |   |-- .env            # 变量配置文件
-    |   |-- llms.json       # 模型注册配置文件
-    |   |-- settings.json   # 程序功能配置文件
+    |   |-- llms.toml       # 模型注册配置文件
+    |   |-- settings.toml   # 程序功能配置文件（按需扩展）
     |   |-- skills/         # 全局技能目录
+    |   |-- prompts/        # 自定义提示词目录
+    |       |-- system.txt  # 自定义系统提示词（可选，覆盖内置默认版）
+```
+
+### settings.toml
+
+存储运行时配置，后续按需扩展：
+
+```toml
+# 当前使用的模型，格式 provider/model
+model = "deepseek/deepseek-chat"
+
+# 启用的工具列表（可选，未指定则使用默认值）
+# 默认启用: read, bash, edit, write
+# 默认禁用: grep, find, ls（需要时手动添加）
+enabled_tools = ["read", "bash", "edit", "write"]
+
+[context]  # 上下文管理配置（可选，以下为默认值）
+max_output_lines = 500      # 单次工具输出最大行数
+max_output_bytes = 51200    # 单次工具输出最大字节数 (50KB)
+reserve_ratio = 0.2         # 为 LLM 响应预留的上下文比例 (20%)
+
+[retry]  # 重试策略配置（可选，以下为默认值）
+max_retries = 3             # 最大重试次数
+initial_backoff_ms = 1000   # 初始退避时间
+max_backoff_ms = 30000      # 最大退避时间
 ```
 
 ## 文档索引
 
 | 文档 | 内容 |
 | ------ | ------ |
-| [`docs/architecture.md`](docs/architecture.md) | Agent 运行时机制、Frontend trait、会话管理、技能系统 |
+| [`docs/architecture.md`](docs/architecture.md) | Agent 运行时、Frontend trait、会话管理、工具系统、技能系统、提示词系统、TUI 交互设计、上下文管理、错误处理策略 |
 | [`docs/protocol.md`](docs/protocol.md) | 消息数据结构、Agent 事件定义 |
-| [`docs/llm-config.md`](docs/llm-config.md) | LLM 提供商配置结构（`llms.json`） |
+| [`docs/llm-config.md`](docs/llm-config.md) | LLM 提供商配置结构（`llms.toml`） |
 | [`docs/roadmap.md`](docs/roadmap.md) | 构建路线图（4 个阶段） |
