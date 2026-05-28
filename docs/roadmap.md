@@ -1,16 +1,16 @@
 # 构建路线图
 
-## 阶段 1：LLM API 层（`robit-ai`）
+## 阶段 1：LLM API 层（`robit-ai`） ✅ 已完成
 
 **目标**：能够与 LLM 完成一次流式对话。
 
-- [ ] 定义 `Message`、`ToolCall` 等核心数据结构
-- [ ] 实现 OpenAI 兼容协议的统一 HTTP 客户端
-- [ ] 适配 DeepSeek 提供商（认证、模型列表）
-- [ ] 流式响应（SSE）解析与回调
-- [ ] 配置加载（`llms.toml`、`.env`）
+- [x] 定义 `Message`、`ToolCall` 等核心数据结构（使用 `async-openai` 类型）
+- [x] 实现 OpenAI 兼容协议的统一 HTTP 客户端（`LlmClient` 封装）
+- [x] 适配提供商（QWen、DeepSeek 等 OpenAI 兼容协议）
+- [x] 流式响应（SSE）解析与回调（`chat_stream` 方法）
+- [x] 配置加载（`llms.toml`、`settings.toml`、`.env`）
 
-**验证**：`cargo run -p robit-chat`（`examples/robit-chat`）启动 REPL 交互式对话测试。
+**验证**：`cargo run -p robit-chat`（`examples/robit-chat`）启动 REPL 交互式对话测试。✅ 已通过
 
 ## 阶段 2：Agent 运行时（`robit-agent`）
 
