@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/robit-ai",
+    "crates/robit-agent",
     "examples/robit-chat",
+    "examples/robit-agent",
 ]
 resolver = "2"

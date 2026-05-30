@@ -14,7 +14,7 @@
 | --- | --- |
 | `crates/robit-ai` | 多提供商 LLM API，支持 OpenAI 协议，适配 DeepSeek、QWen 等模型 |
 | `crates/robit-agent` | 代理运行时（Agent 循环、工具执行、会话管理）。定义 `Frontend` trait 供前端实现。依赖 `robit-ai` |
-| `crates/robit-tui` | 终端前端，实现 `Frontend` trait。依赖 `robit-agent` |
+| `crates/robit-tui` | _（计划）_ 终端前端，实现 `Frontend` trait。依赖 `robit-agent` |
 | `crates/robit-feishu` | _（计划）_ 飞书前端，实现 `Frontend` trait |
 | `crates/robit-qq` | _（计划）_ QQ 前端，实现 `Frontend` trait |
 
@@ -23,6 +23,7 @@
 | 工程 | 说明 |
 | --- | --- |
 | `examples/robit-chat` | REPL 交互式对话，用于阶段 1 验证。依赖 `robit-ai` |
+| `examples/robit-agent` | 命令行 Agent 对话（stdin/stdout 前端），用于阶段 2 验证。依赖 `robit-agent` |
 
 ## 技术选型
 
@@ -121,3 +122,4 @@ max_backoff_ms = 30000      # 最大退避时间
 | [`docs/llm-config.md`](docs/llm-config.md) | LLM 提供商配置结构（`llms.toml`） |
 | [`docs/roadmap.md`](docs/roadmap.md) | 构建路线图（4 个阶段） |
 | [`docs/specs/2026-05-28-robit-ai-design.md`](docs/specs/2026-05-28-robit-ai-design.md) | 阶段 1 设计规格（`robit-ai` LLM API 层） |
+| [`docs/plans/phase2-implementation.md`](docs/plans/phase2-implementation.md) | 阶段 2 实现计划（`robit-agent` Agent 运行时） |

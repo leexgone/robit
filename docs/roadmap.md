@@ -12,17 +12,19 @@
 
 **验证**：`cargo run -p robit-chat`（`examples/robit-chat`）启动 REPL 交互式对话测试。✅ 已通过
 
-## 阶段 2：Agent 运行时（`robit-agent`）
+## 阶段 2：Agent 运行时（`robit-agent`） ✅ 已完成
 
 **目标**：Agent 能够调用工具完成一个简单编程任务。
 
-- [ ] Agent 事件驱动循环
-- [ ] `Frontend` trait 定义
-- [ ] 工具注册与执行框架
-- [ ] 实现核心工具：`bash`、`read`
-- [ ] 会话管理（单会话，带 `SessionId`）
+- [x] Agent 事件驱动循环（`agent.rs` — 流式 LLM 调用 + tool call 组装 + 多轮循环）
+- [x] `Frontend` trait 定义（`frontend.rs` — `on_event` + `request_tool_confirmation`）
+- [x] 工具注册与执行框架（`tool/mod.rs` — `Tool` trait + `ToolRegistry` + `ToolContext`）
+- [x] 实现核心工具：`bash`（跨平台 shell）、`read`（带行号 + 截断）
+- [x] 会话管理（单会话 + `SessionId`，上下文截断两层策略）
+- [x] 提示词系统（`prompt.rs` — 动态组装系统提示词）
+- [x] 上下文管理（`context.rs` — 输出截断 + 历史按轮次截断 + token 估算）
 
-**验证**：命令行 Agent 对话（无 TUI，使用简单的 stdin/stdout 前端）。
+**验证**：`cargo run -p robit-agent-cli` 启动命令行 Agent，使用 `read`/`bash` 工具完成任务。
 
 ## 阶段 3：TUI 前端（`robit-tui`）
 
