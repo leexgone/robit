@@ -2,7 +2,7 @@
 //!
 //! Provides a unified `LlmClient` for interacting with multiple LLM providers
 //! through the OpenAI-compatible protocol. Configuration is loaded from
-//! `~/.robit/llms.toml` and `~/.robit/settings.toml`.
+//! `config/robit.toml` (project-local) or `~/.robit/robit.toml` (global).
 
 pub mod client;
 pub mod config;
@@ -18,7 +18,7 @@ pub use async_openai::types::{
 
 pub use client::LlmClient;
 pub use config::{
-    ContextConfig, LlmConfig, ModelConfig, ProviderConfig, ResolvedModel, RetryConfig,
-    SettingsConfig,
+    load_config, load_env, AppConfig, ContextConfig, LlmProfile, LlmSection, ResolvedModel,
+    RetryConfig, RobitConfig,
 };
 pub use error::LlmError;

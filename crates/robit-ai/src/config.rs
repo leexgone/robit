@@ -1,4 +1,10 @@
-//! Configuration loading for llms.toml, settings.toml, and .env files.
+//! Configuration loading for robit.toml.
+//!
+//! Loads a single unified config file from:
+//!   1. `cwd/config/robit.toml` (project-local, highest priority)
+//!   2. `~/.robit/robit.toml`   (global fallback)
+//!
+//! Environment variable substitution is supported in string fields via `${ENV_VAR}` syntax.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -7,41 +13,38 @@ use std::path::PathBuf;
 use crate::error::LlmError;
 
 // ============================================================================
-// llms.toml structures
+// robit.toml structures
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
-pub struct LlmConfig {
-    pub default_provider: Option<String>,
-    pub default_model: Option<String>,
-    pub providers: HashMap<String, ProviderConfig>,
+pub struct RobitConfig {
+    pub llm: LlmSection,
+    pub app: Option<AppConfig>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ProviderConfig {
-    pub name: Option<String>,
+pub struct LlmSection {
+    pub default_profile: Option<String>,
+    pub profiles: HashMap<String, LlmProfile>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LlmProfile {
+    pub model: String,
     pub base_url: String,
     pub api_key: String,
-    pub models: Vec<ModelConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ModelConfig {
-    pub id: String,
-    pub name: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
     pub context_window: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub supports_images: Option<bool>,
     pub supports_tools: Option<bool>,
 }
 
-// ============================================================================
-// settings.toml structures
-// ============================================================================
-
 #[derive(Debug, Deserialize, Default)]
-pub struct SettingsConfig {
-    pub model: Option<String>,
+pub struct AppConfig {
+    pub log_level: Option<String>,
+    pub max_steps: Option<usize>,
     pub enabled_tools: Option<Vec<String>>,
     pub context: Option<ContextConfig>,
     pub retry: Option<RetryConfig>,
@@ -62,15 +65,19 @@ pub struct RetryConfig {
 }
 
 // ============================================================================
-// Resolved model reference (provider key + model id)
+// Resolved profile reference
 // ============================================================================
 
+/// A fully resolved LLM profile ready for client construction.
 #[derive(Debug, Clone)]
 pub struct ResolvedModel {
-    pub provider_key: String,
+    pub profile_name: String,
     pub model_id: String,
     pub base_url: String,
     pub api_key: String,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub context_window: Option<u64>,
 }
 
 // ============================================================================
@@ -94,6 +101,12 @@ fn resolve_env_var(value: &str) -> String {
     }
 }
 
+/// Load and parse the robit.toml config file.
+///
+/// Search order:
+///   1. `cwd/config/robit.toml` (project-local)
+///   2. `~/.robit/robit.toml`   (global fallback)
+///
 /// Load .env from ~/.robit/.env if it exists.
 pub fn load_env() {
     if let Ok(robit_dir) = robit_home() {
@@ -104,111 +117,97 @@ pub fn load_env() {
     }
 }
 
-/// Load and parse ~/.robit/llms.toml.
-/// Resolves `${ENV_VAR}` in api_key fields after loading.
-pub fn load_llm_config() -> Result<LlmConfig, LlmError> {
-    let path = robit_home()?.join("llms.toml");
+/// Load the unified robit.toml config.
+///
+/// Automatically loads `~/.robit/.env` before resolving `${ENV_VAR}` patterns.
+pub fn load_config() -> Result<RobitConfig, LlmError> {
+    // Load .env first so ${ENV_VAR} substitutions work
+    load_env();
+
+    let path = find_config_path()?;
+
     let content = std::fs::read_to_string(&path).map_err(|e| {
         LlmError::ConfigError(format!("无法读取 {}: {}", path.display(), e))
     })?;
 
-    let mut config: LlmConfig = toml::from_str(&content).map_err(|e| {
-        LlmError::ConfigError(format!("解析 llms.toml 失败: {}", e))
+    let mut config: RobitConfig = toml::from_str(&content).map_err(|e| {
+        LlmError::ConfigError(format!("解析 robit.toml 失败: {}", e))
     })?;
 
     // Resolve environment variables in api_key fields
-    for provider in config.providers.values_mut() {
-        provider.api_key = resolve_env_var(&provider.api_key);
+    for profile in config.llm.profiles.values_mut() {
+        profile.api_key = resolve_env_var(&profile.api_key);
     }
 
     Ok(config)
 }
 
-/// Load and parse ~/.robit/settings.toml.
-/// Returns default SettingsConfig if the file does not exist.
-pub fn load_settings() -> Result<SettingsConfig, LlmError> {
-    let path = robit_home()?.join("settings.toml");
-    if !path.exists() {
-        return Ok(SettingsConfig::default());
+/// Find the config file path following the search order.
+fn find_config_path() -> Result<PathBuf, LlmError> {
+    // 1. Project-local: cwd/config/robit.toml
+    if let Ok(cwd) = std::env::current_dir() {
+        let local_path = cwd.join("config").join("robit.toml");
+        if local_path.exists() {
+            return Ok(local_path);
+        }
     }
 
-    let content = std::fs::read_to_string(&path).map_err(|e| {
-        LlmError::ConfigError(format!("无法读取 {}: {}", path.display(), e))
-    })?;
+    // 2. Global: ~/.robit/robit.toml
+    let global_path = robit_home()?.join("robit.toml");
+    if global_path.exists() {
+        return Ok(global_path);
+    }
 
-    let config: SettingsConfig = toml::from_str(&content).map_err(|e| {
-        LlmError::ConfigError(format!("解析 settings.toml 失败: {}", e))
-    })?;
-
-    Ok(config)
+    Err(LlmError::ConfigError(format!(
+        "未找到配置文件 robit.toml。\n\
+         请创建以下任一文件:\n\
+         - 项目本地: config/robit.toml\n\
+         - 全局: {}",
+        global_path.display()
+    )))
 }
 
-/// Resolve which provider and model to use.
+/// Resolve which profile to use.
 ///
-/// Priority: settings.toml `model` > llms.toml `default_model` > first available model.
-pub fn resolve_model(
-    llm_config: &LlmConfig,
-    settings: &SettingsConfig,
+/// Priority: explicit `profile_name` > `llm.default_profile` > "default" > first available.
+pub fn resolve_profile(
+    config: &RobitConfig,
+    profile_name: Option<&str>,
 ) -> Result<ResolvedModel, LlmError> {
-    // Determine the "provider/model" string
-    let model_ref = settings
-        .model
-        .clone()
-        .or_else(|| llm_config.default_model.clone())
-        .or_else(|| {
-            // Fallback: first provider, first model
-            llm_config.providers.iter().find_map(|(key, provider)| {
-                provider.models.first().map(|m| format!("{}/{}", key, m.id))
-            })
-        })
-        .ok_or_else(|| {
-            LlmError::ConfigError("未找到可用的模型配置".to_string())
-        })?;
+    let name = profile_name
+        .map(|s| s.to_string())
+        .or_else(|| config.llm.default_profile.clone())
+        .unwrap_or_else(|| "default".to_string());
 
-    // Parse "provider/model"
-    let parts: Vec<&str> = model_ref.splitn(2, '/').collect();
-    if parts.len() != 2 {
+    let profile = config.llm.profiles.get(&name).ok_or_else(|| {
+        LlmError::ConfigError(format!(
+            "Profile '{}' 未在 robit.toml 中定义。可用 profiles: {:?}",
+            name,
+            config.llm.profiles.keys().collect::<Vec<_>>()
+        ))
+    })?;
+
+    if profile.api_key.is_empty() || profile.api_key.starts_with("${") {
         return Err(LlmError::ConfigError(format!(
-            "模型引用格式错误: '{}'，应为 'provider/model'",
-            model_ref
-        )));
-    }
-
-    let provider_key = parts[0];
-    let model_id = parts[1];
-
-    let provider = llm_config
-        .providers
-        .get(provider_key)
-        .ok_or_else(|| {
-            LlmError::ConfigError(format!("提供商 '{}' 未在 llms.toml 中定义", provider_key))
-        })?;
-
-    // Verify model exists in provider
-    let _model = provider
-        .models
-        .iter()
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| {
-            LlmError::ModelNotFound {
-                model: model_ref.clone(),
-            }
-        })?;
-
-    if provider.api_key.is_empty() || provider.api_key.starts_with("${") {
-        return Err(LlmError::ConfigError(format!(
-            "提供商 '{}' 的 API Key 未配置或环境变量未设置",
-            provider_key
+            "Profile '{}' 的 API Key 未配置或环境变量未设置",
+            name
         )));
     }
 
     Ok(ResolvedModel {
-        provider_key: provider_key.to_string(),
-        model_id: model_id.to_string(),
-        base_url: provider.base_url.clone(),
-        api_key: provider.api_key.clone(),
+        profile_name: name,
+        model_id: profile.model.clone(),
+        base_url: profile.base_url.clone(),
+        api_key: profile.api_key.clone(),
+        max_tokens: profile.max_tokens,
+        temperature: profile.temperature,
+        context_window: profile.context_window,
     })
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -235,159 +234,162 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_llm_config_toml() {
+    fn test_parse_robit_config() {
         let toml_str = r#"
-            default_provider = "deepseek"
-            default_model = "deepseek/deepseek-chat"
+            [llm]
+            default_profile = "default"
 
-            [providers.deepseek]
-            name = "DeepSeek"
-            base_url = "https://api.deepseek.com/v1"
+            [llm.profiles.default]
+            model = "deepseek-chat"
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test-key"
+            max_tokens = 4096
+            temperature = 0.0
+            context_window = 65536
+
+            [llm.profiles.chat]
+            model = "deepseek-chat"
+            base_url = "https://api.deepseek.com"
             api_key = "sk-test-key"
 
-            [[providers.deepseek.models]]
-            id = "deepseek-chat"
-            name = "DeepSeek Chat"
-            context_window = 65536
-            max_output_tokens = 8192
-            supports_images = false
-            supports_tools = true
-        "#;
+            [llm.profiles.reasoner]
+            model = "deepseek-reasoner"
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test-key"
 
-        let config: LlmConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.default_provider.as_deref(), Some("deepseek"));
-        assert_eq!(config.default_model.as_deref(), Some("deepseek/deepseek-chat"));
-        assert!(config.providers.contains_key("deepseek"));
+            [app]
+            log_level = "DEBUG"
+            max_steps = 10
 
-        let provider = &config.providers["deepseek"];
-        assert_eq!(provider.base_url, "https://api.deepseek.com/v1");
-        assert_eq!(provider.api_key, "sk-test-key");
-        assert_eq!(provider.models.len(), 1);
-        assert_eq!(provider.models[0].id, "deepseek-chat");
-        assert_eq!(provider.models[0].context_window, Some(65536));
-    }
-
-    #[test]
-    fn test_parse_settings_toml() {
-        let toml_str = r#"
-            model = "deepseek/deepseek-chat"
-            enabled_tools = ["read", "bash"]
-
-            [context]
+            [app.context]
             max_output_lines = 500
             reserve_ratio = 0.2
 
-            [retry]
+            [app.retry]
             max_retries = 3
         "#;
 
-        let settings: SettingsConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(settings.model.as_deref(), Some("deepseek/deepseek-chat"));
-        assert_eq!(
-            settings.enabled_tools.as_deref(),
-            Some(&["read".to_string(), "bash".to_string()][..])
-        );
-        assert!(settings.context.is_some());
-        assert_eq!(settings.context.as_ref().unwrap().max_output_lines, Some(500));
-        assert!(settings.retry.is_some());
-        assert_eq!(settings.retry.as_ref().unwrap().max_retries, Some(3));
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+
+        // LLM section
+        assert_eq!(config.llm.default_profile.as_deref(), Some("default"));
+        assert_eq!(config.llm.profiles.len(), 3);
+
+        let default = &config.llm.profiles["default"];
+        assert_eq!(default.model, "deepseek-chat");
+        assert_eq!(default.base_url, "https://api.deepseek.com");
+        assert_eq!(default.api_key, "sk-test-key");
+        assert_eq!(default.max_tokens, Some(4096));
+        assert_eq!(default.temperature, Some(0.0));
+        assert_eq!(default.context_window, Some(65536));
+
+        let reasoner = &config.llm.profiles["reasoner"];
+        assert_eq!(reasoner.model, "deepseek-reasoner");
+
+        // App section
+        let app = config.app.as_ref().unwrap();
+        assert_eq!(app.log_level.as_deref(), Some("DEBUG"));
+        assert_eq!(app.max_steps, Some(10));
+        assert!(app.context.is_some());
+        assert_eq!(app.context.as_ref().unwrap().max_output_lines, Some(500));
+        assert!(app.retry.is_some());
+        assert_eq!(app.retry.as_ref().unwrap().max_retries, Some(3));
     }
 
     #[test]
-    fn test_parse_settings_default() {
-        let settings = SettingsConfig::default();
-        assert!(settings.model.is_none());
-        assert!(settings.enabled_tools.is_none());
-        assert!(settings.context.is_none());
-        assert!(settings.retry.is_none());
-    }
-
-    #[test]
-    fn test_resolve_model_from_settings() {
+    fn test_parse_config_minimal() {
         let toml_str = r#"
-            default_provider = "deepseek"
-            default_model = "deepseek/deepseek-chat"
-
-            [providers.deepseek]
-            base_url = "https://api.deepseek.com/v1"
+            [llm]
+            [llm.profiles.default]
+            model = "deepseek-chat"
+            base_url = "https://api.deepseek.com"
             api_key = "sk-test"
-
-            [[providers.deepseek.models]]
-            id = "deepseek-chat"
         "#;
 
-        let llm_config: LlmConfig = toml::from_str(toml_str).unwrap();
-        let settings = SettingsConfig {
-            model: Some("deepseek/deepseek-chat".to_string()),
-            ..Default::default()
-        };
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.llm.default_profile.is_none());
+        assert!(config.app.is_none());
+    }
 
-        let resolved = resolve_model(&llm_config, &settings).unwrap();
-        assert_eq!(resolved.provider_key, "deepseek");
+    #[test]
+    fn test_resolve_profile_default() {
+        let config = make_test_config();
+        let resolved = resolve_profile(&config, None).unwrap();
+        assert_eq!(resolved.profile_name, "default");
         assert_eq!(resolved.model_id, "deepseek-chat");
-        assert_eq!(resolved.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(resolved.base_url, "https://api.deepseek.com");
         assert_eq!(resolved.api_key, "sk-test");
     }
 
     #[test]
-    fn test_resolve_model_fallback_to_default() {
-        let toml_str = r#"
-            default_model = "deepseek/deepseek-chat"
-
-            [providers.deepseek]
-            base_url = "https://api.deepseek.com/v1"
-            api_key = "sk-test"
-
-            [[providers.deepseek.models]]
-            id = "deepseek-chat"
-        "#;
-
-        let llm_config: LlmConfig = toml::from_str(toml_str).unwrap();
-        let settings = SettingsConfig::default();
-
-        let resolved = resolve_model(&llm_config, &settings).unwrap();
-        assert_eq!(resolved.model_id, "deepseek-chat");
+    fn test_resolve_profile_explicit() {
+        let config = make_test_config();
+        let resolved = resolve_profile(&config, Some("reasoner")).unwrap();
+        assert_eq!(resolved.profile_name, "reasoner");
+        assert_eq!(resolved.model_id, "deepseek-reasoner");
     }
 
     #[test]
-    fn test_resolve_model_not_found() {
+    fn test_resolve_profile_from_default_profile_field() {
         let toml_str = r#"
-            [providers.deepseek]
-            base_url = "https://api.deepseek.com/v1"
+            [llm]
+            default_profile = "chat"
+
+            [llm.profiles.default]
+            model = "model-a"
+            base_url = "https://api.test.com"
             api_key = "sk-test"
 
-            [[providers.deepseek.models]]
-            id = "deepseek-chat"
+            [llm.profiles.chat]
+            model = "model-b"
+            base_url = "https://api.test.com"
+            api_key = "sk-test"
         "#;
 
-        let llm_config: LlmConfig = toml::from_str(toml_str).unwrap();
-        let settings = SettingsConfig {
-            model: Some("deepseek/nonexistent".to_string()),
-            ..Default::default()
-        };
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let resolved = resolve_profile(&config, None).unwrap();
+        assert_eq!(resolved.profile_name, "chat");
+        assert_eq!(resolved.model_id, "model-b");
+    }
 
-        let result = resolve_model(&llm_config, &settings);
+    #[test]
+    fn test_resolve_profile_not_found() {
+        let config = make_test_config();
+        let result = resolve_profile(&config, Some("nonexistent"));
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_resolve_model_invalid_format() {
+    fn test_resolve_profile_empty_api_key() {
         let toml_str = r#"
-            [providers.deepseek]
-            base_url = "https://api.deepseek.com/v1"
-            api_key = "sk-test"
-
-            [[providers.deepseek.models]]
-            id = "deepseek-chat"
+            [llm]
+            [llm.profiles.default]
+            model = "deepseek-chat"
+            base_url = "https://api.deepseek.com"
+            api_key = ""
         "#;
 
-        let llm_config: LlmConfig = toml::from_str(toml_str).unwrap();
-        let settings = SettingsConfig {
-            model: Some("no-slash-here".to_string()),
-            ..Default::default()
-        };
-
-        let result = resolve_model(&llm_config, &settings);
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let result = resolve_profile(&config, None);
         assert!(result.is_err());
+    }
+
+    fn make_test_config() -> RobitConfig {
+        let toml_str = r#"
+            [llm]
+            default_profile = "default"
+
+            [llm.profiles.default]
+            model = "deepseek-chat"
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [llm.profiles.reasoner]
+            model = "deepseek-reasoner"
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+        "#;
+
+        toml::from_str(toml_str).unwrap()
     }
 }

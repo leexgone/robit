@@ -75,42 +75,53 @@
 
 技能文件格式及注册机制详见 `docs/architecture.md`。
 
-## 配置扩展
+## 配置
+
+### 配置文件
+
+统一配置文件 `robit.toml`，加载顺序：`cwd/config/robit.toml`（项目本地） → `~/.robit/robit.toml`（全局）。
+
+`api_key` 支持 `${ENV_VAR}` 环境变量替换，需配合 `.env` 文件或系统环境变量使用。
 
 ```txt
-配置加载目录
-    |--项目本地：cwd/.robit/skills/  # 项目技能目录
+配置目录结构
+    |--项目本地：config/robit.toml    # 项目配置（最高优先级）
     |--全局：~/.robit/
-    |   |-- .env            # 变量配置文件
-    |   |-- llms.toml       # 模型注册配置文件
-    |   |-- settings.toml   # 程序功能配置文件（按需扩展）
-    |   |-- skills/         # 全局技能目录
-    |   |-- prompts/        # 自定义提示词目录
-    |       |-- system.txt  # 自定义系统提示词（可选，覆盖内置默认版）
+    |   |-- .env                      # 环境变量（API keys 等）
+    |   |-- robit.toml                # 全局配置（fallback）
+    |   |-- skills/                   # 全局技能目录
+    |   |-- prompts/                  # 自定义提示词目录
+    |       |-- system.txt            # 自定义系统提示词（可选）
 ```
 
-### settings.toml
-
-存储运行时配置，后续按需扩展：
+### robit.toml 结构
 
 ```toml
-# 当前使用的模型，格式 provider/model
-model = "deepseek/deepseek-chat"
+[llm]
+default_profile = "default"            # 默认使用的 profile
 
-# 启用的工具列表（可选，未指定则使用默认值）
-# 默认启用: read, bash, edit, write
-# 默认禁用: grep, find, ls（需要时手动添加）
-enabled_tools = ["read", "bash", "edit", "write"]
+[llm.profiles.default]                 # 可定义多个 profile（default, chat, reasoner 等）
+model = "deepseek-chat"
+base_url = "https://api.deepseek.com"
+api_key = "${DEEPSEEK_API_KEY}"        # 支持 ${ENV_VAR} 替换
+max_tokens = 4096
+temperature = 0.0
+context_window = 65536                 # 可选，上下文窗口大小
 
-[context]  # 上下文管理配置（可选，以下为默认值）
-max_output_lines = 500      # 单次工具输出最大行数
-max_output_bytes = 51200    # 单次工具输出最大字节数 (50KB)
-reserve_ratio = 0.2         # 为 LLM 响应预留的上下文比例 (20%)
+[app]
+log_level = "DEBUG"
+max_steps = 10
+enabled_tools = ["read", "bash"]       # 可选，启用的工具列表
 
-[retry]  # 重试策略配置（可选，以下为默认值）
-max_retries = 3             # 最大重试次数
-initial_backoff_ms = 1000   # 初始退避时间
-max_backoff_ms = 30000      # 最大退避时间
+[app.context]                          # 上下文管理配置（可选，以下为默认值）
+max_output_lines = 500                 # 单次工具输出最大行数
+max_output_bytes = 51200              # 单次工具输出最大字节数 (50KB)
+reserve_ratio = 0.2                    # 为 LLM 响应预留的上下文比例 (20%)
+
+[app.retry]                            # 重试策略配置（可选，以下为默认值）
+max_retries = 3
+initial_backoff_ms = 1000
+max_backoff_ms = 30000
 ```
 
 ## 文档索引
@@ -119,7 +130,8 @@ max_backoff_ms = 30000      # 最大退避时间
 | ------ | ------ |
 | [`docs/architecture.md`](docs/architecture.md) | Agent 运行时、Frontend trait、会话管理、工具系统、技能系统、提示词系统、TUI 交互设计、上下文管理、错误处理策略 |
 | [`docs/protocol.md`](docs/protocol.md) | 消息数据结构、Agent 事件定义 |
-| [`docs/llm-config.md`](docs/llm-config.md) | LLM 提供商配置结构（`llms.toml`） |
+| [`docs/llm-config.md`](docs/llm-config.md) | ~~LLM 提供商配置结构~~（已过时，已统一为 `robit.toml`） |
 | [`docs/roadmap.md`](docs/roadmap.md) | 构建路线图（4 个阶段） |
 | [`docs/specs/2026-05-28-robit-ai-design.md`](docs/specs/2026-05-28-robit-ai-design.md) | 阶段 1 设计规格（`robit-ai` LLM API 层） |
 | [`docs/plans/phase2-implementation.md`](docs/plans/phase2-implementation.md) | 阶段 2 实现计划（`robit-agent` Agent 运行时） |
+| [`docs/plans/config-unification.md`](docs/plans/config-unification.md) | 配置统一计划（`robit.toml` 取代 `llms.toml` + `settings.toml`） |

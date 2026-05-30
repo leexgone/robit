@@ -8,7 +8,7 @@
 - [x] 实现 OpenAI 兼容协议的统一 HTTP 客户端（`LlmClient` 封装）
 - [x] 适配提供商（QWen、DeepSeek 等 OpenAI 兼容协议）
 - [x] 流式响应（SSE）解析与回调（`chat_stream` 方法）
-- [x] 配置加载（`llms.toml`、`settings.toml`、`.env`）
+- [x] 配置加载（统一 `robit.toml`，支持 `${ENV_VAR}` 替换）
 
 **验证**：`cargo run -p robit-chat`（`examples/robit-chat`）启动 REPL 交互式对话测试。✅ 已通过
 

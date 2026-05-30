@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use robit_agent::tool::bash::BashTool;
 use robit_agent::tool::read::ReadTool;
 use robit_agent::{Agent, AgentEvent, Frontend, FrontendMessage, ToolCallInfo, ToolRegistry};
-use robit_ai::config::{load_env, load_llm_config, load_settings};
+use robit_ai::config::load_config;
 use robit_ai::LlmClient;
 use std::io::Write;
 use std::sync::Arc;
@@ -25,27 +25,18 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    load_env();
-    let llm_config = load_llm_config()?;
-    let settings = load_settings()?;
+    let config = load_config()?;
 
-    let client = Arc::new(LlmClient::from_config(&llm_config, &settings)?);
+    let client = Arc::new(LlmClient::from_config(&config, None)?);
     println!(
-        "Robit Agent | provider: {} | model: {}",
-        client.provider(),
+        "Robit Agent | profile: {} | model: {}",
+        client.profile(),
         client.model()
     );
     println!("输入消息开始对话，输入 exit 或 /exit 退出\n");
 
-    let context_config = settings.context.as_ref();
-    let context_window = {
-        let resolved = robit_ai::config::resolve_model(&llm_config, &settings)?;
-        llm_config
-            .providers
-            .get(&resolved.provider_key)
-            .and_then(|p| p.models.iter().find(|m| m.id == resolved.model_id))
-            .and_then(|m| m.context_window)
-    };
+    let context_config = config.app.as_ref().and_then(|a| a.context.as_ref());
+    let context_window = client.resolved().context_window;
 
     let working_dir = std::env::current_dir()?;
 

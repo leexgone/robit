@@ -2,43 +2,37 @@
 //!
 //! Usage: cargo run -p robit-chat
 
+use async_openai::types::ChatCompletionRequestAssistantMessageContent;
 use futures::StreamExt;
-use robit_ai::config::{load_env, load_llm_config, load_settings};
+use robit_ai::config::load_config;
 use robit_ai::{
     ChatCompletionRequestAssistantMessage, ChatCompletionRequestMessage,
     ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage, LlmClient,
 };
-use async_openai::types::ChatCompletionRequestAssistantMessageContent;
 use std::io::{self, BufRead, Write};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load environment variables from ~/.robit/.env
-    load_env();
-
     // Load configuration
-    let llm_config = load_llm_config()?;
-    let settings = load_settings()?;
+    let config = load_config()?;
 
     // Create LLM client
-    let client = LlmClient::from_config(&llm_config, &settings)?;
+    let client = LlmClient::from_config(&config, None)?;
     println!(
-        "Robit Chat | provider: {} | model: {}",
-        client.provider(),
+        "Robit Chat | profile: {} | model: {}",
+        client.profile(),
         client.model()
     );
     println!("输入消息开始对话，输入 exit 或 Ctrl+D 退出\n");
 
     // Conversation history
-    let mut messages: Vec<ChatCompletionRequestMessage> = vec![
-        ChatCompletionRequestMessage::System(
-            ChatCompletionRequestSystemMessage {
-                content: "你是 Robit，一个 AI 编程代理。请直接回答用户问题。".into(),
-                name: None,
-            }
-            .into(),
-        ),
-    ];
+    let mut messages: Vec<ChatCompletionRequestMessage> = vec![ChatCompletionRequestMessage::System(
+        ChatCompletionRequestSystemMessage {
+            content: "你是 Robit，一个 AI 编程代理。请直接回答用户问题。".into(),
+            name: None,
+        }
+        .into(),
+    )];
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();

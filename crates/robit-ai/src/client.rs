@@ -1,4 +1,4 @@
-//! LlmClient: a thin wrapper around async-openai with multi-provider config support.
+//! LlmClient: a thin wrapper around async-openai with unified config support.
 
 use async_openai::config::OpenAIConfig;
 use async_openai::types::{
@@ -6,7 +6,7 @@ use async_openai::types::{
     CreateChatCompletionRequest, CreateChatCompletionResponse,
 };
 
-use crate::config::{LlmConfig, ResolvedModel, SettingsConfig, resolve_model};
+use crate::config::{resolve_profile, ResolvedModel, RobitConfig};
 use crate::error::LlmError;
 
 pub struct LlmClient {
@@ -17,17 +17,19 @@ pub struct LlmClient {
 
 impl LlmClient {
     /// Create a new LlmClient from loaded configuration.
+    ///
+    /// `profile_name`: which profile to use. If `None`, uses the default profile.
     pub fn from_config(
-        llm_config: &LlmConfig,
-        settings: &SettingsConfig,
+        config: &RobitConfig,
+        profile_name: Option<&str>,
     ) -> Result<Self, LlmError> {
-        let resolved = resolve_model(llm_config, settings)?;
+        let resolved = resolve_profile(config, profile_name)?;
 
-        let config = OpenAIConfig::new()
+        let oc = OpenAIConfig::new()
             .with_api_base(&resolved.base_url)
             .with_api_key(&resolved.api_key);
 
-        let client = async_openai::Client::with_config(config);
+        let client = async_openai::Client::with_config(oc);
 
         Ok(Self {
             client,
@@ -47,6 +49,8 @@ impl LlmClient {
             messages,
             tools,
             stream: Some(true),
+            max_completion_tokens: self.resolved.max_tokens,
+            temperature: self.resolved.temperature,
             ..Default::default()
         };
 
@@ -64,6 +68,8 @@ impl LlmClient {
             model: self.model.clone(),
             messages,
             tools,
+            max_completion_tokens: self.resolved.max_tokens,
+            temperature: self.resolved.temperature,
             ..Default::default()
         };
 
@@ -76,8 +82,13 @@ impl LlmClient {
         &self.model
     }
 
-    /// Get the provider key (e.g. "deepseek").
-    pub fn provider(&self) -> &str {
-        &self.resolved.provider_key
+    /// Get the profile name (e.g. "default").
+    pub fn profile(&self) -> &str {
+        &self.resolved.profile_name
+    }
+
+    /// Get the resolved model info.
+    pub fn resolved(&self) -> &ResolvedModel {
+        &self.resolved
     }
 }
