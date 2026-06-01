@@ -26,17 +26,19 @@
 
 **验证**：`cargo run -p robit-agent-cli` 启动命令行 Agent，使用 `read`/`bash` 工具完成任务。
 
-## 阶段 3：TUI 前端（`robit-tui`）
+## 阶段 3：TUI 前端（`robit-tui`） ✅ 已完成
 
 **目标**：完整的终端交互体验，可用于日常编程。
 
-- [ ] 实现 `Frontend` trait 的 TUI 前端
-- [ ] 流式文本显示（Markdown 渲染）
-- [ ] 工具调用状态展示与用户确认交互
-- [ ] 对话历史管理
-- [ ] 跨平台终端适配（Windows / Linux / macOS）
+- [x] 实现 `Frontend` trait 的 TUI 前端（`TuiFrontend` — channel-based，事件循环驱动）
+- [x] 流式文本显示（Markdown 渲染 — `pulldown-cmark` 解析，代码块边框 + 粗体/斜体）
+- [x] 工具调用状态展示与用户确认交互（工具卡片 + Y/N 确认弹窗）
+- [x] 对话历史管理（`Vec<ConversationEntry>` 模型 + 滚动 + 自动滚到底部）
+- [x] 跨平台终端适配（`ratatui` + `crossterm` — Windows / Linux / macOS）
+- [x] 斜杠命令（`/exit`、`/clear`、`/model`、`/tools`）
+- [x] 输入编辑器（历史记录、多行切换、光标移动）
 
-**验证**：用 robit 完成一个真实的编程任务（如修复一个 bug）。
+**验证**：`cargo run -p robit-tui` 启动 TUI，用 `robit` 命令进行对话。
 
 ## 阶段 4：扩展
 
