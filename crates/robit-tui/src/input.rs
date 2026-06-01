@@ -146,11 +146,12 @@ impl InputEditor {
 
     /// Compute the visual cursor column (offset within the current line).
     pub fn cursor_col(&self) -> u16 {
+        use unicode_width::UnicodeWidthStr;
         let line_start = self.content[..self.cursor]
             .rfind('\n')
             .map(|i| i + 1)
             .unwrap_or(0);
-        (self.cursor - line_start) as u16
+        UnicodeWidthStr::width(&self.content[line_start..self.cursor]) as u16
     }
 
     /// Compute the visual cursor row (0-based line number within the input).

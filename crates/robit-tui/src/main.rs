@@ -13,7 +13,7 @@ use std::io;
 use std::sync::Arc;
 
 use anyhow::Result;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -202,6 +202,12 @@ async fn handle_crossterm_event(
 ) {
     match event {
         Event::Key(key) => {
+            // Only handle key press events — Windows sends Press + Release,
+            // which causes duplicate characters (especially with IME input).
+            if key.kind != KeyEventKind::Press {
+                return;
+            }
+
             // Check for pending confirmation
             if let InputMode::Confirmation { responder, .. } = &mut app.input_mode {
                 match key.code {

@@ -28,7 +28,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // Status bar
+            Constraint::Length(1), // Status bar
             Constraint::Min(5),    // Conversation
             Constraint::Length(input_height(app)), // Input area
         ])
@@ -38,7 +38,6 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_conversation(f, app, chunks[1]);
     draw_input(f, app, chunks[2]);
 
-    // Confirmation overlay
     if let InputMode::Confirmation { .. } = &app.input_mode {
         draw_confirmation_overlay(f, app, size);
     }
@@ -46,7 +45,6 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 fn input_height(app: &App) -> u16 {
     let lines = app.input.line_count() as u16;
-    // content lines + top/bottom border = lines + 2, min 3, max 8
     (lines + 2).clamp(3, 8)
 }
 
@@ -100,7 +98,6 @@ fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
         render_entry(&mut lines, entry);
     }
 
-    // Append streaming assistant text
     if !app.current_assistant_text.is_empty() {
         lines.push(Line::from(Span::styled(
             "🤖 Robit:",
@@ -114,7 +111,6 @@ fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    // Busy indicator
     if app.is_agent_busy && app.current_assistant_text.is_empty() {
         lines.push(Line::from(Span::styled(
             "  ⏳ 思考中...",
@@ -122,7 +118,6 @@ fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    // Empty state
     if lines.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -135,7 +130,6 @@ fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    // Auto-scroll: always show the bottom
     let visible_height = area.height as usize;
     let total_lines = lines.len();
 
@@ -143,13 +137,11 @@ fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
 
     if app.auto_scroll && total_lines > visible_height {
         let scroll = (total_lines - visible_height) as u16;
-        let paragraph = paragraph.scroll((scroll, 0));
-        f.render_widget(paragraph, area);
+        f.render_widget(paragraph.scroll((scroll, 0)), area);
     } else if !app.auto_scroll && app.scroll_offset > 0 {
         let max_scroll = total_lines.saturating_sub(visible_height);
         let scroll = app.scroll_offset.min(max_scroll) as u16;
-        let paragraph = paragraph.scroll((scroll, 0));
-        f.render_widget(paragraph, area);
+        f.render_widget(paragraph.scroll((scroll, 0)), area);
     } else {
         f.render_widget(paragraph, area);
     }
@@ -172,7 +164,6 @@ fn render_entry(lines: &mut Vec<Line>, entry: &ConversationEntry) {
             }
             lines.push(Line::from(""));
         }
-
         ConversationEntry::AssistantText(text) => {
             lines.push(Line::from(Span::styled(
                 "🤖 Robit:",
@@ -186,7 +177,6 @@ fn render_entry(lines: &mut Vec<Line>, entry: &ConversationEntry) {
             }
             lines.push(Line::from(""));
         }
-
         ConversationEntry::ToolCard {
             name,
             arguments,
@@ -195,18 +185,16 @@ fn render_entry(lines: &mut Vec<Line>, entry: &ConversationEntry) {
         } => {
             render_tool_card(lines, name, arguments, status);
         }
-
         ConversationEntry::Error(text) => {
             lines.push(Line::from(Span::styled(
-                format!("  ✗ {}", text),
+                format!("   {}", text),
                 Style::default().fg(Color::Red),
             )));
             lines.push(Line::from(""));
         }
-
         ConversationEntry::SystemNotice(text) => {
             lines.push(Line::from(Span::styled(
-                format!("  ℹ {}", text),
+                format!("   {}", text),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
@@ -216,20 +204,43 @@ fn render_entry(lines: &mut Vec<Line>, entry: &ConversationEntry) {
     }
 }
 
+// ============================================================================
+// Tool card
+// ============================================================================
+
 fn render_tool_card(lines: &mut Vec<Line>, name: &str, arguments: &str, status: &ToolStatus) {
+    use unicode_width::UnicodeWidthStr;
+
     let (icon, color) = match status {
         ToolStatus::Pending => ("⏳", Color::DarkGray),
         ToolStatus::Running => ("⏳", Color::Yellow),
         ToolStatus::Success(_) => ("✓", Color::Green),
         ToolStatus::Failed(_) => ("✗", Color::Red),
-        ToolStatus::Rejected => ("⊘", Color::DarkGray),
+        ToolStatus::Rejected => ("", Color::DarkGray),
         ToolStatus::AwaitingConfirmation => ("⚠", Color::Yellow),
     };
 
-    // Header
-    let header = format!("┌─ {} {} {}", icon, name, "─".repeat(30));
+    let card_width: usize = 40; // visual width of the card (excluding left border chars)
+
+    // Top border
     lines.push(Line::from(Span::styled(
-        truncate(&header, 60),
+        format!("┌{:─<1$}┐", "", card_width),
+        Style::default().fg(color),
+    )));
+
+    // Title row
+    let title = format!(" {} {} ", icon, name);
+    let pad = card_width.saturating_sub(UnicodeWidthStr::width(title.as_str()));
+    lines.push(Line::from(vec![
+        Span::styled("│", Style::default().fg(color)),
+        Span::styled(title, Style::default().fg(color)),
+        Span::styled(" ".repeat(pad), Style::default().fg(color)),
+        Span::styled("│", Style::default().fg(color)),
+    ]));
+
+    // Separator
+    lines.push(Line::from(Span::styled(
+        format!("├{:─<1$}", "", card_width),
         Style::default().fg(color),
     )));
 
@@ -238,66 +249,105 @@ fn render_tool_card(lines: &mut Vec<Line>, name: &str, arguments: &str, status: 
         if let Some(obj) = parsed.as_object() {
             for (k, v) in obj {
                 let val_str = match v {
-                    serde_json::Value::String(s) => {
-                        if s.len() > 80 {
-                            format!("{}...", &s[..77])
-                        } else {
-                            s.clone()
-                        }
-                    }
-                    other => {
-                        let s = other.to_string();
-                        if s.len() > 80 {
-                            format!("{}...", &s[..77])
-                        } else {
-                            s
-                        }
-                    }
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
                 };
-                lines.push(Line::from(Span::styled(
-                    format!("│ {}: {}", k, val_str),
-                    Style::default().fg(Color::Gray),
-                )));
+                let arg = format!("{}: {}", k, val_str);
+                let arg_w = UnicodeWidthStr::width(arg.as_str());
+                if arg_w > card_width {
+                    let truncated: String = arg
+                        .chars()
+                        .scan(0, |w, c| {
+                            *w += UnicodeWidthChar::width(c).unwrap_or(0) as usize;
+                            if *w <= card_width - 1 {
+                                Some(c)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    lines.push(Line::from(vec![
+                        Span::styled("│", Style::default().fg(color)),
+                        Span::styled(
+                            format!(" {}…", truncated),
+                            Style::default().fg(Color::Gray),
+                        ),
+                        Span::styled(
+                            " ".repeat(card_width.saturating_sub(
+                                UnicodeWidthStr::width(truncated.as_str()) + 2,
+                            )),
+                            Style::default().fg(color),
+                        ),
+                        Span::styled("│", Style::default().fg(color)),
+                    ]));
+                } else {
+                    let pad = card_width.saturating_sub(arg_w);
+                    lines.push(Line::from(vec![
+                        Span::styled("│", Style::default().fg(color)),
+                        Span::styled(format!(" {}", arg), Style::default().fg(Color::Gray)),
+                        Span::styled(" ".repeat(pad), Style::default().fg(color)),
+                        Span::styled("│", Style::default().fg(color)),
+                    ]));
+                }
             }
         }
     }
 
-    // Status line
-    let status_text = match status {
-        ToolStatus::Pending => "│ ⏳ 等待中...".to_string(),
-        ToolStatus::Running => "│ ⏳ 执行中...".to_string(),
+    // Status
+    let status_line = match status {
+        ToolStatus::Pending => " 等待中...".to_string(),
+        ToolStatus::Running => " ⏳ 执行中...".to_string(),
         ToolStatus::Success(output) => {
-            let preview: String = output.lines().take(3).collect::<Vec<_>>().join("\n│ ");
-            if output.lines().count() > 3 {
-                format!("│ ✓ 完成\n│ {}...", preview)
-            } else {
-                format!("│ ✓ 完成\n│ {}", preview)
-            }
+            let preview: String = output.lines().take(3).collect::<Vec<_>>().join(" | ");
+            format!(" ✓ 完成  {}", preview)
         }
         ToolStatus::Failed(err) => {
-            let preview: String = err.lines().take(3).collect::<Vec<_>>().join("\n│ ");
-            format!("│ ✗ 失败\n│ {}", preview)
+            let preview: String = err.lines().take(1).collect::<Vec<_>>().join("");
+            format!(" ✗ 失败  {}", preview)
         }
-        ToolStatus::Rejected => "│ ⊘ 用户拒绝".to_string(),
-        ToolStatus::AwaitingConfirmation => {
-            "│ [Y] 允许 / [N] 拒绝".to_string()
-        }
+        ToolStatus::Rejected => " ⊘ 用户拒绝".to_string(),
+        ToolStatus::AwaitingConfirmation => " ⏳ 等待确认中...".to_string(),
     };
 
-    for line in status_text.lines() {
-        lines.push(Line::from(Span::styled(
-            line.to_string(),
-            Style::default().fg(color),
-        )));
+    let sw = UnicodeWidthStr::width(status_line.as_str());
+    if sw > card_width {
+        let truncated: String = status_line
+            .chars()
+            .scan(0, |w, c| {
+                *w += UnicodeWidthChar::width(c).unwrap_or(0) as usize;
+                if *w <= card_width - 1 {
+                    Some(c)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let pad = card_width.saturating_sub(UnicodeWidthStr::width(truncated.as_str()) + 1);
+        lines.push(Line::from(vec![
+            Span::styled("│", Style::default().fg(color)),
+            Span::styled(format!(" {}…", truncated), Style::default().fg(color)),
+            Span::styled(" ".repeat(pad), Style::default().fg(color)),
+            Span::styled("│", Style::default().fg(color)),
+        ]));
+    } else {
+        let pad = card_width.saturating_sub(sw);
+        lines.push(Line::from(vec![
+            Span::styled("│", Style::default().fg(color)),
+            Span::styled(status_line, Style::default().fg(color)),
+            Span::styled(" ".repeat(pad), Style::default().fg(color)),
+            Span::styled("│", Style::default().fg(color)),
+        ]));
     }
 
-    // Footer
+    // Bottom border
     lines.push(Line::from(Span::styled(
-        "└────────────────────────────────────────",
+        format!("└{:─<1$}┘", "", card_width),
         Style::default().fg(color),
     )));
     lines.push(Line::from(""));
 }
+
+use unicode_width::UnicodeWidthChar;
 
 // ============================================================================
 // Input area
@@ -350,7 +400,6 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
 
     f.render_widget(paragraph, area);
 
-    // Show cursor (only in normal mode with actual content or empty)
     if matches!(app.input_mode, InputMode::Normal) {
         let inner = area.inner(ratatui::layout::Margin {
             horizontal: 1,
@@ -404,16 +453,4 @@ fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {
     let x = r.x + (r.width.saturating_sub(popup_width)) / 2;
     let y = r.y + (r.height.saturating_sub(height)) / 2;
     Rect::new(x, y, popup_width, height)
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
-    }
 }
