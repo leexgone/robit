@@ -22,7 +22,9 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use robit_agent::tool::bash::BashTool;
+use robit_agent::tool::edit::EditTool;
 use robit_agent::tool::read::ReadTool;
+use robit_agent::tool::write::WriteTool;
 use robit_agent::{Agent, AgentEvent, FrontendMessage, ToolRegistry};
 use robit_ai::config::load_config;
 use robit_ai::LlmClient;
@@ -67,7 +69,7 @@ fn main() -> Result<()> {
 
     let agent = Agent::new(
         client,
-        tools,
+        Arc::clone(&tools),
         frontend,
         context_config,
         context_window,
@@ -97,10 +99,9 @@ fn main() -> Result<()> {
             agent.run(message_rx).await;
         });
 
-        let mut app = App::new(model, &ToolRegistry::new());
-        // Set proper tool count from the actual registry
-        app.status.tools_enabled = 2; // read + bash
-        app.status.tools_total = 2;
+        let mut app = App::new(model, &tools);
+        app.status.tools_enabled = tools.tool_names().len();
+        app.status.tools_total = tools.tool_names().len();
 
         run_event_loop(
             &mut terminal,
@@ -130,6 +131,8 @@ fn create_tools(config: &robit_ai::config::RobitConfig) -> ToolRegistry {
         .unwrap_or(51200);
     tools.register(ReadTool::new(max_lines, max_bytes));
     tools.register(BashTool::new(max_bytes));
+    tools.register(WriteTool::new());
+    tools.register(EditTool::new());
     tools
 }
 
