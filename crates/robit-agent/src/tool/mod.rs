@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use robit_ai::ChatCompletionTool;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::Result;
@@ -73,8 +73,8 @@ impl ToolResult {
 // ============================================================================
 
 /// Resolve a file path relative to the working directory.
-pub fn resolve_path(file_path: &str, working_dir: &std::path::PathBuf) -> std::path::PathBuf {
-    let p = std::path::PathBuf::from(file_path);
+pub fn resolve_path(file_path: &str, working_dir: &Path) -> PathBuf {
+    let p = PathBuf::from(file_path);
     if p.is_absolute() {
         p
     } else {

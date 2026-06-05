@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Tool, ToolContext, ToolResult};
+use super::{resolve_path, Tool, ToolContext, ToolResult};
 use crate::error::Result;
 
 pub struct ReadTool {
@@ -74,7 +74,7 @@ impl Tool for ReadTool {
         };
 
         // Resolve file path
-        let path = crate::tool::resolve_path(&parsed.file_path, &ctx.working_dir);
+        let path = resolve_path(&parsed.file_path, &ctx.working_dir);
 
         // Check if file exists
         if !path.exists() {
@@ -159,4 +159,3 @@ impl Tool for ReadTool {
         Ok(ToolResult::success(output))
     }
 }
-
