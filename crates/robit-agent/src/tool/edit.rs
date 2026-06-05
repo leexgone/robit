@@ -110,9 +110,10 @@ impl Tool for EditTool {
                 );
                 for (i, m) in similar.iter().enumerate() {
                     msg.push_str(&format!(
-                        "相似度 {} (第 {} 行):\n  期望: {}\n  实际: {}\n",
+                        "匹配 {} (第 {} 行, 匹配度 {}):\n  期望: {}\n  实际: {}\n",
                         i + 1,
                         m.line_number,
+                        m.score,
                         truncate(&parsed.old_string, 120),
                         truncate(&m.actual, 120)
                     ));
@@ -244,7 +245,7 @@ fn count_lines_before(content: &str, byte_pos: usize) -> usize {
 
 /// Truncate text to max_len characters.
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
         let truncated: String = s.chars().take(max_len).collect();
