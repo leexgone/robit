@@ -21,6 +21,12 @@ impl WriteTool {
     }
 }
 
+impl Default for WriteTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Tool for WriteTool {
     fn name(&self) -> &str {
