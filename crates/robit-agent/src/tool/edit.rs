@@ -28,6 +28,12 @@ impl EditTool {
     }
 }
 
+impl Default for EditTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Tool for EditTool {
     fn name(&self) -> &str {
@@ -68,6 +74,14 @@ impl Tool for EditTool {
             Ok(a) => a,
             Err(e) => return Ok(ToolResult::error(format!("参数解析失败: {}", e))),
         };
+
+        // Validate inputs
+        if parsed.old_string.is_empty() {
+            return Ok(ToolResult::error("old_string 不能为空".to_string()));
+        }
+        if parsed.file_path.trim().is_empty() {
+            return Ok(ToolResult::error("文件路径不能为空".to_string()));
+        }
 
         let path = resolve_path(&parsed.file_path, &ctx.working_dir);
 
@@ -160,21 +174,17 @@ impl Tool for EditTool {
                 msg.push_str("，无法唯一确定替换位置。\n请提供更多上下文使 old_string 唯一。\n\n");
 
                 // Show context for each match (up to first 5)
-                let show_count = n.min(5);
-                for i in 0..show_count {
-                    let line = line_positions[i];
+                for &line_1based in line_positions.iter().take(5) {
+                    let line_idx = line_1based - 1; // 0-based index into lines[]
+                    let start = line_idx.saturating_sub(1);
+                    let end = (line_idx + 2).min(lines.len());
                     msg.push_str("---\n");
-                    msg.push_str(&format!("第 {} 行:\n", line));
-                    // Show 3 lines of context around the match
-                    // line is 1-based; match_index is 0-based index of the match
-                    let match_index = line - 1;
-                    let start = match_index.saturating_sub(1);
-                    let end = (match_index + 2).min(lines.len());
-                    for j in start..end {
-                        if j == match_index {
-                            msg.push_str(&format!("> {}\n", lines[j]));
+                    msg.push_str(&format!("第 {} 行:\n", line_1based));
+                    for (j, line_text) in lines.iter().enumerate().skip(start).take(end - start) {
+                        if j == line_idx {
+                            msg.push_str(&format!("> {}\n", line_text));
                         } else {
-                            msg.push_str(&format!("  {}\n", lines[j]));
+                            msg.push_str(&format!("  {}\n", line_text));
                         }
                     }
                     msg.push_str("---\n");
@@ -196,11 +206,15 @@ struct SimilarMatch {
     score: usize, // number of matching characters (higher = better)
 }
 
-/// Find lines most similar to old_string using character overlap scoring.
+/// Find lines most similar to old_string using word overlap scoring.
 fn find_similar_matches(content: &str, target: &str) -> Vec<SimilarMatch> {
     let lines: Vec<&str> = content.lines().collect();
     let target_lower = target.to_lowercase();
-    let target_words: Vec<&str> = target_lower.split_whitespace().collect();
+    // Filter out words shorter than 2 chars to avoid noise (e.g., "a", "i")
+    let target_words: Vec<&str> = target_lower
+        .split_whitespace()
+        .filter(|w| w.len() >= 2)
+        .collect();
 
     let mut scored: Vec<(usize, usize, String)> = lines
         .iter()
@@ -214,7 +228,7 @@ fn find_similar_matches(content: &str, target: &str) -> Vec<SimilarMatch> {
         .collect();
 
     // Sort by score descending
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     // Take top MAX_SIMILAR_MATCHES
     scored
@@ -228,12 +242,12 @@ fn find_similar_matches(content: &str, target: &str) -> Vec<SimilarMatch> {
         .collect()
 }
 
-/// Count how many words from target appear in the line.
+/// Count how many words from target appear as exact matches in the line.
 fn word_overlap_score(target_words: &[&str], line: &str) -> usize {
     let line_words: Vec<&str> = line.split_whitespace().collect();
     let mut score = 0;
     for &tw in target_words {
-        if line_words.iter().any(|lw| lw.contains(tw) || tw.contains(lw)) {
+        if line_words.contains(&tw) {
             score += 1;
         }
     }
