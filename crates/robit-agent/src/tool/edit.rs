@@ -166,10 +166,12 @@ impl Tool for EditTool {
                     msg.push_str("---\n");
                     msg.push_str(&format!("第 {} 行:\n", line));
                     // Show 3 lines of context around the match
-                    let start = line.saturating_sub(1);
-                    let end = (line + 2).min(lines.len());
+                    // line is 1-based; match_index is 0-based index of the match
+                    let match_index = line - 1;
+                    let start = match_index.saturating_sub(1);
+                    let end = (match_index + 2).min(lines.len());
                     for j in start..end {
-                        if j + 1 == line {
+                        if j == match_index {
                             msg.push_str(&format!("> {}\n", lines[j]));
                         } else {
                             msg.push_str(&format!("  {}\n", lines[j]));
