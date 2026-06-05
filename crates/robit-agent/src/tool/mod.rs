@@ -2,6 +2,8 @@
 
 pub mod bash;
 pub mod read;
+pub mod write;
+pub mod edit;
 
 use async_trait::async_trait;
 use robit_ai::ChatCompletionTool;
@@ -63,6 +65,20 @@ impl ToolResult {
             content: content.into(),
             is_error: true,
         }
+    }
+}
+
+// ============================================================================
+// Shared helpers
+// ============================================================================
+
+/// Resolve a file path relative to the working directory.
+pub fn resolve_path(file_path: &str, working_dir: &std::path::PathBuf) -> std::path::PathBuf {
+    let p = std::path::PathBuf::from(file_path);
+    if p.is_absolute() {
+        p
+    } else {
+        working_dir.join(p)
     }
 }
 

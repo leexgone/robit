@@ -3,7 +3,6 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use std::path::PathBuf;
 
 use super::{Tool, ToolContext, ToolResult};
 use crate::error::Result;
@@ -75,7 +74,7 @@ impl Tool for ReadTool {
         };
 
         // Resolve file path
-        let path = resolve_path(&parsed.file_path, &ctx.working_dir);
+        let path = crate::tool::resolve_path(&parsed.file_path, &ctx.working_dir);
 
         // Check if file exists
         if !path.exists() {
@@ -161,12 +160,3 @@ impl Tool for ReadTool {
     }
 }
 
-/// Resolve a file path relative to the working directory.
-fn resolve_path(file_path: &str, working_dir: &PathBuf) -> PathBuf {
-    let p = PathBuf::from(file_path);
-    if p.is_absolute() {
-        p
-    } else {
-        working_dir.join(p)
-    }
-}
