@@ -81,6 +81,11 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             ),
             Style::default().fg(STATUS_FG),
         ),
+        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("skills: {}", app.status.skills_total),
+            Style::default().fg(STATUS_FG),
+        ),
     ]);
 
     let bar = Paragraph::new(status_text).style(Style::default().bg(STATUS_BG));

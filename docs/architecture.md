@@ -257,11 +257,24 @@ enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 
 ## 技能系统
 
-技能是**预定义的提示词模板**，以 YAML frontmatter + Markdown body 格式存储。系统在启动时加载技能，按需注入到 Agent 的系统提示词中。
+技能是**预定义的提示词模板**，以目录为单位组织，每个技能目录下包含一个 `SKILL.md` 文件（YAML frontmatter + Markdown body）。系统在启动时加载技能，按需注入到 Agent 的系统提示词中。
 
-### 技能文件格式
+### 技能目录结构
 
-每个技能是一个 `.md` 文件，采用 YAML frontmatter + Markdown body 结构：
+每个技能是一个独立目录，内含 `SKILL.md` 作为主定义文件：
+
+```text
+~/.robit/skills/
+  ├── code-review/
+  │   └── SKILL.md
+  ├── refactor/
+  │   └── SKILL.md
+  └── custom-skill/
+      ├── SKILL.md
+      └── reference.md   (可选，辅助文件)
+```
+
+`SKILL.md` 采用 YAML frontmatter + Markdown body 结构：
 
 ```markdown
 ---
@@ -315,6 +328,8 @@ enabled: true
 ~/.robit/skills/          ← 全局技能（低优先级）
 cwd/.robit/skills/        ← 项目技能（高优先级，同名覆盖全局）
 ```
+
+每个子目录为一个技能，目录内必须有 `SKILL.md`。项目技能同名覆盖全局技能。
 
 ### 技能注入时机
 

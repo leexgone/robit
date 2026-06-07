@@ -46,6 +46,7 @@ pub struct AppConfig {
     pub log_level: Option<String>,
     pub max_steps: Option<usize>,
     pub enabled_tools: Option<Vec<String>>,
+    pub enabled_skills: Option<Vec<String>>,
     pub context: Option<ContextConfig>,
     pub retry: Option<RetryConfig>,
 }
@@ -372,6 +373,28 @@ mod tests {
         let config: RobitConfig = toml::from_str(toml_str).unwrap();
         let result = resolve_profile(&config, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_enabled_skills() {
+        let toml_str = r#"
+            [llm]
+            [llm.profiles.default]
+            model = "deepseek-chat"
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [app]
+            enabled_skills = ["code-review", "refactor"]
+        "#;
+
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let app = config.app.as_ref().unwrap();
+        assert!(app.enabled_skills.is_some());
+        let skills = app.enabled_skills.as_ref().unwrap();
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0], "code-review");
+        assert_eq!(skills[1], "refactor");
     }
 
     fn make_test_config() -> RobitConfig {

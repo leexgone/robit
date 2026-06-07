@@ -1,8 +1,9 @@
 //! App state — conversation model and event handling.
 
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use robit_agent::{AgentEvent, FrontendMessage, ToolRegistry};
+use robit_agent::{AgentEvent, FrontendMessage, SkillRegistry, ToolRegistry};
 
 use crate::input::InputEditor;
 
@@ -61,6 +62,7 @@ pub struct StatusInfo {
     pub model: String,
     pub tools_enabled: usize,
     pub tools_total: usize,
+    pub skills_total: usize,
 }
 
 // ============================================================================
@@ -78,10 +80,11 @@ pub struct App {
     pub status: StatusInfo,
     pub is_agent_busy: bool,
     pub should_quit: bool,
+    pub skills: Arc<SkillRegistry>,
 }
 
 impl App {
-    pub fn new(model: String, tools: &ToolRegistry) -> Self {
+    pub fn new(model: String, tools: &ToolRegistry, skills: Arc<SkillRegistry>) -> Self {
         let tool_names = tools.tool_names();
         Self {
             conversation: Vec::new(),
@@ -94,9 +97,11 @@ impl App {
                 model,
                 tools_enabled: tool_names.len(),
                 tools_total: tool_names.len(),
+                skills_total: skills.count(),
             },
             is_agent_busy: false,
             should_quit: false,
+            skills,
         }
     }
 
@@ -147,6 +152,12 @@ impl App {
                 self.conversation
                     .push(ConversationEntry::Error(format!("{}", e)));
                 self.is_agent_busy = false;
+                self.auto_scroll = true;
+            }
+            AgentEvent::SkillTriggered { name, description } => {
+                self.conversation.push(ConversationEntry::SystemNotice(
+                    format!("技能: {} — {}", name, description),
+                ));
                 self.auto_scroll = true;
             }
         }
@@ -224,11 +235,50 @@ impl App {
                 self.conversation
                     .push(ConversationEntry::SystemNotice(msg));
             }
+            "/skills" => {
+                let skills = self.skills.skills();
+                if skills.is_empty() {
+                    self.conversation.push(ConversationEntry::SystemNotice(
+                        "无可用技能。在 ~/.robit/skills/ 或 .robit/skills/ 中添加 .md 文件。"
+                            .to_string(),
+                    ));
+                } else {
+                    let mut msg = format!("可用技能 ({} 个):\n", skills.len());
+                    for skill in skills {
+                        msg.push_str(&format!(
+                            "- {} ({}) — {}\n",
+                            skill.frontmatter.name,
+                            skill.frontmatter.version,
+                            skill.frontmatter.description
+                        ));
+                        if !skill.frontmatter.triggers.is_empty() {
+                            msg.push_str(&format!(
+                                "  触发命令: {}\n",
+                                skill.frontmatter.triggers.join(", ")
+                            ));
+                        }
+                    }
+                    self.conversation
+                        .push(ConversationEntry::SystemNotice(msg));
+                }
+            }
             _ => {
-                self.conversation.push(ConversationEntry::Error(format!(
-                    "未知命令: {}",
-                    parts[0]
-                )));
+                // Check if this is a skill trigger — forward to Agent
+                if let Some((skill, _)) = self.skills.match_trigger(cmd) {
+                    self.conversation.push(ConversationEntry::SystemNotice(
+                        format!("触发技能: {} — {}", skill.frontmatter.name, skill.frontmatter.description),
+                    ));
+                    let tx = message_tx.clone();
+                    let cmd = cmd.to_string();
+                    tokio::spawn(async move {
+                        let _ = tx.send(FrontendMessage::UserInput(cmd)).await;
+                    });
+                } else {
+                    self.conversation.push(ConversationEntry::Error(format!(
+                        "未知命令: {}",
+                        parts[0]
+                    )));
+                }
             }
         }
     }

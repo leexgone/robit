@@ -21,6 +21,7 @@ use crossterm::ExecutableCommand;
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use robit_agent::skill::SkillRegistry;
 use robit_agent::tool::bash::BashTool;
 use robit_agent::tool::edit::EditTool;
 use robit_agent::tool::read::ReadTool;
@@ -57,6 +58,39 @@ fn main() -> Result<()> {
 
     let tools = Arc::new(create_tools(&config));
 
+    // Load skills
+    let global_skills_dir = dirs::home_dir().map(|h| h.join(".robit/skills"));
+    let project_skills_dir = Some(working_dir.join(".robit/skills"));
+
+    let (skills, skill_errors) = robit_agent::skill::loader::load_skills(
+        global_skills_dir,
+        project_skills_dir,
+    );
+
+    // Log skill load errors as warnings
+    for err in &skill_errors {
+        tracing::warn!("技能加载错误: {:?}", err);
+    }
+
+    // Apply enabled_skills config filter
+    let enabled_skills = config
+        .app
+        .as_ref()
+        .and_then(|a| a.enabled_skills.as_ref());
+    let filtered_skills: Vec<_> = match enabled_skills {
+        Some(list) => skills
+            .into_iter()
+            .filter(|s| list.contains(&s.frontmatter.name))
+            .collect(),
+        None => skills,
+    };
+
+    let tool_names = tools.tool_names();
+    let skill_registry = Arc::new(SkillRegistry::new(
+        filtered_skills,
+        &tool_names.iter().map(|s| s.as_ref()).collect::<Vec<&str>>(),
+    ));
+
     // Create channels
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
     let (message_tx, message_rx) = mpsc::channel::<FrontendMessage>(16);
@@ -70,6 +104,7 @@ fn main() -> Result<()> {
     let agent = Agent::new(
         client,
         Arc::clone(&tools),
+        Arc::clone(&skill_registry),
         frontend,
         context_config,
         context_window,
@@ -99,7 +134,7 @@ fn main() -> Result<()> {
             agent.run(message_rx).await;
         });
 
-        let mut app = App::new(model, &tools);
+        let mut app = App::new(model, &tools, Arc::clone(&skill_registry));
         app.status.tools_enabled = tools.tool_names().len();
         app.status.tools_total = tools.tool_names().len();
 

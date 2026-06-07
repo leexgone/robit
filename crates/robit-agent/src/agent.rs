@@ -18,6 +18,7 @@ use crate::error::{AgentError, Result};
 use crate::event::{new_session_id, AgentEvent, FrontendMessage, SessionId};
 use crate::frontend::Frontend;
 use crate::prompt::PromptBuilder;
+use crate::skill::SkillRegistry;
 use crate::tool::{ToolCallInfo, ToolContext, ToolRegistry, ToolResult};
 
 // ============================================================================
@@ -57,6 +58,7 @@ impl AgentSession {
 pub struct Agent {
     llm_client: Arc<LlmClient>,
     tools: Arc<ToolRegistry>,
+    skills: Arc<SkillRegistry>,
     sessions: HashMap<SessionId, AgentSession>,
     default_session_id: SessionId,
     context_manager: ContextManager,
@@ -68,6 +70,7 @@ impl Agent {
     pub fn new(
         llm_client: Arc<LlmClient>,
         tools: Arc<ToolRegistry>,
+        skills: Arc<SkillRegistry>,
         frontend: Arc<dyn Frontend>,
         context_config: Option<&ContextConfig>,
         context_window: Option<u64>,
@@ -76,9 +79,10 @@ impl Agent {
         let prompt_builder = PromptBuilder::new();
         let context_manager = ContextManager::new(context_window, context_config);
 
-        // Build system prompt
+        // Build system prompt with tools AND skills
         let tool_refs: Vec<&dyn crate::tool::Tool> = tools.tools();
-        let system_prompt = prompt_builder.build_system_prompt(&tool_refs, &working_dir);
+        let skill_descs = skills.skill_descriptions();
+        let system_prompt = prompt_builder.build_system_prompt(&tool_refs, &skill_descs, &working_dir);
 
         // Create default session
         let session_id = new_session_id();
@@ -90,6 +94,7 @@ impl Agent {
         Self {
             llm_client,
             tools,
+            skills,
             sessions,
             default_session_id: session_id,
             context_manager,
@@ -117,6 +122,13 @@ impl Agent {
                             ))
                             .await;
                         let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
+                        continue;
+                    }
+
+                    // Check for skill trigger
+                    if let Some((skill, args)) = self.skills.match_trigger(&input) {
+                        let skill = skill.clone();
+                        self.run_skill_turn(&skill, &args).await;
                         continue;
                     }
 
@@ -372,6 +384,105 @@ impl Agent {
     fn clear_session(&mut self) {
         if let Some(session) = self.sessions.get_mut(&self.default_session_id) {
             session.history.truncate(1);
+        }
+    }
+
+    /// Execute a skill-triggered turn: inject skill content, then run the agent loop.
+    ///
+    /// The skill's full content is injected as a temporary system message and removed
+    /// after the turn completes, so it doesn't occupy context in future turns.
+    async fn run_skill_turn(&mut self, skill: &crate::skill::Skill, args: &str) {
+        // Notify frontend
+        let _ = self
+            .frontend
+            .on_event(AgentEvent::SkillTriggered {
+                name: skill.frontmatter.name.clone(),
+                description: skill.frontmatter.description.clone(),
+            })
+            .await;
+
+        let session_id = self.default_session_id.clone();
+
+        // Inject skill content as a system message
+        let skill_message = format!(
+            "## 技能：{}\n\n{}\n\n{}",
+            skill.frontmatter.name,
+            skill.frontmatter.description,
+            skill.content
+        );
+
+        let skill_msg = ChatCompletionRequestMessage::System(
+            ChatCompletionRequestSystemMessage {
+                content: skill_message.into(),
+                name: Some(skill.frontmatter.name.clone()),
+            }
+            .into(),
+        );
+
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            session.history.push(skill_msg);
+        }
+
+        // Add user message (args or default)
+        let user_content = if args.is_empty() {
+            "(用户触发技能，无额外参数)".to_string()
+        } else {
+            args.to_string()
+        };
+
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            session.history.push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessage {
+                    content: user_content.into(),
+                    name: None,
+                }
+                .into(),
+            ));
+        }
+
+        // Run the agentic loop
+        let max_iterations = 20;
+        let mut completed = false;
+        for iteration in 0..max_iterations {
+            match self.run_one_step(&session_id).await {
+                Ok(has_tool_calls) => {
+                    if !has_tool_calls {
+                        completed = true;
+                        break;
+                    }
+                    tracing::debug!(
+                        "技能迭代 {}: tool calls executed",
+                        iteration
+                    );
+                }
+                Err(e) => {
+                    let _ = self.frontend.on_event(AgentEvent::Error(e)).await;
+                    break;
+                }
+            }
+        }
+
+        if !completed {
+            let _ = self
+                .frontend
+                .on_event(AgentEvent::Error(AgentError::InternalError(
+                    format!("达到最大迭代次数 ({})", max_iterations),
+                )))
+                .await;
+        }
+
+        let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
+
+        // Remove the injected skill system message to avoid polluting future turns
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            let skill_name = skill.frontmatter.name.clone();
+            session.history.retain(|msg| {
+                !matches!(
+                    msg,
+                    ChatCompletionRequestMessage::System(s)
+                        if s.name.as_deref() == Some(&skill_name)
+                )
+            });
         }
     }
 }

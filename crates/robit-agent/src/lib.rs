@@ -9,10 +9,12 @@ pub mod error;
 pub mod event;
 pub mod frontend;
 pub mod prompt;
+pub mod skill;
 pub mod tool;
 
 pub use agent::Agent;
 pub use error::AgentError;
 pub use event::{AgentEvent, FrontendMessage, SessionId};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
+pub use skill::{Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
 pub use tool::{Tool, ToolCallInfo, ToolContext, ToolRegistry, ToolResult};

@@ -34,6 +34,9 @@ pub enum AgentEvent {
 
     /// An error occurred during agent execution.
     Error(crate::error::AgentError),
+
+    /// A skill was triggered. Frontend can display this as a system notice.
+    SkillTriggered { name: String, description: String },
 }
 
 /// Messages sent from Frontend to Agent.

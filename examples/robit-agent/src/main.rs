@@ -7,6 +7,7 @@
 //! This avoids concurrent stdout writes between the agent task and the main task.
 
 use async_trait::async_trait;
+use robit_agent::skill::SkillRegistry;
 use robit_agent::tool::bash::BashTool;
 use robit_agent::tool::read::ReadTool;
 use robit_agent::{Agent, AgentEvent, Frontend, FrontendMessage, ToolCallInfo, ToolRegistry};
@@ -49,6 +50,36 @@ fn main() -> anyhow::Result<()> {
     tools.register(BashTool::new(max_bytes));
     let tools = Arc::new(tools);
 
+    // Load skills
+    let global_skills_dir = dirs::home_dir().map(|h| h.join(".robit/skills"));
+    let project_skills_dir = Some(working_dir.join(".robit/skills"));
+
+    let (skills, skill_errors) = robit_agent::skill::loader::load_skills(
+        global_skills_dir,
+        project_skills_dir,
+    );
+    for err in &skill_errors {
+        tracing::warn!("技能加载错误: {:?}", err);
+    }
+
+    let enabled_skills = config
+        .app
+        .as_ref()
+        .and_then(|a| a.enabled_skills.as_ref());
+    let filtered_skills: Vec<_> = match enabled_skills {
+        Some(list) => skills
+            .into_iter()
+            .filter(|s| list.contains(&s.frontmatter.name))
+            .collect(),
+        None => skills,
+    };
+
+    let tool_names = tools.tool_names();
+    let skill_registry = Arc::new(SkillRegistry::new(
+        filtered_skills,
+        &tool_names.iter().map(|s| s.as_ref()).collect::<Vec<&str>>(),
+    ));
+
     // Channels:
     //   event channel:   Agent → main task (render events to stdout)
     //   message channel: main task → Agent (user input)
@@ -66,6 +97,7 @@ fn main() -> anyhow::Result<()> {
     let agent = Agent::new(
         client,
         tools,
+        skill_registry,
         frontend,
         context_config,
         context_window,
@@ -215,6 +247,9 @@ fn render_event(event: &AgentEvent) {
         }
         AgentEvent::Error(e) => {
             eprintln!("\n[错误] {}", e);
+        }
+        AgentEvent::SkillTriggered { name, description } => {
+            println!("\n[技能] {} — {}", name, description);
         }
     }
 }

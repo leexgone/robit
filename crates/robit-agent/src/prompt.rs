@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::tool::Tool;
 
 /// Default system prompt template.
-/// Placeholders: {os}, {cwd}, {date}, {tools_section}
+/// Placeholders: {os}, {cwd}, {date}, {tools_section}, {skills_section}
 const DEFAULT_PROMPT: &str = r#"你是 Robit，一个 AI 编程代理。
 
 ## 工作方式
@@ -17,6 +17,9 @@ const DEFAULT_PROMPT: &str = r#"你是 Robit，一个 AI 编程代理。
 
 ## 可用工具
 {tools_section}
+
+## 可用技能
+{skills_section}
 
 ## 环境
 - 操作系统：{os}
@@ -41,8 +44,16 @@ impl PromptBuilder {
     }
 
     /// Build the complete system prompt.
-    pub fn build_system_prompt(&self, tools: &[&dyn Tool], working_dir: &std::path::Path) -> String {
+    ///
+    /// `skills` is a list of (name, description) pairs for enabled skills.
+    pub fn build_system_prompt(
+        &self,
+        tools: &[&dyn Tool],
+        skills: &[(&str, &str)],
+        working_dir: &std::path::Path,
+    ) -> String {
         let tools_section = Self::build_tools_section(tools);
+        let skills_section = Self::build_skills_section(skills);
         let os = std::env::consts::OS;
         let cwd = working_dir.display().to_string();
         let date = chrono_date();
@@ -54,12 +65,14 @@ impl PromptBuilder {
                 .replace("{cwd}", &cwd)
                 .replace("{date}", &date)
                 .replace("{tools_section}", &tools_section)
+                .replace("{skills_section}", &skills_section)
         } else {
             DEFAULT_PROMPT
                 .replace("{os}", os)
                 .replace("{cwd}", &cwd)
                 .replace("{date}", &date)
                 .replace("{tools_section}", &tools_section)
+                .replace("{skills_section}", &skills_section)
         }
     }
 
@@ -81,6 +94,19 @@ impl PromptBuilder {
                     ""
                 }
             ));
+        }
+        section
+    }
+
+    /// Build the skills description section.
+    fn build_skills_section(skills: &[(&str, &str)]) -> String {
+        if skills.is_empty() {
+            return "(无可用技能)".to_string();
+        }
+
+        let mut section = String::new();
+        for (name, description) in skills {
+            section.push_str(&format!("- **{}**: {}\n", name, description));
         }
         section
     }
