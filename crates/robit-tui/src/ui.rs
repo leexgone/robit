@@ -111,8 +111,11 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
+    // Card width: use pane width minus scrollbar (1) and borders (2), clamped to [40, 100]
+    let card_width = (area.width.saturating_sub(3) as usize).clamp(40, 100);
+
     for entry in &app.conversation {
-        render_entry(&mut lines, entry);
+        render_entry(&mut lines, entry, card_width);
     }
 
     if !app.current_assistant_text.is_empty() {
@@ -202,7 +205,7 @@ fn draw_scrollbar(f: &mut Frame, area: Rect, scroll: usize, total_lines: usize, 
 // Render conversation entries into flat lines
 // ============================================================================
 
-fn render_entry(lines: &mut Vec<Line>, entry: &ConversationEntry) {
+fn render_entry(lines: &mut Vec<Line>, entry: &ConversationEntry, card_width: usize) {
     match entry {
         ConversationEntry::UserMessage(text) => {
             lines.push(Line::from(Span::styled(
@@ -238,7 +241,7 @@ fn render_entry(lines: &mut Vec<Line>, entry: &ConversationEntry) {
             status,
             ..
         } => {
-            render_tool_card(lines, name, arguments, status);
+            render_tool_card(lines, name, arguments, status, card_width);
         }
         ConversationEntry::Error(text) => {
             lines.push(Line::from(Span::styled(
@@ -263,7 +266,7 @@ fn render_entry(lines: &mut Vec<Line>, entry: &ConversationEntry) {
 // Tool card
 // ============================================================================
 
-fn render_tool_card(lines: &mut Vec<Line>, name: &str, arguments: &str, status: &ToolStatus) {
+fn render_tool_card(lines: &mut Vec<Line>, name: &str, arguments: &str, status: &ToolStatus, card_width: usize) {
     use unicode_width::UnicodeWidthStr;
 
     let (icon, color) = match status {
@@ -274,8 +277,6 @@ fn render_tool_card(lines: &mut Vec<Line>, name: &str, arguments: &str, status: 
         ToolStatus::Rejected => ("", Color::DarkGray),
         ToolStatus::AwaitingConfirmation => ("⚠", Color::Yellow),
     };
-
-    let card_width: usize = 40; // visual width of the card (excluding left border chars)
 
     // Top border
     lines.push(Line::from(Span::styled(
