@@ -473,8 +473,19 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
 // Confirmation overlay
 // ============================================================================
 
-fn draw_confirmation_overlay(f: &mut Frame, _app: &App, area: Rect) {
-    let popup_area = centered_rect(60, 5, area);
+fn draw_confirmation_overlay(f: &mut Frame, app: &App, full_area: Rect) {
+    // Calculate conversation area (exclude status bar + input area)
+    let ih = input_height(app);
+    let conv_area = Rect::new(
+        full_area.x,
+        full_area.y + 1,
+        full_area.width,
+        full_area.height.saturating_sub(1 + ih),
+    );
+
+    // Compact popup positioned in the upper portion of conversation area
+    // — won't obscure the user message at the bottom or tool cards
+    let popup_area = centered_rect_in(50, 3, conv_area);
 
     f.render_widget(Clear, popup_area);
 
@@ -484,14 +495,13 @@ fn draw_confirmation_overlay(f: &mut Frame, _app: &App, area: Rect) {
         .title(" 确认 ");
 
     let text = Paragraph::new(Line::from(vec![
-        Span::raw("  工具调用需要确认  "),
         Span::styled(
             "[Y] 允许",
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw("   "),
         Span::styled(
             "[N] 拒绝",
             Style::default()
@@ -504,9 +514,10 @@ fn draw_confirmation_overlay(f: &mut Frame, _app: &App, area: Rect) {
     f.render_widget(text, popup_area);
 }
 
-fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {
+/// Center a popup inside a given rect (not the full screen).
+fn centered_rect_in(percent_x: u16, height: u16, r: Rect) -> Rect {
     let popup_width = r.width * percent_x / 100;
     let x = r.x + (r.width.saturating_sub(popup_width)) / 2;
-    let y = r.y + (r.height.saturating_sub(height)) / 2;
+    let y = r.y + (r.height.saturating_sub(height)) / 3;
     Rect::new(x, y, popup_width, height)
 }
