@@ -13,7 +13,7 @@ use std::io;
 use std::sync::Arc;
 
 use anyhow::Result;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -344,6 +344,23 @@ async fn handle_crossterm_event(
         }
         Event::Resize(_, _) => {
             // Terminal resize — ratatui handles this on next draw
+        }
+        Event::Mouse(me) => {
+            match me.kind {
+                MouseEventKind::ScrollUp => {
+                    app.auto_scroll = false;
+                    app.scroll_offset = app.scroll_offset.saturating_add(3);
+                }
+                MouseEventKind::ScrollDown => {
+                    if app.scroll_offset > 0 {
+                        app.scroll_offset -= 3;
+                        if app.scroll_offset == 0 {
+                            app.auto_scroll = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
         _ => {}
     }
