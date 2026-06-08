@@ -77,6 +77,7 @@ pub struct App {
     pub input_mode: InputMode,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
+    pub scroll_mode: bool,
     pub status: StatusInfo,
     pub is_agent_busy: bool,
     pub should_quit: bool,
@@ -93,6 +94,7 @@ impl App {
             input_mode: InputMode::Normal,
             scroll_offset: 0,
             auto_scroll: true,
+            scroll_mode: false,
             status: StatusInfo {
                 model,
                 tools_enabled: tool_names.len(),
@@ -183,6 +185,16 @@ impl App {
         }
     }
 
+    /// Toggle scroll mode on/off.
+    pub fn toggle_scroll_mode(&mut self) {
+        self.scroll_mode = !self.scroll_mode;
+        if self.scroll_mode {
+            self.auto_scroll = false;
+        } else if self.scroll_offset == 0 {
+            self.auto_scroll = true;
+        }
+    }
+
     /// Process user input text (slash commands or send to agent).
     pub fn handle_user_input(
         &mut self,
@@ -232,6 +244,16 @@ impl App {
                     "已启用工具: {} 个",
                     self.status.tools_enabled
                 );
+                self.conversation
+                    .push(ConversationEntry::SystemNotice(msg));
+            }
+            "/scroll" => {
+                self.toggle_scroll_mode();
+                let msg = if self.scroll_mode {
+                    "滚动模式已开启 — 使用 ↑↓ 键浏览历史内容".to_string()
+                } else {
+                    "滚动模式已关闭 — 回到最新位置".to_string()
+                };
                 self.conversation
                     .push(ConversationEntry::SystemNotice(msg));
             }

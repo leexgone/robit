@@ -60,7 +60,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Color::Green
     };
 
-    let status_text = Line::from(vec![
+    let mut spans: Vec<Span> = vec![
         Span::styled(
             format!(" {} ", indicator),
             Style::default().fg(indicator_color),
@@ -86,7 +86,19 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             format!("skills: {}", app.status.skills_total),
             Style::default().fg(STATUS_FG),
         ),
-    ]);
+    ];
+
+    // Scroll mode indicator at the right edge
+    if app.scroll_mode {
+        spans.push(Span::styled(
+            " ◤SCROLL◢ F8退出",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let status_text = Line::from(spans);
 
     let bar = Paragraph::new(status_text).style(Style::default().bg(STATUS_BG));
     f.render_widget(bar, area);
@@ -143,14 +155,52 @@ fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
     if app.auto_scroll && total_lines > visible_height {
         let scroll = (total_lines - visible_height) as u16;
         f.render_widget(paragraph.scroll((scroll, 0)), area);
+        draw_scrollbar(f, area, scroll as usize, total_lines, visible_height);
     } else if !app.auto_scroll && app.scroll_offset > 0 {
         let max_scroll = total_lines.saturating_sub(visible_height);
         let scroll = app.scroll_offset.min(max_scroll) as u16;
         f.render_widget(paragraph.scroll((scroll, 0)), area);
+        draw_scrollbar(f, area, scroll as usize, total_lines, visible_height);
     } else {
         f.render_widget(paragraph, area);
     }
 }
+
+// ============================================================================
+// Scrollbar
+// ============================================================================
+
+fn draw_scrollbar(f: &mut Frame, area: Rect, scroll: usize, total_lines: usize, visible_height: usize) {
+    if total_lines <= visible_height || visible_height == 0 {
+        return;
+    }
+
+    let max_scroll = total_lines.saturating_sub(visible_height);
+    if max_scroll == 0 {
+        return;
+    }
+
+    let thumb_size = (visible_height * visible_height).saturating_sub(total_lines).max(1) as usize;
+    let thumb_pos = (scroll * (visible_height - thumb_size)) / max_scroll;
+    let x = area.x + area.width - 1;
+
+    for row in 0..visible_height {
+        let row_y = area.y + row as u16;
+        if row_y >= area.y + area.height {
+            break;
+        }
+
+        let in_thumb = row >= thumb_pos && row < thumb_pos + thumb_size;
+        let ch = if in_thumb { '█' } else { '░' };
+        let color = if in_thumb { Color::Indexed(240) } else { Color::DarkGray };
+        let cell = Span::styled(ch.to_string(), Style::default().fg(color));
+        f.render_widget(Paragraph::new(cell), Rect::new(x, row_y, 1, 1));
+    }
+}
+
+// ============================================================================
+// Render conversation entries into flat lines
+// ============================================================================
 
 fn render_entry(lines: &mut Vec<Line>, entry: &ConversationEntry) {
     match entry {
@@ -376,7 +426,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(border_color))
         .title_bottom(Line::from(Span::styled(
             format!(
-                " {}Enter 发送 | Tab 多行 | Ctrl+C 取消 | Ctrl+D 退出{}",
+                " {}Enter 发送 | Tab 多行 | F8 滚动 | Ctrl+C 取消 | Ctrl+D 退出{}",
                 mode_indicator, ""
             ),
             Style::default().fg(Color::DarkGray),

@@ -300,8 +300,8 @@ async fn handle_crossterm_event(
                 (KeyCode::Left, _) => app.input.move_left(),
                 (KeyCode::Right, _) => app.input.move_right(),
                 (KeyCode::Up, _) => {
-                    if app.input.multi_line {
-                        // In multi-line mode, Up scrolls conversation
+                    if app.scroll_mode || app.input.multi_line {
+                        // Scroll conversation up
                         app.auto_scroll = false;
                         app.scroll_offset = app.scroll_offset.saturating_add(1);
                     } else {
@@ -309,7 +309,8 @@ async fn handle_crossterm_event(
                     }
                 }
                 (KeyCode::Down, _) => {
-                    if app.input.multi_line {
+                    if app.scroll_mode || app.input.multi_line {
+                        // Scroll conversation down
                         if app.scroll_offset > 0 {
                             app.scroll_offset -= 1;
                             if app.scroll_offset == 0 {
@@ -319,6 +320,9 @@ async fn handle_crossterm_event(
                     } else {
                         app.input.history_next();
                     }
+                }
+                (KeyCode::F(8), _) => {
+                    app.toggle_scroll_mode();
                 }
                 (KeyCode::Home, _) => app.input.move_home(),
                 (KeyCode::End, _) => app.input.move_end(),
