@@ -346,12 +346,15 @@ async fn handle_crossterm_event(
             // Terminal resize — ratatui handles this on next draw
         }
         Event::Mouse(me) => {
+            // Always scroll the conversation pane — independent of scroll_mode.
+            // Direction swapped for Windows: wheel up = show content below (down),
+            // wheel down = show content above (up).
             match me.kind {
-                MouseEventKind::ScrollUp => {
+                MouseEventKind::ScrollDown => {
                     app.auto_scroll = false;
                     app.scroll_offset = app.scroll_offset.saturating_add(3);
                 }
-                MouseEventKind::ScrollDown => {
+                MouseEventKind::ScrollUp => {
                     if app.scroll_offset > 0 {
                         app.scroll_offset -= 3;
                         if app.scroll_offset == 0 {
