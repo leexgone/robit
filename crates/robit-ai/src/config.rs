@@ -87,6 +87,7 @@ pub struct AppConfig {
     pub enabled_skills: Option<Vec<String>>,
     pub context: Option<ContextConfig>,
     pub retry: Option<RetryConfig>,
+    pub auto_approve: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -553,6 +554,47 @@ mod tests {
         assert_eq!(skills.len(), 2);
         assert_eq!(skills[0], "code-review");
         assert_eq!(skills[1], "refactor");
+    }
+
+    #[test]
+    fn test_parse_auto_approve() {
+        let toml_str = r#"
+            default_model = "deepseek/deepseek-chat"
+
+            [providers.deepseek]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.deepseek.models]]
+            id = "deepseek-chat"
+
+            [app]
+            auto_approve = true
+        "#;
+
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let app = config.app.as_ref().unwrap();
+        assert_eq!(app.auto_approve, Some(true));
+    }
+
+    #[test]
+    fn test_parse_auto_approve_default_none() {
+        let toml_str = r#"
+            default_model = "deepseek/deepseek-chat"
+
+            [providers.deepseek]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.deepseek.models]]
+            id = "deepseek-chat"
+
+            [app]
+        "#;
+
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let app = config.app.as_ref().unwrap();
+        assert_eq!(app.auto_approve, None);
     }
 
     fn make_test_config() -> RobitConfig {
