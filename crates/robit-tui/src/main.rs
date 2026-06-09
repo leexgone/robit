@@ -12,6 +12,7 @@ mod ui;
 use std::io;
 use std::sync::Arc;
 
+use clap::Parser;
 use anyhow::Result;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use crossterm::terminal::{
@@ -35,7 +36,19 @@ use tokio::sync::mpsc;
 use app::{App, InputMode};
 use tui_frontend::{ConfirmRequest, TuiFrontend};
 
+#[derive(Debug, Parser)]
+#[command(name = "robit")]
+#[command(about = "AI Programming Agent with TUI")]
+struct Cli {
+    /// 自动批准所有工具调用，跳过用户确认
+    #[arg(long)]
+    auto_approve: bool,
+}
+
 fn main() -> Result<()> {
+    // Parse CLI args first
+    let cli = Cli::parse();
+
     // Initialize tracing (logs go to file, not terminal)
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -49,6 +62,9 @@ fn main() -> Result<()> {
         .init();
 
     let config = load_config()?;
+
+    // Determine auto_approve: CLI flag takes priority, then config, then default false
+    let auto_approve = cli.auto_approve || config.app.as_ref().and_then(|a| a.auto_approve).unwrap_or(false);
 
     let client = Arc::new(LlmClient::from_config(&config, None)?);
     let model = client.model().to_string();
@@ -109,6 +125,7 @@ fn main() -> Result<()> {
         context_config,
         context_window,
         working_dir,
+        auto_approve,
     );
 
     // Setup terminal
