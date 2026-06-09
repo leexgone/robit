@@ -64,6 +64,7 @@ pub struct Agent {
     default_session_id: SessionId,
     context_manager: ContextManager,
     frontend: Arc<dyn Frontend>,
+    auto_approve: bool,
 }
 
 impl Agent {
@@ -76,6 +77,7 @@ impl Agent {
         context_config: Option<&ContextConfig>,
         context_window: Option<u64>,
         working_dir: PathBuf,
+        auto_approve: bool,
     ) -> Self {
         let prompt_builder = PromptBuilder::new();
         let context_manager = ContextManager::new(context_window, context_config);
@@ -100,6 +102,7 @@ impl Agent {
             default_session_id: session_id,
             context_manager,
             frontend,
+            auto_approve,
         }
     }
 
@@ -357,7 +360,7 @@ impl Agent {
                 .await;
 
             // Check confirmation
-            let approved = if self.tools.requires_confirmation(&tc.function.name) {
+            let approved = if self.tools.requires_confirmation(&tc.function.name) && !self.auto_approve {
                 self.frontend.request_tool_confirmation(&tc_info).await?
             } else {
                 true
