@@ -97,17 +97,46 @@
 ### robit.toml 结构
 
 ```toml
-[llm]
-default_profile = "default"            # 默认使用的 profile
+# 默认模型（provider/model 格式）
+default_model = "deepseek/deepseek-chat"
 
-[llm.profiles.default]                 # 可定义多个 profile（default, chat, reasoner 等）
-model = "deepseek-chat"
-base_url = "https://api.deepseek.com"
+# 提供商定义
+[providers.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com/v1"
 api_key = "${DEEPSEEK_API_KEY}"        # 支持 ${ENV_VAR} 替换
-max_tokens = 4096
-temperature = 0.0
-context_window = 65536                 # 可选，上下文窗口大小
 
+[[providers.deepseek.models]]          # 每个提供商可有多个模型
+id = "deepseek-chat"
+name = "DeepSeek Chat"
+context_window = 65536
+max_output_tokens = 8192
+temperature = 0.0
+max_tokens = 4096
+supports_images = false
+supports_tools = true
+
+[[providers.deepseek.models]]
+id = "deepseek-reasoner"
+name = "DeepSeek Reasoner"
+context_window = 65536
+temperature = 0.6
+max_tokens = 8192
+
+[providers.qwen]                       # 另一个提供商
+name = "通义千问"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "${DASHSCOPE_API_KEY}"
+
+[[providers.qwen.models]]
+id = "qwen-max"
+name = "Qwen Max"
+context_window = 32768
+temperature = 0.7
+supports_images = true
+supports_tools = true
+
+# 应用配置
 [app]
 log_level = "DEBUG"
 max_steps = 10

@@ -1,12 +1,11 @@
 # LLM 提供商配置
 
-robit 采用统一的提供商配置结构，兼容 OpenAI 协议，支持适配 DeepSeek、QWen 等多种模型提供商。配置文件位于 `~/.robit/llms.toml`。
+robit 采用统一的提供商配置结构，兼容 OpenAI 协议，支持适配 DeepSeek、QWen 等多种模型提供商。配置文件位于 `robit.toml`（项目本地 `config/robit.toml` 或全局 `~/.robit/robit.toml`）。
 
 ## 配置结构
 
 ```toml
-# 默认提供商和模型
-default_provider = "deepseek"
+# 默认模型（provider/model 格式）
 default_model = "deepseek/deepseek-chat"
 
 # DeepSeek 提供商
@@ -66,7 +65,6 @@ supports_tools = true
 
 | 字段 | 类型 | 必填 | 说明 |
 | ---- | ------ | ---- | ---- |
-| `default_provider` | `string` | 否 | 默认提供商 key，对应 `providers` 中的键名 |
 | `default_model` | `string` | 否 | 默认模型，格式为 `provider/model`（如 `deepseek/deepseek-chat`） |
 | `providers` | `table` | 是 | 提供商配置集合 |
 
@@ -87,6 +85,8 @@ supports_tools = true
 | `name` | `string` | 否 | 模型显示名称 |
 | `context_window` | `integer` | 否 | 上下文窗口大小（token 数），用于上下文管理 |
 | `max_output_tokens` | `integer` | 否 | 最大输出 token 数 |
+| `temperature` | `float` | 否 | 采样温度（0.0-2.0），运行时参数 |
+| `max_tokens` | `integer` | 否 | 最大生成 token 数，运行时参数 |
 | `supports_images` | `bool` | 否 | 是否支持图片输入，默认 `false` |
 | `supports_tools` | `bool` | 否 | 是否支持工具调用，默认 `false` |
 
@@ -126,10 +126,13 @@ api_key = "sk-xxxxxxxxxxxxxxxx"
 
 ## 配置加载顺序
 
-1. 读取 `~/.robit/llms.toml`
-2. 解析 `${ENV_VAR}` 引用，从 `~/.robit/.env` 或系统环境变量中取值
-3. 验证配置完整性（`base_url`、`api_key`、`models` 不能为空）
-4. 设置默认模型（如果未指定，使用第一个可用模型）
+1. 加载 `~/.robit/.env`（环境变量）
+2. 读取 `cwd/config/robit.toml`（项目本地，最高优先级）→ `~/.robit/robit.toml`（全局 fallback）
+3. 解析 `api_key` 中的 `${ENV_VAR}` 引用，从 `.env` 或系统环境变量中取值
+4. 解析 `default_model` 为 `provider/model` 格式
+5. 查找对应 provider，获取 `base_url` 和 `api_key`
+6. 在该 provider 的 `models` 数组中匹配 `id`，获取模型参数
+7. 如果未指定 `default_model`，使用第一个可用 provider 的第一个模型
 
 ## 扩展提供商
 
