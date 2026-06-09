@@ -7,6 +7,7 @@
 //! This avoids concurrent stdout writes between the agent task and the main task.
 
 use async_trait::async_trait;
+use clap::Parser;
 use robit_agent::skill::SkillRegistry;
 use robit_agent::tool::bash::BashTool;
 use robit_agent::tool::load_skill::LoadSkillTool;
@@ -19,7 +20,19 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
+#[derive(Debug, Parser)]
+#[command(name = "robit-agent-cli")]
+#[command(about = "AI Programming Agent with stdin/stdout frontend")]
+struct Cli {
+    /// 自动批准所有工具调用，跳过用户确认
+    #[arg(long)]
+    auto_approve: bool,
+}
+
 fn main() -> anyhow::Result<()> {
+    // Parse CLI args first
+    let cli = Cli::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -28,6 +41,9 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let config = load_config()?;
+
+    // Determine auto_approve: CLI flag takes priority, then config, then default false
+    let auto_approve = cli.auto_approve || config.app.as_ref().and_then(|a| a.auto_approve).unwrap_or(false);
 
     let client = Arc::new(LlmClient::from_config(&config, None)?);
     println!(
@@ -103,6 +119,7 @@ fn main() -> anyhow::Result<()> {
         context_config,
         context_window,
         working_dir,
+        auto_approve,
     );
 
     let rt = tokio::runtime::Runtime::new()?;
