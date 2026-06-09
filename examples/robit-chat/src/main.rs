@@ -2,7 +2,7 @@
 //!
 //! Usage: cargo run -p robit-chat
 
-use async_openai::types::ChatCompletionRequestAssistantMessageContent;
+use async_openai::types::chat::ChatCompletionRequestAssistantMessageContent;
 use futures::StreamExt;
 use robit_ai::config::load_config;
 use robit_ai::{

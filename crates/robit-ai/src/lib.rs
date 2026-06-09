@@ -9,10 +9,10 @@ pub mod config;
 pub mod error;
 
 // Re-export async-openai core types so downstream crates don't need to depend on async-openai directly.
-pub use async_openai::types::{
+pub use async_openai::types::chat::{
     ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessage,
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestUserMessage, ChatCompletionResponseStream, ChatCompletionTool,
+    ChatCompletionRequestUserMessage, ChatCompletionResponseStream, ChatCompletionTools,
     CompletionUsage, CreateChatCompletionResponse, CreateChatCompletionStreamResponse, Role,
 };
 

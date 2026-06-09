@@ -6,7 +6,7 @@ pub mod write;
 pub mod edit;
 
 use async_trait::async_trait;
-use robit_ai::ChatCompletionTool;
+use robit_ai::ChatCompletionTools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -140,7 +140,7 @@ impl ToolRegistry {
     }
 
     /// Generate OpenAI function calling schemas for all registered tools.
-    pub fn tool_schemas(&self) -> Vec<ChatCompletionTool> {
+    pub fn tool_schemas(&self) -> Vec<ChatCompletionTools> {
         self.tools
             .values()
             .map(|tool| {
@@ -157,7 +157,7 @@ impl ToolRegistry {
                 });
 
                 serde_json::from_value(tool_json)
-                    .expect("tool schema should be valid ChatCompletionTool")
+                    .expect("tool schema should be valid ChatCompletionTools")
             })
             .collect()
     }

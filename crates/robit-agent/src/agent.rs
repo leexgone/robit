@@ -1,9 +1,10 @@
 //! Agent — the event-driven loop that orchestrates LLM calls and tool execution.
 
-use async_openai::types::{
-    ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessage,
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessage, FunctionCall,
+use async_openai::types::chat::{
+    ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
+    ChatCompletionRequestAssistantMessage, ChatCompletionRequestMessage,
+    ChatCompletionRequestSystemMessage, ChatCompletionRequestToolMessage,
+    ChatCompletionRequestUserMessage, FunctionCall,
 };
 use futures::StreamExt;
 use robit_ai::config::ContextConfig;
@@ -283,7 +284,13 @@ impl Agent {
                 tool_calls: if assembled_tool_calls.is_empty() {
                     None
                 } else {
-                    Some(assembled_tool_calls.clone())
+                    Some(
+                        assembled_tool_calls
+                            .clone()
+                            .into_iter()
+                            .map(ChatCompletionMessageToolCalls::Function)
+                            .collect(),
+                    )
                 },
                 refusal: None,
                 audio: None,
@@ -513,7 +520,6 @@ impl ToolCallAccumulator {
         let name = self.name?;
         Some(ChatCompletionMessageToolCall {
             id,
-            r#type: async_openai::types::ChatCompletionToolType::Function,
             function: FunctionCall {
                 name,
                 arguments: self.arguments,

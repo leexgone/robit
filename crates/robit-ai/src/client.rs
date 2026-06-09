@@ -1,8 +1,8 @@
 //! LlmClient: a thin wrapper around async-openai with unified config support.
 
 use async_openai::config::OpenAIConfig;
-use async_openai::types::{
-    ChatCompletionRequestMessage, ChatCompletionResponseStream, ChatCompletionTool,
+use async_openai::types::chat::{
+    ChatCompletionRequestMessage, ChatCompletionResponseStream, ChatCompletionTools,
     CreateChatCompletionRequest, CreateChatCompletionResponse,
 };
 
@@ -42,7 +42,7 @@ impl LlmClient {
     pub async fn chat_stream(
         &self,
         messages: Vec<ChatCompletionRequestMessage>,
-        tools: Option<Vec<ChatCompletionTool>>,
+        tools: Option<Vec<ChatCompletionTools>>,
     ) -> Result<ChatCompletionResponseStream, LlmError> {
         let request = CreateChatCompletionRequest {
             model: self.model.clone(),
@@ -62,7 +62,7 @@ impl LlmClient {
     pub async fn chat(
         &self,
         messages: Vec<ChatCompletionRequestMessage>,
-        tools: Option<Vec<ChatCompletionTool>>,
+        tools: Option<Vec<ChatCompletionTools>>,
     ) -> Result<CreateChatCompletionResponse, LlmError> {
         let request = CreateChatCompletionRequest {
             model: self.model.clone(),

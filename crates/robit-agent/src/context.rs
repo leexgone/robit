@@ -1,6 +1,6 @@
 //! Context management — output truncation and history window management.
 
-use async_openai::types::ChatCompletionRequestMessage;
+use async_openai::types::chat::ChatCompletionRequestMessage;
 use robit_ai::config::ContextConfig;
 
 // ============================================================================
@@ -239,7 +239,7 @@ impl ContextManager {
                 .count();
 
             let notice_msg = ChatCompletionRequestMessage::User(
-                async_openai::types::ChatCompletionRequestUserMessage {
+                async_openai::types::chat::ChatCompletionRequestUserMessage {
                     content: notice.into(),
                     name: Some("system_notice".to_string()),
                 }

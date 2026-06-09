@@ -183,8 +183,9 @@ fn draw_scrollbar(f: &mut Frame, area: Rect, scroll: usize, total_lines: usize, 
         return;
     }
 
-    let thumb_size = (visible_height * visible_height).saturating_sub(total_lines).max(1) as usize;
-    let thumb_pos = (scroll * (visible_height - thumb_size)) / max_scroll;
+    let thumb_size = ((visible_height as u64 * visible_height as u64 / total_lines as u64) as usize).max(1);
+    let track = visible_height.saturating_sub(thumb_size).max(1);
+    let thumb_pos = (scroll * track) / max_scroll;
     let x = area.x + area.width - 1;
 
     for row in 0..visible_height {
