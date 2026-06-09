@@ -13,7 +13,7 @@ Agent Loop
   ├── 解析响应
   │     ├── 纯文本 → 发射 TextDelta 事件，回到等待输入
   │     └── 工具调用 → 发射 ToolCallRequested 事件
-  │           ├── 等待前端确认（可配置自动批准）
+  │           ├── 等待前端确认（可通过 auto_approve 配置跳过）
   │           ├── 确认后执行工具
   │           ├── 发射 ToolCallResult 事件
   │           ├── 结果回填到消息历史
@@ -238,11 +238,18 @@ Agent 收到 LLM 的 tool_call
   ↓
 检查 tool.requires_confirmation()
   ├── false → 直接执行，返回结果
-  └── true  → 调用 frontend.request_tool_confirmation(tool_call)
-              ├── 用户同意 → 执行
-              └── 用户拒绝 → 返回 ToolResult { is_error: true, content: "用户拒绝执行" }
-                              （LLM 可以看到拒绝原因，调整策略）
+  └── true  → 检查 auto_approve 配置
+              ├── auto_approve = true → 直接执行，跳过确认
+              └── auto_approve = false → 调用 frontend.request_tool_confirmation(tool_call)
+                              ├── 用户同意 → 执行
+                              └── 用户拒绝 → 返回 ToolResult { is_error: true, content: "用户拒绝执行" }
+                                              （LLM 可以看到拒绝原因，调整策略）
 ```
+
+**auto_approve 配置优先级**：
+1. 命令行参数 `--auto-approve`（最高优先级）
+2. `robit.toml` 中的 `[app] auto_approve` 配置
+3. 默认 `false`（需要确认）
 
 ### 工具启用策略
 
