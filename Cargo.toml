@@ -41,3 +41,6 @@ ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 unicode-width = "0.2.2"
 pulldown-cmark = "0.13"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
