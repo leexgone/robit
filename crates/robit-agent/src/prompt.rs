@@ -6,7 +6,8 @@ use crate::tool::Tool;
 
 /// Default system prompt template.
 /// Placeholders: {os}, {cwd}, {date}, {tools_section}, {skills_section}
-const DEFAULT_PROMPT: &str = r#"你是 Robit，一个 AI 编程代理。
+const DEFAULT_PROMPT: &str = r#"你是 Robit，一个 AI 智能工作助理。你辅助用户完成各种任务，尤其是与代码相关的工作。
+你可以帮助用户读取文件、执行脚本、编写代码和创建文件。你可以使用可用的工具和技能来完成任务。
 
 ## 工作方式
 - 直接执行任务，不要解释计划

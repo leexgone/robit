@@ -24,6 +24,7 @@ use ratatui::Terminal;
 use robit_agent::skill::SkillRegistry;
 use robit_agent::tool::bash::BashTool;
 use robit_agent::tool::edit::EditTool;
+use robit_agent::tool::load_skill::LoadSkillTool;
 use robit_agent::tool::read::ReadTool;
 use robit_agent::tool::write::WriteTool;
 use robit_agent::{Agent, AgentEvent, FrontendMessage, ToolRegistry};
@@ -56,9 +57,7 @@ fn main() -> Result<()> {
     let context_window = client.resolved().context_window;
     let working_dir = std::env::current_dir()?;
 
-    let tools = Arc::new(create_tools(&config));
-
-    // Load skills
+    // Load skills first (needed for LoadSkillTool)
     let global_skills_dir = dirs::home_dir().map(|h| h.join(".robit/skills"));
     let project_skills_dir = Some(working_dir.join(".robit/skills"));
 
@@ -85,11 +84,12 @@ fn main() -> Result<()> {
         None => skills,
     };
 
-    let tool_names = tools.tool_names();
-    let skill_registry = Arc::new(SkillRegistry::new(
-        filtered_skills,
-        &tool_names.iter().map(|s| s.as_ref()).collect::<Vec<&str>>(),
-    ));
+    // Create skill registry first (LoadSkillTool needs it)
+    let base_tool_names = ["read", "bash", "write", "edit"];
+    let skill_registry = Arc::new(SkillRegistry::new(filtered_skills, &base_tool_names));
+
+    // Create tools (includes LoadSkillTool which needs skill_registry)
+    let tools = Arc::new(create_tools(&config, Arc::clone(&skill_registry)));
 
     // Create channels
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
@@ -157,7 +157,7 @@ fn main() -> Result<()> {
     result
 }
 
-fn create_tools(config: &robit_ai::config::RobitConfig) -> ToolRegistry {
+fn create_tools(config: &robit_ai::config::RobitConfig, skills: Arc<SkillRegistry>) -> ToolRegistry {
     let mut tools = ToolRegistry::new();
     let context_config = config.app.as_ref().and_then(|a| a.context.as_ref());
     let max_lines = context_config.and_then(|c| c.max_output_lines).unwrap_or(500);
@@ -168,6 +168,7 @@ fn create_tools(config: &robit_ai::config::RobitConfig) -> ToolRegistry {
     tools.register(BashTool::new(max_bytes));
     tools.register(WriteTool::new());
     tools.register(EditTool::new());
+    tools.register(LoadSkillTool::new(skills));
     tools
 }
 
@@ -355,11 +356,14 @@ async fn handle_crossterm_event(
                     app.scroll_offset = app.scroll_offset.saturating_add(3);
                 }
                 MouseEventKind::ScrollUp => {
-                    if app.scroll_offset > 0 {
+                    if app.scroll_offset >= 3 {
                         app.scroll_offset -= 3;
                         if app.scroll_offset == 0 {
                             app.auto_scroll = true;
                         }
+                    } else if app.scroll_offset > 0 {
+                        app.scroll_offset = 0;
+                        app.auto_scroll = true;
                     }
                 }
                 _ => {}

@@ -9,6 +9,7 @@
 use async_trait::async_trait;
 use robit_agent::skill::SkillRegistry;
 use robit_agent::tool::bash::BashTool;
+use robit_agent::tool::load_skill::LoadSkillTool;
 use robit_agent::tool::read::ReadTool;
 use robit_agent::{Agent, AgentEvent, Frontend, FrontendMessage, ToolCallInfo, ToolRegistry};
 use robit_ai::config::load_config;
@@ -41,16 +42,7 @@ fn main() -> anyhow::Result<()> {
 
     let working_dir = std::env::current_dir()?;
 
-    let mut tools = ToolRegistry::new();
-    let max_lines = context_config.and_then(|c| c.max_output_lines).unwrap_or(500);
-    let max_bytes = context_config
-        .and_then(|c| c.max_output_bytes)
-        .unwrap_or(51200);
-    tools.register(ReadTool::new(max_lines, max_bytes));
-    tools.register(BashTool::new(max_bytes));
-    let tools = Arc::new(tools);
-
-    // Load skills
+    // Load skills first (needed for LoadSkillTool)
     let global_skills_dir = dirs::home_dir().map(|h| h.join(".robit/skills"));
     let project_skills_dir = Some(working_dir.join(".robit/skills"));
 
@@ -74,11 +66,20 @@ fn main() -> anyhow::Result<()> {
         None => skills,
     };
 
-    let tool_names = tools.tool_names();
-    let skill_registry = Arc::new(SkillRegistry::new(
-        filtered_skills,
-        &tool_names.iter().map(|s| s.as_ref()).collect::<Vec<&str>>(),
-    ));
+    // Create skill registry first (LoadSkillTool needs it)
+    let base_tool_names = ["read", "bash"];
+    let skill_registry = Arc::new(SkillRegistry::new(filtered_skills, &base_tool_names));
+
+    // Create tools
+    let mut tools = ToolRegistry::new();
+    let max_lines = context_config.and_then(|c| c.max_output_lines).unwrap_or(500);
+    let max_bytes = context_config
+        .and_then(|c| c.max_output_bytes)
+        .unwrap_or(51200);
+    tools.register(ReadTool::new(max_lines, max_bytes));
+    tools.register(BashTool::new(max_bytes));
+    tools.register(LoadSkillTool::new(Arc::clone(&skill_registry)));
+    let tools = Arc::new(tools);
 
     // Channels:
     //   event channel:   Agent → main task (render events to stdout)

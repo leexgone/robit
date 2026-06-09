@@ -4,6 +4,7 @@ pub mod bash;
 pub mod read;
 pub mod write;
 pub mod edit;
+pub mod load_skill;
 
 use async_trait::async_trait;
 use robit_ai::ChatCompletionTools;

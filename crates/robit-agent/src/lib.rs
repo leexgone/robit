@@ -18,3 +18,4 @@ pub use event::{AgentEvent, FrontendMessage, SessionId};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
 pub use skill::{Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
 pub use tool::{Tool, ToolCallInfo, ToolContext, ToolRegistry, ToolResult};
+pub use tool::load_skill::LoadSkillTool;
