@@ -46,7 +46,7 @@
 
 - [ ] 补齐工具：`edit` ✅、`write` ✅、`grep`、`find`、`ls`
 - [x] 技能系统实现 ✅（目录式技能，`SKILL.md` frontmatter，系统提示词注入，斜杠命令触发）
-- [ ] 更多 LLM 提供商适配（QWen、其他）
+- [x] 更多 LLM 提供商适配（QWen、其他）
 - [ ] 上下文压缩策略（摘要 / 智能截断）
 - [ ] 代码高亮（引入 `syntect`）
 - [ ] Token 精确计数（引入 `tiktoken-rs`）

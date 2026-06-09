@@ -4,6 +4,25 @@ use async_openai::types::chat::ChatCompletionRequestMessage;
 use robit_ai::config::ContextConfig;
 
 // ============================================================================
+// Truncation result
+// ============================================================================
+
+/// Result of context truncation, used for async compression.
+#[derive(Debug)]
+pub struct TruncationResult {
+    /// Number of conversation rounds removed.
+    pub rounds_removed: usize,
+    /// Number of individual messages removed.
+    pub messages_removed: usize,
+    /// The removed messages (for generating summary).
+    pub removed_messages: Vec<ChatCompletionRequestMessage>,
+    /// Position where summary should be inserted.
+    pub insert_position: usize,
+    /// Whether compression is needed (token count exceeds threshold).
+    pub needs_compression: bool,
+}
+
+// ============================================================================
 // Tool output truncation (Layer 1)
 // ============================================================================
 
@@ -124,19 +143,25 @@ pub struct ContextManager {
     pub max_output_lines: usize,
     /// Max output bytes for tool results.
     pub max_output_bytes: usize,
+    /// Token threshold for triggering compression.
+    pub compression_token_threshold: usize,
+    /// Whether compression is enabled.
+    pub compression_enabled: bool,
 }
 
 impl ContextManager {
     pub fn new(context_window: Option<u64>, config: Option<&ContextConfig>) -> Self {
         let max_tokens = context_window.unwrap_or(65536) as usize;
 
-        let (max_output_lines, max_output_bytes, reserve_ratio) = match config {
+        let (max_output_lines, max_output_bytes, reserve_ratio, compression_token_threshold, compression_enabled) = match config {
             Some(c) => (
                 c.max_output_lines.unwrap_or(500),
                 c.max_output_bytes.unwrap_or(51200),
                 c.reserve_ratio.unwrap_or(0.2),
+                c.compression_token_threshold.unwrap_or(5000),
+                c.compression_enabled.unwrap_or(true),
             ),
-            None => (500, 51200, 0.2),
+            None => (500, 51200, 0.2, 5000, true),
         };
 
         Self {
@@ -144,6 +169,8 @@ impl ContextManager {
             reserve_ratio,
             max_output_lines,
             max_output_bytes,
+            compression_token_threshold,
+            compression_enabled,
         }
     }
 
@@ -158,16 +185,25 @@ impl ContextManager {
     }
 
     /// Check if history needs truncation and perform it if necessary.
-    /// Returns the number of rounds removed.
+    /// Returns `TruncationResult` with removed messages for async compression.
     ///
     /// Strategy: remove oldest non-system messages by "rounds"
     /// (user + assistant + tool_calls + tool_results grouped together).
-    pub fn maybe_truncate(&self, messages: &mut Vec<ChatCompletionRequestMessage>) -> usize {
+    pub fn maybe_truncate(
+        &self,
+        messages: &mut Vec<ChatCompletionRequestMessage>,
+    ) -> TruncationResult {
         let estimated = estimate_messages_tokens(messages);
         let available = self.available_tokens();
 
         if estimated <= available {
-            return 0;
+            return TruncationResult {
+                rounds_removed: 0,
+                messages_removed: 0,
+                removed_messages: Vec::new(),
+                insert_position: 0,
+                needs_compression: false,
+            };
         }
 
         tracing::info!(
@@ -192,6 +228,9 @@ impl ContextManager {
             }
         }
 
+        // Collect removed messages for potential compression
+        let mut removed_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+
         // Remove rounds from the oldest first
         // Keep at least the system message
         while !round_starts.is_empty() && estimate_messages_tokens(messages) > available {
@@ -213,6 +252,11 @@ impl ContextManager {
                 break;
             }
 
+            // Collect messages before removing
+            if self.compression_enabled {
+                removed_messages.extend(messages[start_idx..end_idx].to_vec());
+            }
+
             let count = end_idx - start_idx;
             messages.drain(start_idx..end_idx);
 
@@ -227,11 +271,17 @@ impl ContextManager {
         }
 
         if rounds_removed > 0 {
-            // Insert a summary notice as the second message (after system message)
-            let notice = format!(
-                "[已省略 {} 轮对话，共 {} 条消息]",
-                rounds_removed, messages_removed
-            );
+            // Calculate removed tokens for threshold check
+            let removed_tokens = estimate_messages_tokens(&removed_messages);
+            let needs_compression =
+                self.compression_enabled && removed_tokens >= self.compression_token_threshold;
+
+            // Insert placeholder or wait for summary
+            let notice = if needs_compression {
+                "[正在生成对话摘要...]"
+            } else {
+                &format!("[已省略 {} 轮对话，共 {} 条消息]", rounds_removed, messages_removed)
+            };
 
             let system_msg_count = messages
                 .iter()
@@ -249,13 +299,29 @@ impl ContextManager {
             messages.insert(system_msg_count, notice_msg);
 
             tracing::info!(
-                "Removed {} rounds ({} messages), inserted summary notice",
+                "Removed {} rounds ({} messages), needs_compression={}, removed_tokens={}",
                 rounds_removed,
-                messages_removed
+                messages_removed,
+                needs_compression,
+                removed_tokens
             );
+
+            return TruncationResult {
+                rounds_removed,
+                messages_removed,
+                removed_messages,
+                insert_position: system_msg_count,
+                needs_compression,
+            };
         }
 
-        rounds_removed
+        TruncationResult {
+            rounds_removed: 0,
+            messages_removed: 0,
+            removed_messages: Vec::new(),
+            insert_position: 0,
+            needs_compression: false,
+        }
     }
 }
 
@@ -265,4 +331,141 @@ fn is_user_message(msg: &ChatCompletionRequestMessage) -> bool {
 
 fn is_system_message(msg: &ChatCompletionRequestMessage) -> bool {
     matches!(msg, ChatCompletionRequestMessage::System(_))
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_openai::types::chat::{
+        ChatCompletionRequestUserMessage,
+    };
+
+    fn make_user_message(content: &str) -> ChatCompletionRequestMessage {
+        ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage {
+                content: content.into(),
+                name: None,
+            }
+            .into(),
+        )
+    }
+
+    fn make_system_message(content: &str) -> ChatCompletionRequestMessage {
+        ChatCompletionRequestMessage::System(
+            async_openai::types::chat::ChatCompletionRequestSystemMessage {
+                content: content.into(),
+                name: None,
+            }
+            .into(),
+        )
+    }
+
+    #[test]
+    fn test_truncation_result_no_compression() {
+        // Small messages - no truncation needed
+        let mut messages = vec![
+            make_system_message("You are a helpful assistant"),
+            make_user_message("Hello"),
+        ];
+
+        let config = ContextConfig {
+            max_output_lines: Some(500),
+            max_output_bytes: Some(51200),
+            reserve_ratio: Some(0.2),
+            compression_token_threshold: Some(5000),
+            compression_enabled: Some(true),
+        };
+
+        let manager = ContextManager::new(Some(65536), Some(&config));
+        let result = manager.maybe_truncate(&mut messages);
+
+        assert_eq!(result.rounds_removed, 0);
+        assert!(!result.needs_compression);
+    }
+
+    #[test]
+    fn test_truncation_result_with_compression() {
+        // Create many large messages to exceed threshold
+        let mut messages = vec![
+            make_system_message("You are a helpful assistant"),
+        ];
+
+        // Add 20 rounds of large messages (each ~2000 chars = ~666 tokens)
+        // Total: ~13,320 tokens, context window: 5000, available: 4000
+        for i in 0..20 {
+            let content = format!("User message {}: {}", i, "x".repeat(2000));
+            messages.push(make_user_message(&content));
+        }
+
+        let config = ContextConfig {
+            max_output_lines: Some(500),
+            max_output_bytes: Some(51200),
+            reserve_ratio: Some(0.2),
+            compression_token_threshold: Some(1000), // Low threshold for testing
+            compression_enabled: Some(true),
+        };
+
+        // Set small context window to force truncation
+        let manager = ContextManager::new(Some(5000), Some(&config));
+        let result = manager.maybe_truncate(&mut messages);
+
+        assert!(result.rounds_removed > 0);
+        assert!(result.needs_compression);
+        assert!(!result.removed_messages.is_empty());
+    }
+
+    #[test]
+    fn test_compression_disabled() {
+        let mut messages = vec![
+            make_system_message("You are a helpful assistant"),
+        ];
+
+        // Add 20 rounds of large messages
+        for i in 0..20 {
+            let content = format!("User message {}: {}", i, "x".repeat(2000));
+            messages.push(make_user_message(&content));
+        }
+
+        let config = ContextConfig {
+            max_output_lines: Some(500),
+            max_output_bytes: Some(51200),
+            reserve_ratio: Some(0.2),
+            compression_token_threshold: Some(1000),
+            compression_enabled: Some(false), // Disabled
+        };
+
+        let manager = ContextManager::new(Some(5000), Some(&config));
+        let result = manager.maybe_truncate(&mut messages);
+
+        assert!(result.rounds_removed > 0);
+        assert!(!result.needs_compression); // Should be false even if threshold exceeded
+    }
+
+    #[test]
+    fn test_estimate_tokens() {
+        let text = "Hello world";
+        let tokens = estimate_tokens(text);
+        assert!(tokens > 0);
+        assert!(tokens < 10); // ~11 chars / 4 = ~2-3 tokens
+
+        let chinese = "你好世界";
+        let tokens_cn = estimate_tokens(chinese);
+        assert!(tokens_cn > 0);
+        assert!(tokens_cn < 5); // ~4 chars / 2 = ~2 tokens
+    }
+
+    #[test]
+    fn test_truncate_output() {
+        let content = "line1\nline2\nline3\nline4\nline5";
+        let truncated = truncate_output(content, 3, 100);
+        assert!(truncated.contains("line1"));
+        assert!(truncated.contains("line2"));
+        assert!(truncated.contains("line3"));
+        assert!(!truncated.contains("line4"));
+        assert!(truncated.contains("已截断"));
+    }
 }

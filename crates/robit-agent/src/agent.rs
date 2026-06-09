@@ -206,7 +206,33 @@ impl Agent {
             .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
 
         // Truncate context if needed
-        self.context_manager.maybe_truncate(&mut session.history);
+        let truncation_result = self.context_manager.maybe_truncate(&mut session.history);
+
+        // Handle async compression if needed
+        if truncation_result.needs_compression {
+            // For now, replace placeholder with a notice
+            // In production, spawn async task to call LLM and replace with summary
+            if let Some(msg) = session.history.get_mut(truncation_result.insert_position) {
+                let notice = format!(
+                    "[已省略 {} 轮对话，共 {} 条消息。上下文已压缩以节省空间]",
+                    truncation_result.rounds_removed,
+                    truncation_result.messages_removed
+                );
+                *msg = ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessage {
+                        content: notice.into(),
+                        name: Some("system_notice".to_string()),
+                    }
+                    .into(),
+                );
+            }
+
+            tracing::info!(
+                "Compression triggered: removed {} tokens (threshold: {})",
+                crate::context::estimate_messages_tokens(&truncation_result.removed_messages),
+                self.context_manager.compression_token_threshold
+            );
+        }
 
         // Build tool schemas
         let tool_schemas = self.tools.tool_schemas();

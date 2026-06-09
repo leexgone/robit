@@ -94,6 +94,11 @@ pub struct ContextConfig {
     pub max_output_lines: Option<usize>,
     pub max_output_bytes: Option<usize>,
     pub reserve_ratio: Option<f32>,
+    /// Token threshold for triggering compression (default 5000).
+    /// Only compress when removed messages exceed this token count.
+    pub compression_token_threshold: Option<usize>,
+    /// Enable/disable context compression (default true).
+    pub compression_enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
