@@ -6,10 +6,10 @@ edition = "2021"
 [dependencies]
 robit-ai = { path = "../../crates/robit-ai" }
 robit-agent = { path = "../../crates/robit-agent" }
-tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
-serde_json = "1"
-anyhow = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-dirs = "6"
+tokio.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true
