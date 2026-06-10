@@ -10,7 +10,6 @@
     "beforeBuildCommand": "cd ui && npm run build"
   },
   "app": {
-    "title": "Robit",
     "windows": [
       {
         "title": "Robit - AI Programming Agent",

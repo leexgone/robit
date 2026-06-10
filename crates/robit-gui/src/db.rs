@@ -1,5 +1,4 @@
 use rusqlite::{Connection, Result as SqliteResult, params};
-use std::path::Path;
 
 use crate::events::{MessageData, SessionInfo};
 

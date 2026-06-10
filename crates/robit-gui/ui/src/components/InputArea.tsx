@@ -1,0 +1,77 @@
+import { useState, useRef } from "react";
+import { Send } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useStore } from "@/lib/store";
+import { sendMessage } from "@/lib/commands";
+
+export function InputArea() {
+  const activeSessionId = useStore((s) => s.activeSessionId);
+  const agentStatus = useStore((s) =>
+    activeSessionId ? s.agentStatus[activeSessionId] : "idle"
+  );
+  const setAgentStatus = useStore((s) => s.setAgentStatus);
+
+  const [value, setValue] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const isBusy = agentStatus === "running";
+
+  const handleSend = async () => {
+    const trimmed = value.trim();
+    if (!trimmed || !activeSessionId || isBusy) return;
+
+    setValue("");
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
+
+    try {
+      setAgentStatus(activeSessionId, "running");
+      await sendMessage(activeSessionId, trimmed);
+    } catch (e) {
+      console.error("Failed to send message:", e);
+      setAgentStatus(activeSessionId, "ready");
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleInput = () => {
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    }
+  };
+
+  return (
+    <div className="border-t p-3 shrink-0">
+      <div className="flex items-end gap-2">
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onInput={handleInput}
+          placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
+          disabled={isBusy || !activeSessionId}
+          rows={1}
+          className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 min-h-[36px] max-h-[200px]"
+        />
+        <Button
+          size="icon"
+          onClick={handleSend}
+          disabled={isBusy || !value.trim() || !activeSessionId}
+          className="shrink-0"
+        >
+          <Send className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}

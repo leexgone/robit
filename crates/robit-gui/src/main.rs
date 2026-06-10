@@ -1,6 +1,7 @@
 //! robit-gui — Tauri v2 desktop GUI for the Robit AI programming agent.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(dead_code)] // Allow unused code for now, will be used in UI
 
 mod commands;
 mod config;
@@ -13,7 +14,6 @@ use std::sync::Arc;
 
 use robit_ai::config::load_config;
 use robit_ai::LlmClient;
-use tauri::Manager;
 
 use state::AppState;
 

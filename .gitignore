@@ -22,3 +22,5 @@ robit.toml
 
 # robit runtime directories
 .robit/
+
+.superpowers
