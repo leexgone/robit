@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-docs-v2/main/src/content/docs/_schema/config.schema.json",
+  "productName": "Robit",
+  "version": "0.1.0",
+  "identifier": "com.robit.app",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "cd ui && npm run dev",
+    "beforeBuildCommand": "cd ui && npm run build"
+  },
+  "app": {
+    "title": "Robit",
+    "windows": [
+      {
+        "title": "Robit - AI Programming Agent",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: https:; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

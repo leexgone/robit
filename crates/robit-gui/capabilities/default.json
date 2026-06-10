@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-docs-v2/main/src/content/docs/_schema/capability.schema.json",
+  "identifier": "default",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open"
+  ]
+}

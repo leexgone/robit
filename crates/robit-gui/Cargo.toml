@@ -1,0 +1,27 @@
+[package]
+name = "robit-gui"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "robit_gui"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+robit-agent = { path = "../robit-agent" }
+robit-ai = { path = "../robit-ai" }
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+tokio.workspace = true
+tokio-util = "0.7"
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+dirs.workspace = true

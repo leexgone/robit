@@ -3,6 +3,7 @@ members = [
     "crates/robit-ai",
     "crates/robit-agent",
     "crates/robit-tui",
+    "crates/robit-gui",
     "examples/robit-chat",
     "examples/robit-agent",
 ]
