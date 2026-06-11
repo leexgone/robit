@@ -174,3 +174,4 @@ max_backoff_ms = 30000
 | [`docs/plans/config-unification.md`](docs/plans/config-unification.md) | 配置统一计划（`robit.toml` 取代 `llms.toml` + `settings.toml`） |
 | [`docs/superpowers/specs/2026-06-10-robit-gui-design.md`](docs/superpowers/specs/2026-06-10-robit-gui-design.md) | robit-gui 设计规格（桌面 GUI 前端） |
 | [`docs/superpowers/plans/2026-06-10-robit-gui-implementation.md`](docs/superpowers/plans/2026-06-10-robit-gui-implementation.md) | robit-gui 实现计划 |
+| [`docs/superpowers/2026-06-11-robit-gui-progress.md`](docs/superpowers/2026-06-11-robit-gui-progress.md) | robit-gui 开发进度记录 |
