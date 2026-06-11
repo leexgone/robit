@@ -41,6 +41,19 @@ export function MessageList() {
     scrollToBottom();
   }, [messages.length, streamingBuffer, scrollToBottom]);
 
+  // Helper to parse tool_info from message
+  const parseToolInfo = (msg: any): ToolCallInfo | undefined => {
+    if (!msg.tool_info) return undefined;
+    try {
+      const info: ToolCallInfo = typeof msg.tool_info === "string"
+        ? JSON.parse(msg.tool_info)
+        : msg.tool_info;
+      return info;
+    } catch (e) {
+      return undefined;
+    }
+  };
+
   if (!activeSessionId) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -62,11 +75,17 @@ export function MessageList() {
           if (msg.role === "assistant") {
             return <AssistantMessage key={msg.id} content={msg.content} />;
           }
-          if (msg.role === "tool" && msg.tool_info) {
-            // Use the latest state from pendingConfirms if available
-            const latestInfo = msg.tool_call_id ? pendingConfirms[msg.tool_call_id] : undefined;
-            const infoToRender: ToolCallInfo = latestInfo || msg.tool_info;
-            return <ToolCard key={msg.id} info={infoToRender} />;
+          if (msg.role === "tool") {
+            // Prefer latest state from pendingConfirms, fall back to stored tool_info
+            let info: ToolCallInfo | undefined;
+            if (msg.tool_call_id && pendingConfirms[msg.tool_call_id]) {
+              info = pendingConfirms[msg.tool_call_id];
+            } else {
+              info = parseToolInfo(msg);
+            }
+            if (info) {
+              return <ToolCard key={msg.id} info={info} />;
+            }
           }
           return null;
         })}

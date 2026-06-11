@@ -53,14 +53,26 @@ pub struct SessionInfo {
 }
 
 /// Message data returned to the frontend.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageData {
     pub id: i64,
     pub role: String,
     pub content: String,
     pub tool_name: Option<String>,
     pub tool_call_id: Option<String>,
+    pub tool_info: Option<serde_json::Value>,
     pub created_at: String,
+}
+
+/// Tool call info for storage in message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallInfoData {
+    pub tool_call_id: String,
+    pub name: String,
+    pub arguments: String,
+    pub status: String,
+    pub output: Option<String>,
+    pub requires_confirm: bool,
 }
 
 /// Non-sensitive configuration exposed to the frontend.

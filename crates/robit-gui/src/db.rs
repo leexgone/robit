@@ -22,9 +22,13 @@ pub fn init_db(conn: &Connection) -> SqliteResult<()> {
             content      TEXT NOT NULL,
             tool_name    TEXT,
             tool_call_id TEXT,
+            tool_info    TEXT,
             tokens       INTEGER,
             created_at   TEXT NOT NULL
         );
+
+        -- Add tool_info column if it doesn't exist
+        ALTER TABLE messages ADD COLUMN IF NOT EXISTS tool_info TEXT;
 
         CREATE INDEX IF NOT EXISTS idx_messages_session
             ON messages(session_id);
@@ -121,11 +125,12 @@ pub fn insert_message(
     content: &str,
     tool_name: Option<&str>,
     tool_call_id: Option<&str>,
+    tool_info: Option<&str>,
 ) -> SqliteResult<i64> {
     let now = chrono_now();
     conn.execute(
-        "INSERT INTO messages (session_id, role, content, tool_name, tool_call_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![session_id, role, content, tool_name, tool_call_id, now],
+        "INSERT INTO messages (session_id, role, content, tool_name, tool_call_id, tool_info, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![session_id, role, content, tool_name, tool_call_id, tool_info, now],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -133,19 +138,36 @@ pub fn insert_message(
 /// Get all messages for a session, ordered by creation time.
 pub fn get_messages(conn: &Connection, session_id: &str) -> SqliteResult<Vec<MessageData>> {
     let mut stmt = conn.prepare(
-        "SELECT id, role, content, tool_name, tool_call_id, created_at FROM messages WHERE session_id = ?1 ORDER BY id ASC"
+        "SELECT id, role, content, tool_name, tool_call_id, tool_info, created_at FROM messages WHERE session_id = ?1 ORDER BY id ASC"
     )?;
     let rows = stmt.query_map(params![session_id], |row| {
+        let tool_info_str: Option<String> = row.get(5)?;
+        let tool_info = tool_info_str.and_then(|s| serde_json::from_str(&s).ok());
         Ok(MessageData {
             id: row.get(0)?,
             role: row.get(1)?,
             content: row.get(2)?,
             tool_name: row.get(3)?,
             tool_call_id: row.get(4)?,
-            created_at: row.get(5)?,
+            tool_info,
+            created_at: row.get(6)?,
         })
     })?;
     rows.collect()
+}
+
+/// Update a tool message with output and status.
+pub fn update_tool_message(
+    conn: &Connection,
+    session_id: &str,
+    tool_call_id: &str,
+    tool_info: &str,
+) -> SqliteResult<()> {
+    conn.execute(
+        "UPDATE messages SET tool_info = ?1 WHERE session_id = ?2 AND tool_call_id = ?3",
+        params![tool_info, session_id, tool_call_id],
+    )?;
+    Ok(())
 }
 
 /// Get an ISO 8601 timestamp string without chrono dependency.

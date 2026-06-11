@@ -243,6 +243,40 @@ impl AppState {
                     crate::events::UiEvent::TextDelta { delta, .. } => {
                         buffer.push_str(delta);
                     }
+                    crate::events::UiEvent::ToolCallRequested { tool_call_id, name, arguments, requires_confirm } => {
+                        // Save tool call request to database
+                        let tool_info = serde_json::json!({
+                            "tool_call_id": tool_call_id,
+                            "name": name,
+                            "arguments": arguments,
+                            "status": if *requires_confirm { "awaiting_confirmation" } else { "running" },
+                            "requires_confirm": requires_confirm,
+                        });
+                        let tool_info_str = serde_json::to_string(&tool_info).unwrap_or_default();
+                        let db = db_clone.lock().await;
+                        let _ = crate::db::insert_message(
+                            &db,
+                            &sid_clone,
+                            "tool",
+                            arguments,
+                            Some(name),
+                            Some(tool_call_id),
+                            Some(&tool_info_str),
+                        );
+                        let _ = crate::db::touch_session(&db, &sid_clone);
+                    }
+                    crate::events::UiEvent::ToolCallResult { tool_call_id, content, is_error } => {
+                        // Update tool message with result
+                        // First, get the current tool_info if it exists
+                        let db = db_clone.lock().await;
+                        let tool_info = serde_json::json!({
+                            "tool_call_id": tool_call_id,
+                            "status": if *is_error { "error" } else { "success" },
+                            "output": content,
+                        });
+                        let tool_info_str = serde_json::to_string(&tool_info).unwrap_or_default();
+                        let _ = crate::db::update_tool_message(&db, &sid_clone, tool_call_id, &tool_info_str);
+                    }
                     crate::events::UiEvent::TurnComplete { .. } => {
                         // Save assistant message to database
                         if !buffer.is_empty() {
