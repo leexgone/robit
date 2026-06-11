@@ -1,28 +1,45 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useStore } from "@/lib/store";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { ToolCard } from "./ToolCard";
+import type { ToolCallInfo } from "@/lib/types";
 
 export function MessageList() {
+  // Select only top-level stable references
   const activeSessionId = useStore((s) => s.activeSessionId);
-  const messages = useStore((s) =>
-    activeSessionId ? s.messages[activeSessionId] || [] : []
-  );
-  const streamingBuffer = useStore((s) =>
-    activeSessionId ? s.streamingBuffer[activeSessionId] || "" : ""
-  );
+  const messagesStore = useStore((s) => s.messages);
+  const streamingBufferStore = useStore((s) => s.streamingBuffer);
   const pendingConfirms = useStore((s) => s.pendingConfirms);
-  const viewportRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom on new content
-  useEffect(() => {
-    const viewport = viewportRef.current;
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  // Derive values without creating new references in selectors
+  const messages = activeSessionId ? messagesStore[activeSessionId] || [] : [];
+  const streamingBuffer = activeSessionId ? streamingBufferStore[activeSessionId] || "" : "";
+
+  // Auto-scroll function
+  const scrollToBottom = useCallback(() => {
+    // Find ScrollArea viewport - shadcn/ui's ScrollArea renders viewport with class "[data-radix-scroll-area-viewport]"
+    const scrollAreaEl = scrollAreaRef.current;
+    if (!scrollAreaEl) return;
+
+    const viewport = scrollAreaEl.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
     if (viewport) {
       viewport.scrollTop = viewport.scrollHeight;
     }
-  }, [messages, streamingBuffer, pendingConfirms]);
+  }, []);
+
+  // Scroll when active session changes (opening history)
+  useEffect(() => {
+    scrollToBottom();
+  }, [activeSessionId, scrollToBottom]);
+
+  // Scroll when messages or streaming buffer change
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages.length, streamingBuffer, scrollToBottom]);
 
   if (!activeSessionId) {
     return (
@@ -36,8 +53,8 @@ export function MessageList() {
   }
 
   return (
-    <ScrollArea className="flex-1">
-      <div ref={viewportRef} className="py-2">
+    <ScrollArea className="flex-1" ref={scrollAreaRef}>
+      <div className="py-2">
         {messages.map((msg) => {
           if (msg.role === "user") {
             return <UserMessage key={msg.id} content={msg.content} />;
@@ -45,19 +62,18 @@ export function MessageList() {
           if (msg.role === "assistant") {
             return <AssistantMessage key={msg.id} content={msg.content} />;
           }
-          // Tool messages are rendered via pendingConfirms
+          if (msg.role === "tool" && msg.tool_info) {
+            // Use the latest state from pendingConfirms if available
+            const latestInfo = msg.tool_call_id ? pendingConfirms[msg.tool_call_id] : undefined;
+            const infoToRender: ToolCallInfo = latestInfo || msg.tool_info;
+            return <ToolCard key={msg.id} info={infoToRender} />;
+          }
           return null;
         })}
 
-        {/* Streaming text (in-progress assistant response) */}
         {streamingBuffer && (
           <AssistantMessage content={streamingBuffer} isStreaming />
         )}
-
-        {/* Tool cards for current turn */}
-        {Object.values(pendingConfirms).map((info) => (
-          <ToolCard key={info.tool_call_id} info={info} />
-        ))}
       </div>
     </ScrollArea>
   );

@@ -44,7 +44,7 @@ pub struct AgentHandle {
 /// Application state managed by Tauri.
 pub struct AppState {
     /// SQLite connection (Mutex-protected, single connection).
-    pub db: Mutex<Connection>,
+    pub db: Arc<Mutex<Connection>>,
 
     /// Shared LLM client (reused across all sessions).
     pub llm_client: Arc<LlmClient>,
@@ -97,6 +97,8 @@ impl AppState {
 
         db::init_db(&conn).map_err(|e| format!("Failed to init database: {}", e))?;
 
+        let db = Arc::new(Mutex::new(conn));
+
         let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         let auto_approve = config
@@ -142,7 +144,7 @@ impl AppState {
         let tool_registry = Arc::new(create_tools(&config, Arc::clone(&skill_registry)));
 
         Ok(Self {
-            db: Mutex::new(conn),
+            db,
             llm_client,
             tool_registry,
             skill_registry,
@@ -231,8 +233,32 @@ impl AppState {
         // Spawn event bridge: receives UiEvents and emits to Tauri frontend
         let app_handle_clone = app_handle.clone();
         let sid_clone = session_id.to_string();
+        let db_clone = Arc::clone(&self.db);
         tokio::spawn(async move {
+            let mut buffer = String::new();
             while let Some(event) = event_rx.recv().await {
+                match &event {
+                    crate::events::UiEvent::TextDelta { delta, .. } => {
+                        buffer.push_str(delta);
+                    }
+                    crate::events::UiEvent::TurnComplete { .. } => {
+                        // Save assistant message to database
+                        if !buffer.is_empty() {
+                            let db = db_clone.lock().await;
+                            let _ = crate::db::insert_message(
+                                &db,
+                                &sid_clone,
+                                "assistant",
+                                &buffer,
+                                None,
+                                None,
+                            );
+                            let _ = crate::db::touch_session(&db, &sid_clone);
+                            buffer.clear();
+                        }
+                    }
+                    _ => {}
+                }
                 let _ = app_handle_clone.emit("agent-event", &event);
             }
             tracing::info!("Event bridge ended for session {}", sid_clone);

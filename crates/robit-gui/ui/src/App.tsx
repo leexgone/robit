@@ -5,7 +5,7 @@ import { SessionSidebar } from "@/components/SessionSidebar";
 import { ChatPanel } from "@/components/ChatPanel";
 import { useStore } from "@/lib/store";
 import { listSessions, getConfig } from "@/lib/commands";
-import type { UiEvent } from "@/lib/types";
+import type { UiEvent, MessageData } from "@/lib/types";
 
 function App() {
   const setSessions = useStore((s) => s.setSessions);
@@ -15,6 +15,8 @@ function App() {
   const setAgentStatus = useStore((s) => s.setAgentStatus);
   const addToolCard = useStore((s) => s.addToolCard);
   const updateToolCard = useStore((s) => s.updateToolCard);
+  const messagesStore = useStore((s) => s.messages);
+  const setMessages = useStore((s) => s.setMessages);
 
   // Initialize app data
   useEffect(() => {
@@ -46,7 +48,8 @@ function App() {
           break;
 
         case "ToolCallRequested":
-          addToolCard(sid, {
+          // Create tool message and add to history
+          const toolInfoRequested = {
             tool_call_id: payload.tool_call_id,
             name: payload.name,
             arguments: payload.arguments,
@@ -54,7 +57,21 @@ function App() {
               ? "awaiting_confirmation"
               : "running",
             requires_confirm: payload.requires_confirm,
-          });
+          };
+          addToolCard(sid, toolInfoRequested);
+
+          // Also add as a tool message
+          const toolMsg: MessageData = {
+            id: Date.now(),
+            role: "tool",
+            content: "",
+            tool_call_id: payload.tool_call_id,
+            tool_name: payload.name,
+            tool_info: toolInfoRequested,
+            created_at: new Date().toISOString(),
+          };
+          const currentMsgs = messagesStore[sid] || [];
+          setMessages(sid, [...currentMsgs, toolMsg]);
           break;
 
         case "ToolCallResult":
@@ -62,6 +79,23 @@ function App() {
             status: payload.is_error ? "error" : "success",
             output: payload.content,
           });
+
+          // Also update the tool message in history
+          const msgsToUpdate = messagesStore[sid] || [];
+          const updatedMsgs = msgsToUpdate.map(msg => {
+            if (msg.tool_call_id === payload.tool_call_id && msg.tool_info) {
+              return {
+                ...msg,
+                tool_info: {
+                  ...msg.tool_info,
+                  status: payload.is_error ? "error" : "success",
+                  output: payload.content,
+                },
+              };
+            }
+            return msg;
+          });
+          setMessages(sid, updatedMsgs);
           break;
 
         case "TurnComplete":
@@ -83,7 +117,7 @@ function App() {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [appendStreaming, commitStreaming, setAgentStatus, addToolCard, updateToolCard]);
+  }, [appendStreaming, commitStreaming, setAgentStatus, addToolCard, updateToolCard, messagesStore, setMessages]);
 
   return (
     <div className="h-screen flex flex-col bg-background text-foreground">

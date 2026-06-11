@@ -20,6 +20,9 @@ interface AppStore {
   // Agent status per session
   agentStatus: Record<string, "idle" | "ready" | "running">;
 
+  // Tool calls grouped by session, in order
+  toolCalls: Record<string, string[]>;
+
   // Pending tool confirmations
   pendingConfirms: Record<string, ToolCallInfo>;
 
@@ -60,6 +63,7 @@ export const useStore = create<AppStore>((set, get) => ({
   messages: {},
   streamingBuffer: {},
   agentStatus: {},
+  toolCalls: {},
   pendingConfirms: {},
   config: null,
   sidebarWidth: Number(localStorage.getItem("sidebarWidth") || 220),
@@ -112,13 +116,22 @@ export const useStore = create<AppStore>((set, get) => ({
       ),
     })),
 
-  addToolCard: (_sessionId, info) => {
-    set((state) => ({
-      pendingConfirms: {
-        ...state.pendingConfirms,
-        [info.tool_call_id]: info,
-      },
-    }));
+  addToolCard: (sessionId, info) => {
+    set((state) => {
+      const currentToolCalls = state.toolCalls[sessionId] || [];
+      // Only add if not already in the list
+      const hasToolCall = currentToolCalls.includes(info.tool_call_id);
+      return {
+        pendingConfirms: {
+          ...state.pendingConfirms,
+          [info.tool_call_id]: info,
+        },
+        toolCalls: {
+          ...state.toolCalls,
+          [sessionId]: hasToolCall ? currentToolCalls : [...currentToolCalls, info.tool_call_id],
+        },
+      };
+    });
   },
 
   updateToolCard: (_sessionId, toolCallId, updates) => {

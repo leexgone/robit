@@ -13,6 +13,7 @@ export interface MessageData {
   content: string;
   tool_name?: string;
   tool_call_id?: string;
+  tool_info?: ToolCallInfo;
   created_at: string;
 }
 

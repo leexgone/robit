@@ -3,26 +3,39 @@ import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useStore } from "@/lib/store";
 import { sendMessage } from "@/lib/commands";
+import type { MessageData } from "@/lib/types";
 
 export function InputArea() {
   const activeSessionId = useStore((s) => s.activeSessionId);
-  const agentStatus = useStore((s) =>
-    activeSessionId ? s.agentStatus[activeSessionId] : "idle"
-  );
+  const agentStatusStore = useStore((s) => s.agentStatus);
   const setAgentStatus = useStore((s) => s.setAgentStatus);
+  const setMessages = useStore((s) => s.setMessages);
+  const messagesStore = useStore((s) => s.messages);
 
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const agentStatus = activeSessionId ? agentStatusStore[activeSessionId] || "idle" : "idle";
   const isBusy = agentStatus === "running";
 
   const handleSend = async () => {
     const trimmed = value.trim();
     if (!trimmed || !activeSessionId || isBusy) return;
 
+    // Immediately add user message to local state
+    const currentMessages = messagesStore[activeSessionId] || [];
+    const userMessage: MessageData = {
+      id: Date.now(),
+      role: "user",
+      content: trimmed,
+      created_at: new Date().toISOString(),
+    };
+    setMessages(activeSessionId, [...currentMessages, userMessage]);
+
     setValue("");
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
+      textareaRef.current.focus();
     }
 
     try {
