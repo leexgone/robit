@@ -197,10 +197,12 @@ impl AppState {
         let (message_tx, message_rx) = mpsc::channel::<FrontendMessage>(16);
 
         let confirmations = Arc::clone(&self.confirmations);
+        let auto_approve = self.auto_approve;
         let gui_frontend = Arc::new(GuiFrontend {
             event_tx,
             confirmations,
             session_id: session_id.to_string(),
+            auto_approve,
         });
 
         let working_dir = self.working_dir.clone();

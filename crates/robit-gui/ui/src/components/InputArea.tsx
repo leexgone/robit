@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useStore } from "@/lib/store";
@@ -18,6 +18,15 @@ export function InputArea() {
   const agentStatus = activeSessionId ? agentStatusStore[activeSessionId] || "idle" : "idle";
   const isBusy = agentStatus === "running";
 
+  // Auto-focus when value is cleared and not busy
+  useEffect(() => {
+    if (value === "" && textareaRef.current && !isBusy) {
+      setTimeout(() => {
+        textareaRef.current?.focus();
+      }, 0);
+    }
+  }, [value, isBusy]);
+
   const handleSend = async () => {
     const trimmed = value.trim();
     if (!trimmed || !activeSessionId || isBusy) return;
@@ -32,10 +41,10 @@ export function InputArea() {
     };
     setMessages(activeSessionId, [...currentMessages, userMessage]);
 
+    // Clear value, useEffect will handle focus
     setValue("");
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
-      textareaRef.current.focus();
     }
 
     try {

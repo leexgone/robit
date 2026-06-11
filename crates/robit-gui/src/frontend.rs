@@ -26,6 +26,9 @@ pub struct GuiFrontend {
 
     /// The session this frontend belongs to.
     pub session_id: String,
+
+    /// Auto-approve all tool calls.
+    pub auto_approve: bool,
 }
 
 #[async_trait]
@@ -81,6 +84,11 @@ impl Frontend for GuiFrontend {
     }
 
     async fn request_tool_confirmation(&self, info: &ToolCallInfo) -> Result<bool> {
+        // Auto-approve if configured
+        if self.auto_approve {
+            return Ok(true);
+        }
+
         let (tx, rx) = oneshot::channel();
         let key = format!("{}:{}", self.session_id, info.id);
 
