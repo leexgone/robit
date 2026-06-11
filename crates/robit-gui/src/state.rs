@@ -243,7 +243,7 @@ impl AppState {
                     crate::events::UiEvent::TextDelta { delta, .. } => {
                         buffer.push_str(delta);
                     }
-                    crate::events::UiEvent::ToolCallRequested { tool_call_id, name, arguments, requires_confirm } => {
+                    crate::events::UiEvent::ToolCallRequested { tool_call_id, name, arguments, requires_confirm, .. } => {
                         // Save tool call request to database
                         let tool_info = serde_json::json!({
                             "tool_call_id": tool_call_id,
@@ -265,7 +265,7 @@ impl AppState {
                         );
                         let _ = crate::db::touch_session(&db, &sid_clone);
                     }
-                    crate::events::UiEvent::ToolCallResult { tool_call_id, content, is_error } => {
+                    crate::events::UiEvent::ToolCallResult { tool_call_id, content, is_error, .. } => {
                         // Update tool message with result
                         // First, get the current tool_info if it exists
                         let db = db_clone.lock().await;
@@ -286,6 +286,7 @@ impl AppState {
                                 &sid_clone,
                                 "assistant",
                                 &buffer,
+                                None,
                                 None,
                                 None,
                             );

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 /// Events pushed from Rust backend to React frontend via Tauri events.
 #[derive(Debug, Clone, Serialize)]
