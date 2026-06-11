@@ -1,7 +1,7 @@
 # robit-gui 开发进度
 
 **日期**: 2026-06-11  
-**状态**: ✅ 基础框架完成，可进一步开发
+**状态**: ✅ 核心功能完成，工具调用持久化支持已实现
 
 ## 已完成 ✅
 
@@ -18,6 +18,9 @@
 - [x] Tauri commands (`commands.rs`)
 - [x] 配置模块 (`config.rs`)
 - [x] 主程序入口 (`main.rs`, `lib.rs`)
+- [x] 工具调用持久化支持 (保存 ToolCallRequested 和 ToolCallResult 到数据库)
+- [x] 修复 Windows 命令输出乱码问题 (添加 encoding_rs 依赖，支持 GBK 解码)
+- [x] 修复 auto_approve 配置支持 (工具调用自动批准)
 
 ### 3. 集成测试 (100%)
 - [x] `tests/integration.rs` - 7 个测试用例全部通过
@@ -38,13 +41,15 @@
   - SessionSidebar - 会话侧边栏
   - SessionItem - 会话列表项
   - ChatPanel - 聊天面板
-  - MessageList - 消息列表
+  - MessageList - 消息列表 (支持从数据库读取 tool 消息并渲染为 ToolCard)
   - UserMessage - 用户消息
   - AssistantMessage - AI 消息 (支持 Markdown)
-  - ToolCard - 工具调用卡片
-  - InputArea - 输入区域
-- [x] App.tsx 主应用
+  - ToolCard - 工具调用卡片 (支持状态显示，从 tool_info 字段读取)
+  - InputArea - 输入区域 (自动在发送后重新获取焦点)
+- [x] App.tsx 主应用 (支持事件监听)
 - [x] main.tsx 入口文件
+- [x] 自动滚动到底部 (会话切换和新消息时)
+- [x] 工具调用卡片与消息混合显示 (按时间顺序)
 
 ### 5. 验证与测试 (2026-06-11)
 - [x] 前端依赖安装完成 (`npm install`)
@@ -52,6 +57,9 @@
 - [x] 前端开发服务器可正常启动 (http://localhost:1420/)
 - [x] 创建示例配置文件 (`.robit/robit.toml`)
 - [x] 更新 CLAUDE.md 文档
+- [x] 工具调用持久化测试
+- [x] 历史会话重新打开时工具卡片完整显示
+- [x] 完整对话流程测试 (用户消息 → 工具调用 → 助手响应)
 
 ## 项目结构
 
@@ -121,8 +129,30 @@ npx tauri build
 ## 下一步建议
 
 - [ ] 配置 API Key 环境变量
-- [ ] 测试完整的 Agent 对话流程
-- [ ] 测试工具调用确认流程
-- [ ] 测试会话管理功能
-- [ ] 完善 UI 样式与交互体验
-- [ ] 添加更多 shadcn/ui 组件（如需要）
+- [ ] 添加更多工具调用的测试
+- [ ] 优化 UI 样式，深色模式适配
+- [ ] 添加错误提示
+- [ ] 添加会话导出功能
+- [ ] 添加 Markdown 代码高亮
+
+## 关键修改记录 (2026-06-11)
+
+### 1. 工具调用持久化
+- 在数据库 `messages` 表添加 `tool_info` 列，存储完整的工具调用信息
+- 修改 `state.rs` 中的事件桥接任务，在收到 `ToolCallRequested` 和 `ToolCallResult` 时保存/更新到数据库
+- 更新前端 `MessageList`，优先从 `pendingConfirms` 读取实时状态，历史会话从数据库读取
+
+### 2. Windows 编码问题修复
+- 在 `robit-agent` 的 `Cargo.toml` 添加 `encoding_rs` 依赖
+- 修改 `bash.rs`，在 Windows 上先用 GBK 解码，失败后再用 UTF-8 降级
+- 添加 `decode_output` 辅助函数处理编码
+
+### 3. auto_approve 支持
+- 在 `GuiFrontend` 中添加 `auto_approve` 字段
+- 在 `request_tool_confirmation` 中检查配置，自动批准时直接返回 true
+- 创建 `GuiFrontend` 时从 `AppState` 传递配置
+
+### 4. UI 体验优化
+- 发送消息后自动重新聚焦输入框
+- 切换会话和新消息时自动滚动到底部
+- 工具卡片与普通消息按顺序混合显示
