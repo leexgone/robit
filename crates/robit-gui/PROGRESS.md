@@ -1,7 +1,7 @@
 # robit-gui 开发进度
 
-**日期**: 2026-06-10  
-**状态**: 进行中 - Rust 后端完成，前端待完善
+**日期**: 2026-06-11  
+**状态**: ✅ 基础框架完成，可进一步开发
 
 ## 已完成 ✅
 
@@ -26,7 +26,7 @@
   - Message 操作测试
   - 事件序列化测试
 
-### 4. React 前端骨架 (~90%)
+### 4. React 前端骨架 (100%)
 - [x] 项目配置 (`package.json`, `tsconfig.json`, `vite.config.ts`)
 - [x] shadcn/ui 组件库 (Button, Input, DropdownMenu, AlertDialog, Tooltip, ScrollArea, Separator)
 - [x] Zustand 状态管理 (`store.ts`)
@@ -46,20 +46,12 @@
 - [x] App.tsx 主应用
 - [x] main.tsx 入口文件
 
-## 待完善 ⏳
-
-### 1. 前端依赖安装
-- [ ] 运行 `npm install` 安装依赖
-
-### 2. 前端构建测试
-- [ ] 运行 `npm run build` 确保可以正常构建
-- [ ] 运行 `cargo tauri dev` 测试完整应用
-
-### 3. 功能测试
-- [ ] 创建会话测试
-- [ ] 发送消息测试
-- [ ] 工具调用确认测试
-- [ ] 会话切换测试
+### 5. 验证与测试 (2026-06-11)
+- [x] 前端依赖安装完成 (`npm install`)
+- [x] 前端生产构建成功 (`npm run build`)
+- [x] 前端开发服务器可正常启动 (http://localhost:1420/)
+- [x] 创建示例配置文件 (`.robit/robit.toml`)
+- [x] 更新 CLAUDE.md 文档
 
 ## 项目结构
 
@@ -78,44 +70,59 @@ crates/robit-gui/
 │   ├── db.rs               # SQLite 数据库
 │   ├── state.rs            # AppState 管理
 │   ├── frontend.rs         # Frontend trait 实现
-│   ├── commands.rs         # Tauri commands
+│   ├── commands.rs         # Tauri 命令
 │   └── config.rs           # 配置模块
 ├── tests/
 │   └── integration.rs      # 集成测试 (7个测试通过)
-└── ui/
-    ├── package.json
-    ├── tsconfig.json
-    ├── vite.config.ts
-    ├── index.html
-    └── src/
-        ├── main.tsx
-        ├── App.tsx
-        ├── components/
-        ├── lib/
-        └── styles/
+├── ui/
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── vite.config.ts
+│   ├── index.html
+│   └── src/
+│       ├── main.tsx
+│       ├── App.tsx
+│       ├── components/
+│       ├── lib/
+│       └── styles/
+└── dist/                   # 前端构建输出 (生产构建已完成)
 ```
 
-## 下一步
+## 如何运行
 
-明天继续工作的步骤：
+### 开发模式
 
-1. 进入 `crates/robit-gui/ui` 目录
-2. 运行 `npm install` 安装依赖
-3. 运行 `npm run build` 测试前端构建
-4. 运行 `cargo tauri dev` 启动完整应用进行测试
-5. 如遇问题，根据错误信息修复
+1. 启动前端开发服务器:
+   ```bash
+   cd crates/robit-gui/ui
+   npm run dev
+   ```
 
-## 测试结果 (2026-06-10)
+2. 在另一个终端启动 Tauri 应用:
+   ```bash
+   cd crates/robit-gui
+   npx tauri dev
+   ```
 
+### 生产构建
+
+```bash
+cd crates/robit-gui/ui
+npm run build
+cd ..
+npx tauri build
 ```
-running 7 tests
-test test_event_serialization ... ok
-test test_message_data_serialization ... ok
-test test_session_info_serialization ... ok
-test test_empty_sessions ... ok
-test test_message_operations ... ok
-test test_session_crud ... ok
-test test_get_nonexistent_session ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured
-```
+## 配置
+
+确保在 `~/.robit/robit.toml` 或项目目录的 `config/robit.toml` 中有配置文件。
+示例配置见 `.robit/robit.toml`。
+
+## 下一步建议
+
+- [ ] 配置 API Key 环境变量
+- [ ] 测试完整的 Agent 对话流程
+- [ ] 测试工具调用确认流程
+- [ ] 测试会话管理功能
+- [ ] 完善 UI 样式与交互体验
+- [ ] 添加更多 shadcn/ui 组件（如需要）

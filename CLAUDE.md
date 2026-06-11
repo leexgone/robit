@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**robit** 是一个基于 Rust 的单体仓库，构建 AI 编程代理框架。它提供可扩展的编程代理，包含终端 UI、统一多提供商 LLM API 和代理运行时，支持 Windows、Linux 和 macOS 系统，兼容常用终端。
+**robit** 是一个基于 Rust 的单体仓库，构建 AI 编程代理框架。它提供可扩展的编程代理，包含终端 UI (TUI)、桌面 GUI (React + Tauri)、统一多提供商 LLM API 和代理运行时，支持 Windows、Linux 和 macOS 系统，兼容常用终端。
 
 ## 仓库结构
 
@@ -15,6 +15,7 @@
 | `crates/robit-ai` | 多提供商 LLM API，支持 OpenAI 协议，适配 DeepSeek、QWen 等模型 |
 | `crates/robit-agent` | 代理运行时（Agent 循环、工具执行、会话管理）。定义 `Frontend` trait 供前端实现。依赖 `robit-ai` |
 | `crates/robit-tui` | 终端前端（`ratatui` + `crossterm`），实现 `Frontend` trait。二进制名 `robit`。依赖 `robit-agent` |
+| `crates/robit-gui` | 桌面 GUI 前端（React + Tauri v2），实现 `Frontend` trait。SQLite 持久化会话。依赖 `robit-agent` |
 | `crates/robit-feishu` | _（计划）_ 飞书前端，实现 `Frontend` trait |
 | `crates/robit-qq` | _（计划）_ QQ 前端，实现 `Frontend` trait |
 
@@ -36,6 +37,12 @@
 | YAML 解析 | `serde_yaml` | 技能文件 frontmatter 解析 |
 | Markdown 解析 | `pulldown-cmark` | TUI Markdown 渲染（MVP 极简版） |
 | TUI 框架 | `ratatui` + `crossterm` | 跨平台，社区活跃 |
+| GUI 框架 | Tauri v2 + React | 跨平台桌面应用，轻量级 |
+| GUI UI 组件 | shadcn/ui + Tailwind CSS | 现代化、可定制 |
+| GUI 状态管理 | Zustand | React 状态管理 |
+| GUI Markdown | react-markdown | 前端 Markdown 渲染 |
+| GUI 代码高亮 | react-syntax-highlighter | 代码块高亮 |
+| 数据库 | SQLite + rusqlite | robit-gui 会话持久化 |
 | 错误处理 | `thiserror`（库）+ `anyhow`（应用） | — |
 | 日志 | `tracing` + `tracing-subscriber` | 结构化日志，异步友好 |
 | CLI 参数 | `clap` (derive) | — |
@@ -165,3 +172,5 @@ max_backoff_ms = 30000
 | [`docs/specs/2026-05-28-robit-ai-design.md`](docs/specs/2026-05-28-robit-ai-design.md) | 阶段 1 设计规格（`robit-ai` LLM API 层） |
 | [`docs/plans/phase2-implementation.md`](docs/plans/phase2-implementation.md) | 阶段 2 实现计划（`robit-agent` Agent 运行时） |
 | [`docs/plans/config-unification.md`](docs/plans/config-unification.md) | 配置统一计划（`robit.toml` 取代 `llms.toml` + `settings.toml`） |
+| [`docs/superpowers/specs/2026-06-10-robit-gui-design.md`](docs/superpowers/specs/2026-06-10-robit-gui-design.md) | robit-gui 设计规格（桌面 GUI 前端） |
+| [`docs/superpowers/plans/2026-06-10-robit-gui-implementation.md`](docs/superpowers/plans/2026-06-10-robit-gui-implementation.md) | robit-gui 实现计划 |
