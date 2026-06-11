@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
+use encoding_rs::GBK;
 
 use super::{Tool, ToolContext, ToolResult};
 use crate::error::Result;
@@ -90,8 +91,9 @@ impl Tool for BashTool {
 
         match result {
             Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
+                // Decode output, using GBK on Windows
+                let stdout = decode_output(&output.stdout);
+                let stderr = decode_output(&output.stderr);
                 let exit_code = output.status.code().unwrap_or(-1);
 
                 let mut content = String::new();
@@ -147,6 +149,20 @@ fn build_shell_command(command: &str) -> Command {
         cmd.args(["-c", command]);
         cmd
     }
+}
+
+/// Decode command output, using GBK on Windows for compatibility.
+fn decode_output(bytes: &[u8]) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, try GBK first, fall back to UTF-8
+        let (cow, _, has_error) = GBK.decode(bytes);
+        if !has_error {
+            return cow.to_string();
+        }
+    }
+    // Default to UTF-8 lossy decode on non-Windows or if GBK fails
+    String::from_utf8_lossy(bytes).to_string()
 }
 
 /// Truncate output to max_bytes, appending a notice if truncated.
