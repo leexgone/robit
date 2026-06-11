@@ -45,8 +45,8 @@ fn test_message_operations() {
     insert_session(&conn, "session-msg", "Chat Session", "model").unwrap();
 
     // Insert messages
-    insert_message(&conn, "session-msg", "user", "Hello Robit", None, None).unwrap();
-    insert_message(&conn, "session-msg", "assistant", "Hello! How can I help?", None, None).unwrap();
+    insert_message(&conn, "session-msg", "user", "Hello Robit", None, None, None).unwrap();
+    insert_message(&conn, "session-msg", "assistant", "Hello! How can I help?", None, None, None).unwrap();
 
     // Get messages
     let messages = get_messages(&conn, "session-msg").unwrap();
@@ -136,6 +136,7 @@ fn test_message_data_serialization() {
         content: "test message".to_string(),
         tool_name: None,
         tool_call_id: None,
+        tool_info: None,
         created_at: "2024-01-01".to_string(),
     };
 
