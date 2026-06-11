@@ -3,8 +3,6 @@
 
 use rusqlite::Connection;
 use robit_gui::db::{init_db, insert_session, list_sessions, get_session, update_session_title, delete_session, insert_message, get_messages};
-use robit_gui::events::{SessionInfo, MessageData};
-use std::collections::HashMap;
 
 /// Test DB initialization and session CRUD operations.
 #[test]
