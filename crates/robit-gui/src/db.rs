@@ -22,13 +22,9 @@ pub fn init_db(conn: &Connection) -> SqliteResult<()> {
             content      TEXT NOT NULL,
             tool_name    TEXT,
             tool_call_id TEXT,
-            tool_info    TEXT,
             tokens       INTEGER,
             created_at   TEXT NOT NULL
         );
-
-        -- Add tool_info column if it doesn't exist
-        ALTER TABLE messages ADD COLUMN IF NOT EXISTS tool_info TEXT;
 
         CREATE INDEX IF NOT EXISTS idx_messages_session
             ON messages(session_id);
@@ -36,6 +32,10 @@ pub fn init_db(conn: &Connection) -> SqliteResult<()> {
             ON messages(session_id, created_at);
         "
     )?;
+
+    // Try to add tool_info column, ignore error if already exists
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN tool_info TEXT", ());
+
     Ok(())
 }
 
