@@ -18,7 +18,7 @@ Cargo.lock
 #.idea/
 
 # ignore config
-robit.toml
+config.toml
 
 # robit runtime directories
 .robit/

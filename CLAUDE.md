@@ -86,22 +86,22 @@
 
 ### 配置文件
 
-统一配置文件 `robit.toml`，加载顺序：`cwd/config/robit.toml`（项目本地） → `~/.robit/robit.toml`（全局）。
+统一配置文件 `config.toml`，加载顺序：`cwd/.robit/config.toml`（项目本地） → `~/.robit/config.toml`（全局）。
 
 `api_key` 支持 `${ENV_VAR}` 环境变量替换，需配合 `.env` 文件或系统环境变量使用。
 
 ```txt
 配置目录结构
-    |--项目本地：config/robit.toml    # 项目配置（最高优先级）
+    |--项目本地：.robit/config.toml   # 项目配置（最高优先级）
     |--全局：~/.robit/
     |   |-- .env                      # 环境变量（API keys 等）
-    |   |-- robit.toml                # 全局配置（fallback）
+    |   |-- config.toml               # 全局配置（fallback）
     |   |-- skills/                   # 全局技能目录
     |   |-- prompts/                  # 自定义提示词目录
     |       |-- system.txt            # 自定义系统提示词（可选）
 ```
 
-### robit.toml 结构
+### config.toml 结构
 
 ```toml
 # 默认模型（provider/model 格式）

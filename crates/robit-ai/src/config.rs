@@ -1,8 +1,8 @@
-//! Configuration loading for robit.toml.
+//! Configuration loading for config.toml.
 //!
 //! Loads a single unified config file from:
-//!   1. `cwd/config/robit.toml` (project-local, highest priority)
-//!   2. `~/.robit/robit.toml`   (global fallback)
+//!   1. `cwd/.robit/config.toml` (project-local, highest priority)
+//!   2. `~/.robit/config.toml`   (global fallback)
 //!
 //! Configuration format uses a providers + models structure:
 //! ```toml
@@ -27,10 +27,10 @@ use std::path::PathBuf;
 use crate::error::LlmError;
 
 // ============================================================================
-// robit.toml structures
+// config.toml structures
 // ============================================================================
 
-/// Top-level robit.toml configuration.
+/// Top-level config.toml configuration.
 #[derive(Debug, Deserialize)]
 pub struct RobitConfig {
     /// Default model in "provider/model" format (e.g. "deepseek/deepseek-chat").
@@ -149,14 +149,14 @@ fn resolve_env_var(value: &str) -> String {
     }
 }
 
-/// Load and parse the robit.toml config file.
+/// Load and parse the config.toml config file.
 ///
 /// Automatically loads `~/.robit/.env` before resolving `${ENV_VAR}` patterns.
 ///
 /// Search order:
-///   1. `workdir/config/robit.toml` (project-local, if workdir provided)
-///   2. `cwd/config/robit.toml` (project-local, if workdir not provided)
-///   3. `~/.robit/robit.toml`   (global fallback)
+///   1. `workdir/.robit/config.toml` (project-local, if workdir provided)
+///   2. `cwd/.robit/config.toml` (project-local, if workdir not provided)
+///   3. `~/.robit/config.toml`   (global fallback)
 pub fn load_config(workdir: Option<&std::path::Path>) -> Result<RobitConfig, LlmError> {
     // Load .env first so ${ENV_VAR} substitutions work
     load_env();
@@ -168,7 +168,7 @@ pub fn load_config(workdir: Option<&std::path::Path>) -> Result<RobitConfig, Llm
     })?;
 
     let mut config: RobitConfig = toml::from_str(&content).map_err(|e| {
-        LlmError::ConfigError(format!("解析 robit.toml 失败: {}", e))
+        LlmError::ConfigError(format!("解析 config.toml 失败: {}", e))
     })?;
 
     // Resolve environment variables in api_key fields
@@ -191,32 +191,32 @@ pub fn load_env() {
 
 /// Find the config file path following the search order.
 fn find_config_path(workdir: Option<&std::path::Path>) -> Result<PathBuf, LlmError> {
-    // 1. Project-local: workdir/config/robit.toml (if workdir provided)
+    // 1. Project-local: workdir/.robit/config.toml (if workdir provided)
     if let Some(workdir) = workdir {
-        let local_path = workdir.join("config").join("robit.toml");
+        let local_path = workdir.join(".robit").join("config.toml");
         if local_path.exists() {
             return Ok(local_path);
         }
     }
 
-    // 2. Project-local: cwd/config/robit.toml (if workdir not provided or no config there)
+    // 2. Project-local: cwd/.robit/config.toml (if workdir not provided or no config there)
     if let Ok(cwd) = std::env::current_dir() {
-        let local_path = cwd.join("config").join("robit.toml");
+        let local_path = cwd.join(".robit").join("config.toml");
         if local_path.exists() {
             return Ok(local_path);
         }
     }
 
-    // 3. Global: ~/.robit/robit.toml
-    let global_path = robit_home()?.join("robit.toml");
+    // 3. Global: ~/.robit/config.toml
+    let global_path = robit_home()?.join("config.toml");
     if global_path.exists() {
         return Ok(global_path);
     }
 
     Err(LlmError::ConfigError(format!(
-        "未找到配置文件 robit.toml。\n\
+        "未找到配置文件 config.toml。\n\
          请创建以下任一文件:\n\
-         - 项目本地: config/robit.toml\n\
+         - 项目本地: .robit/config.toml\n\
          - 全局: {}",
         global_path.display()
     )))
@@ -237,7 +237,7 @@ pub fn resolve_profile(
         // Explicit provider override — use its first model
         let provider = config.providers.get(name).ok_or_else(|| {
             LlmError::ConfigError(format!(
-                "Provider '{}' 未在 robit.toml 中定义。可用 providers: {:?}",
+                "Provider '{}' 未在 config.toml 中定义。可用 providers: {:?}",
                 name,
                 config.providers.keys().collect::<Vec<_>>()
             ))
@@ -254,7 +254,7 @@ pub fn resolve_profile(
     } else {
         // Fall back to first available provider + first model
         let (key, provider) = config.providers.iter().next().ok_or_else(|| {
-            LlmError::ConfigError("robit.toml 中没有定义任何 provider".to_string())
+            LlmError::ConfigError("config.toml 中没有定义任何 provider".to_string())
         })?;
         let first_model = provider.models.first().ok_or_else(|| {
             LlmError::ConfigError(format!(
@@ -267,7 +267,7 @@ pub fn resolve_profile(
 
     let provider = config.providers.get(&provider_key).ok_or_else(|| {
         LlmError::ConfigError(format!(
-            "Provider '{}' 未在 robit.toml 中定义。可用 providers: {:?}",
+            "Provider '{}' 未在 config.toml 中定义。可用 providers: {:?}",
             provider_key,
             config.providers.keys().collect::<Vec<_>>()
         ))

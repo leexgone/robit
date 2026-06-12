@@ -248,7 +248,7 @@ Agent 收到 LLM 的 tool_call
 
 **auto_approve 配置优先级**：
 1. 命令行参数 `--auto-approve`（最高优先级）
-2. `robit.toml` 中的 `[app] auto_approve` 配置
+2. `config.toml` 中的 `[app] auto_approve` 配置
 3. 默认 `false`（需要确认）
 
 ### 工具启用策略

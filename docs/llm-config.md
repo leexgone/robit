@@ -1,6 +1,6 @@
 # LLM 提供商配置
 
-robit 采用统一的提供商配置结构，兼容 OpenAI 协议，支持适配 DeepSeek、QWen 等多种模型提供商。配置文件位于 `robit.toml`（项目本地 `config/robit.toml` 或全局 `~/.robit/robit.toml`）。
+robit 采用统一的提供商配置结构，兼容 OpenAI 协议，支持适配 DeepSeek、QWen 等多种模型提供商。配置文件位于 `config.toml`（项目本地 `.robit/config.toml` 或全局 `~/.robit/config.toml`）。
 
 ## 配置结构
 
@@ -127,7 +127,7 @@ api_key = "sk-xxxxxxxxxxxxxxxx"
 ## 配置加载顺序
 
 1. 加载 `~/.robit/.env`（环境变量）
-2. 读取 `cwd/config/robit.toml`（项目本地，最高优先级）→ `~/.robit/robit.toml`（全局 fallback）
+2. 读取 `cwd/.robit/config.toml`（项目本地，最高优先级）→ `~/.robit/config.toml`（全局 fallback）
 3. 解析 `api_key` 中的 `${ENV_VAR}` 引用，从 `.env` 或系统环境变量中取值
 4. 解析 `default_model` 为 `provider/model` 格式
 5. 查找对应 provider，获取 `base_url` 和 `api_key`

@@ -2,7 +2,7 @@
 //!
 //! Provides a unified `LlmClient` for interacting with multiple LLM providers
 //! through the OpenAI-compatible protocol. Configuration is loaded from
-//! `config/robit.toml` (project-local) or `~/.robit/robit.toml` (global).
+//! `.robit/config.toml` (project-local) or `~/.robit/config.toml` (global).
 
 pub mod client;
 pub mod config;
