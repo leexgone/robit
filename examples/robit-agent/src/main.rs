@@ -10,7 +10,10 @@ use async_trait::async_trait;
 use clap::Parser;
 use robit_agent::skill::SkillRegistry;
 use robit_agent::tool::bash::BashTool;
+use robit_agent::tool::find::FindTool;
+use robit_agent::tool::grep::GrepTool;
 use robit_agent::tool::load_skill::LoadSkillTool;
+use robit_agent::tool::ls::LsTool;
 use robit_agent::tool::read::ReadTool;
 use robit_agent::{Agent, AgentEvent, Frontend, FrontendMessage, ToolCallInfo, ToolRegistry};
 use robit_ai::config::load_config;
@@ -110,6 +113,9 @@ fn main() -> anyhow::Result<()> {
     tools.register(ReadTool::new(max_lines, max_bytes));
     tools.register(BashTool::new(max_bytes));
     tools.register(LoadSkillTool::new(Arc::clone(&skill_registry)));
+    tools.register(LsTool::new());
+    tools.register(FindTool::new(max_bytes));
+    tools.register(GrepTool::new(max_lines, max_bytes));
     let tools = Arc::new(tools);
 
     // Channels:

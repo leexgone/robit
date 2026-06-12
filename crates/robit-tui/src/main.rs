@@ -25,7 +25,10 @@ use ratatui::Terminal;
 use robit_agent::skill::SkillRegistry;
 use robit_agent::tool::bash::BashTool;
 use robit_agent::tool::edit::EditTool;
+use robit_agent::tool::find::FindTool;
+use robit_agent::tool::grep::GrepTool;
 use robit_agent::tool::load_skill::LoadSkillTool;
+use robit_agent::tool::ls::LsTool;
 use robit_agent::tool::read::ReadTool;
 use robit_agent::tool::write::WriteTool;
 use robit_agent::{Agent, AgentEvent, FrontendMessage, ToolRegistry};
@@ -202,6 +205,9 @@ fn create_tools(config: &robit_ai::config::RobitConfig, skills: Arc<SkillRegistr
     tools.register(WriteTool::new());
     tools.register(EditTool::new());
     tools.register(LoadSkillTool::new(skills));
+    tools.register(LsTool::new());
+    tools.register(FindTool::new(max_bytes));
+    tools.register(GrepTool::new(max_lines, max_bytes));
     tools
 }
 
