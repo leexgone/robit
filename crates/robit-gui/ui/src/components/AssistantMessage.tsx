@@ -37,6 +37,28 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
                       </code>
                     );
                   },
+                  table({ children }) {
+                    return (
+                      <div className="overflow-x-auto my-4">
+                        <table className="border-collapse border border-border w-full text-sm">{children}</table>
+                      </div>
+                    );
+                  },
+                  thead({ children }) {
+                    return <thead className="bg-muted">{children}</thead>;
+                  },
+                  tbody({ children }) {
+                    return <tbody className="divide-y divide-border">{children}</tbody>;
+                  },
+                  tr({ children }) {
+                    return <tr>{children}</tr>;
+                  },
+                  th({ children }) {
+                    return <th className="border border-border px-4 py-2 text-left font-semibold">{children}</th>;
+                  },
+                  td({ children }) {
+                    return <td className="border border-border px-4 py-2">{children}</td>;
+                  },
                 }}
               >
                 {content || (isStreaming ? "▊" : "")}
