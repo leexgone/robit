@@ -22,6 +22,8 @@ export interface ConfigInfo {
   version: string;
   tools_enabled: number;
   tools_total: number;
+  skills_enabled: number;
+  skills_total: number;
   auto_approve: boolean;
 }
 

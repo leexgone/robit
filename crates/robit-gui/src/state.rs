@@ -55,6 +55,9 @@ pub struct AppState {
     /// Shared skill registry.
     pub skill_registry: Arc<SkillRegistry>,
 
+    /// Total skills loaded (including disabled ones).
+    pub total_skills: usize,
+
     /// Active Agent handles, keyed by session ID.
     pub agents: Mutex<HashMap<SessionId, AgentHandle>>,
 
@@ -137,6 +140,7 @@ impl AppState {
             global_skills_dir,
             project_skills_dir,
         );
+        let total_skills = skills.len();
 
         for err in &skill_errors {
             tracing::warn!("Skill load error: {:?}", err);
@@ -165,6 +169,7 @@ impl AppState {
             llm_client,
             tool_registry,
             skill_registry,
+            total_skills,
             agents: Mutex::new(HashMap::new()),
             active_session: Mutex::new(None),
             config,
@@ -201,6 +206,8 @@ impl AppState {
         let mut info = crate::config::build_config_info(&self.config);
         info.tools_enabled = tools.len();
         info.tools_total = tools.len();
+        info.skills_enabled = self.skill_registry.count();
+        info.skills_total = self.total_skills;
         info
     }
 

@@ -18,6 +18,8 @@ pub fn build_config_info(config: &robit_ai::config::RobitConfig) -> ConfigInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         tools_enabled: 0,
         tools_total: 0,
+        skills_enabled: 0,
+        skills_total: 0,
         auto_approve,
     }
 }

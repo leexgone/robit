@@ -82,5 +82,7 @@ pub struct ConfigInfo {
     pub version: String,
     pub tools_enabled: usize,
     pub tools_total: usize,
+    pub skills_enabled: usize,
+    pub skills_total: usize,
     pub auto_approve: bool,
 }
