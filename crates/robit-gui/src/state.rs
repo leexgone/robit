@@ -6,16 +6,9 @@ use tokio::sync::Mutex;
 use robit_agent::agent::Agent;
 use robit_agent::event::{FrontendMessage, SessionId};
 use robit_agent::skill::SkillRegistry;
+use robit_agent::tool::ToolRegistry;
+use robit_agent::{bootstrap, log_skill_errors};
 use tauri::Emitter;
-use robit_agent::tool::bash::BashTool;
-use robit_agent::tool::edit::EditTool;
-use robit_agent::tool::find::FindTool;
-use robit_agent::tool::grep::GrepTool;
-use robit_agent::tool::load_skill::LoadSkillTool;
-use robit_agent::tool::ls::LsTool;
-use robit_agent::tool::read::ReadTool;
-use robit_agent::tool::write::WriteTool;
-use robit_agent::ToolRegistry;
 use robit_ai::config::RobitConfig;
 use robit_ai::LlmClient;
 use rusqlite::Connection;
@@ -135,37 +128,14 @@ impl AppState {
 
         let context_window = llm_client.resolved().context_window;
 
-        // Load skills
-        let global_skills_dir = dirs::home_dir().map(|h| h.join(".robit/skills"));
-        let project_skills_dir = Some(working_dir.join(".robit/skills"));
-
-        let (skills, skill_errors) = robit_agent::skill::loader::load_skills(
-            global_skills_dir,
-            project_skills_dir,
-        );
-        let total_skills = skills.len();
-
-        for err in &skill_errors {
-            tracing::warn!("Skill load error: {:?}", err);
-        }
-
-        let enabled_skills = config
-            .app
-            .as_ref()
-            .and_then(|a| a.enabled_skills.as_ref());
-
-        let filtered_skills: Vec<_> = match enabled_skills {
-            Some(list) => skills
-                .into_iter()
-                .filter(|s| list.contains(&s.frontmatter.name))
-                .collect(),
-            None => skills,
-        };
-
+        // Bootstrap skills and tools
         let base_tool_names = ["read", "bash", "write", "edit"];
-        let skill_registry = Arc::new(SkillRegistry::new(filtered_skills, &base_tool_names));
+        let bootstrap_result = bootstrap(&config, &working_dir, &base_tool_names);
+        log_skill_errors(&bootstrap_result.skill_load_errors);
 
-        let tool_registry = Arc::new(create_tools(&config, Arc::clone(&skill_registry)));
+        let skill_registry = bootstrap_result.skill_registry;
+        let tool_registry = bootstrap_result.tool_registry;
+        let total_skills = bootstrap_result.total_skills_loaded;
 
         Ok(Self {
             db,
@@ -342,26 +312,4 @@ impl AppState {
             cancel_token,
         })
     }
-}
-
-/// Build the tool registry (same as robit-tui).
-fn create_tools(
-    config: &RobitConfig,
-    skills: Arc<SkillRegistry>,
-) -> ToolRegistry {
-    let mut tools = ToolRegistry::new();
-    let context_config = config.app.as_ref().and_then(|a| a.context.as_ref());
-    let max_lines = context_config.and_then(|c| c.max_output_lines).unwrap_or(500);
-    let max_bytes = context_config
-        .and_then(|c| c.max_output_bytes)
-        .unwrap_or(51200);
-    tools.register(ReadTool::new(max_lines, max_bytes));
-    tools.register(BashTool::new(max_bytes));
-    tools.register(WriteTool::new());
-    tools.register(EditTool::new());
-    tools.register(LoadSkillTool::new(skills));
-    tools.register(LsTool::new());
-    tools.register(FindTool::new(max_bytes));
-    tools.register(GrepTool::new(max_lines, max_bytes));
-    tools
 }

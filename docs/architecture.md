@@ -262,6 +262,77 @@ enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 
 未指定的工具使用默认值（`read`、`bash`、`edit`、`write` 默认启用）。
 
+## Bootstrap 模块
+
+为避免各前端（`robit-tui`、`robit-gui`、`examples/robit-agent`）重复实现技能和工具加载逻辑，`robit-agent` 提供 `bootstrap` 模块统一处理启动流程。
+
+### 核心功能
+
+`bootstrap` 模块提供以下功能：
+
+| 函数 | 说明 |
+| ---- | ---- |
+| `bootstrap(config, working_dir, base_tool_names)` | 一站式启动：加载技能 → 过滤启用技能 → 创建 `SkillRegistry` → 创建 `ToolRegistry` → 返回 `BootstrapResult` |
+| `load_all_skills(working_dir)` | 从全局 `~/.robit/skills/` 和项目 `{working_dir}/.robit/skills/` 加载技能 |
+| `filter_skills_by_config(skills, config)` | 根据 `config.app.enabled_skills` 过滤技能列表 |
+| `create_tools_from_config(config, skill_registry)` | 从配置创建完整 `ToolRegistry`，包含所有标准工具 |
+| `log_skill_errors(errors)` | 记录技能加载警告（非致命错误） |
+
+### BootstrapResult
+
+`bootstrap()` 返回包含所有必要组件的结构：
+
+```rust
+pub struct BootstrapResult {
+    pub skill_registry: Arc<SkillRegistry>,
+    pub tool_registry: Arc<ToolRegistry>,
+    pub total_skills_loaded: usize,
+    pub skill_load_errors: Vec<SkillLoadError>,
+}
+```
+
+### 前端使用示例
+
+各前端不再需要手动加载技能和创建工具：
+
+```rust
+// 旧方式（约 40 行重复代码）
+let global_skills_dir = dirs::home_dir().map(|h| h.join(".robit/skills"));
+let project_skills_dir = Some(working_dir.join(".robit/skills"));
+let (skills, errors) = load_skills(global_skills_dir, project_skills_dir);
+log_skill_errors(&errors);
+let enabled_skills = config.app.as_ref().and_then(|a| a.enabled_skills.as_ref());
+let filtered_skills = filter_skills_by_config(skills, config);
+let skill_registry = Arc::new(SkillRegistry::new(filtered_skills, &base_tools));
+let mut tools = ToolRegistry::new();
+tools.register(ReadTool::new(max_lines, max_bytes));
+tools.register(BashTool::new(max_bytes));
+// ... 更多工具注册
+
+// 新方式（约 5 行）
+use robit_agent::{bootstrap, log_skill_errors};
+let base_tool_names = ["read", "bash", "write", "edit"];
+let bootstrap_result = bootstrap(&config, &working_dir, &base_tool_names);
+log_skill_errors(&bootstrap_result.skill_load_errors);
+let skill_registry = bootstrap_result.skill_registry;
+let tool_registry = bootstrap_result.tool_registry;
+```
+
+### 包含的标准工具
+
+`create_tools_from_config()` 自动注册以下工具：
+
+- `read` - 读取文件（带输出截断）
+- `bash` - 执行 Shell 命令
+- `write` - 创建/覆盖文件
+- `edit` - 精确编辑
+- `load_skill` - 动态加载技能
+- `ls` - 列出目录
+- `find` - 查找文件
+- `grep` - 搜索内容
+
+所有工具参数从 `config.app.context` 配置读取。
+
 ## 技能系统
 
 技能是**预定义的提示词模板**，以目录为单位组织，每个技能目录下包含一个 `SKILL.md` 文件（YAML frontmatter + Markdown body）。系统在启动时加载技能，按需注入到 Agent 的系统提示词中。

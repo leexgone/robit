@@ -4,6 +4,7 @@
 //! and the Frontend trait for pluggable UI frontends.
 
 pub mod agent;
+pub mod bootstrap;
 pub mod context;
 pub mod error;
 pub mod event;
@@ -13,6 +14,7 @@ pub mod skill;
 pub mod tool;
 
 pub use agent::Agent;
+pub use bootstrap::{bootstrap, create_tools_from_config, filter_skills_by_config, load_all_skills, log_skill_errors, BootstrapResult};
 pub use error::AgentError;
 pub use event::{AgentEvent, FrontendMessage, SessionId};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};

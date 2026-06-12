@@ -8,14 +8,7 @@
 
 use async_trait::async_trait;
 use clap::Parser;
-use robit_agent::skill::SkillRegistry;
-use robit_agent::tool::bash::BashTool;
-use robit_agent::tool::find::FindTool;
-use robit_agent::tool::grep::GrepTool;
-use robit_agent::tool::load_skill::LoadSkillTool;
-use robit_agent::tool::ls::LsTool;
-use robit_agent::tool::read::ReadTool;
-use robit_agent::{Agent, AgentEvent, Frontend, FrontendMessage, ToolCallInfo, ToolRegistry};
+use robit_agent::{Agent, AgentEvent, Frontend, FrontendMessage, ToolCallInfo, bootstrap, log_skill_errors};
 use robit_ai::config::load_config;
 use robit_ai::LlmClient;
 use std::io::Write;
@@ -76,47 +69,13 @@ fn main() -> anyhow::Result<()> {
     let context_config = config.app.as_ref().and_then(|a| a.context.as_ref());
     let context_window = client.resolved().context_window;
 
-    // Load skills first (needed for LoadSkillTool)
-    let global_skills_dir = dirs::home_dir().map(|h| h.join(".robit/skills"));
-    let project_skills_dir = Some(working_dir.join(".robit/skills"));
-
-    let (skills, skill_errors) = robit_agent::skill::loader::load_skills(
-        global_skills_dir,
-        project_skills_dir,
-    );
-    for err in &skill_errors {
-        tracing::warn!("技能加载错误: {:?}", err);
-    }
-
-    let enabled_skills = config
-        .app
-        .as_ref()
-        .and_then(|a| a.enabled_skills.as_ref());
-    let filtered_skills: Vec<_> = match enabled_skills {
-        Some(list) => skills
-            .into_iter()
-            .filter(|s| list.contains(&s.frontmatter.name))
-            .collect(),
-        None => skills,
-    };
-
-    // Create skill registry first (LoadSkillTool needs it)
+    // Bootstrap skills and tools
     let base_tool_names = ["read", "bash"];
-    let skill_registry = Arc::new(SkillRegistry::new(filtered_skills, &base_tool_names));
+    let bootstrap_result = bootstrap(&config, &working_dir, &base_tool_names);
+    log_skill_errors(&bootstrap_result.skill_load_errors);
 
-    // Create tools
-    let mut tools = ToolRegistry::new();
-    let max_lines = context_config.and_then(|c| c.max_output_lines).unwrap_or(500);
-    let max_bytes = context_config
-        .and_then(|c| c.max_output_bytes)
-        .unwrap_or(51200);
-    tools.register(ReadTool::new(max_lines, max_bytes));
-    tools.register(BashTool::new(max_bytes));
-    tools.register(LoadSkillTool::new(Arc::clone(&skill_registry)));
-    tools.register(LsTool::new());
-    tools.register(FindTool::new(max_bytes));
-    tools.register(GrepTool::new(max_lines, max_bytes));
-    let tools = Arc::new(tools);
+    let skill_registry = bootstrap_result.skill_registry;
+    let tools = bootstrap_result.tool_registry;
 
     // Channels:
     //   event channel:   Agent → main task (render events to stdout)
