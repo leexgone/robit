@@ -38,7 +38,7 @@ impl Tool for FindTool {
     }
 
     fn description(&self) -> &str {
-        "搜索匹配模式的文件/目录。支持 glob 模式：* 匹配任意字符，? 匹配单个字符，** 匹配递归目录。"
+        "Search for files/directories matching a pattern. Supports glob patterns: * matches any characters, ? matches single character, ** matches recursive directories."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -47,23 +47,23 @@ impl Tool for FindTool {
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "搜索模式（glob 格式），例如 *.rs、src/**/*.ts、test?.*"
+                    "description": "Search pattern (glob format), e.g. *.rs, src/**/*.ts, test?.*"
                 },
                 "dir_path": {
                     "type": "string",
-                    "description": "搜索目录（可选，默认为当前目录）"
+                    "description": "Directory to search (optional, defaults to current directory)"
                 },
                 "file_only": {
                     "type": "boolean",
-                    "description": "仅查找文件，默认 false"
+                    "description": "Only search for files, default false"
                 },
                 "dir_only": {
                     "type": "boolean",
-                    "description": "仅查找目录，默认 false"
+                    "description": "Only search for directories, default false"
                 },
                 "ignore_case": {
                     "type": "boolean",
-                    "description": "忽略大小写，默认 false"
+                    "description": "Case-insensitive search, default false"
                 }
             },
             "required": ["pattern"]
@@ -77,7 +77,7 @@ impl Tool for FindTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let parsed: FindArgs = match serde_json::from_value(args) {
             Ok(a) => a,
-            Err(e) => return Ok(ToolResult::error(format!("参数解析失败: {}", e))),
+            Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
         // Resolve directory path
@@ -88,10 +88,10 @@ impl Tool for FindTool {
 
         // Check if search directory exists
         if !search_dir.exists() {
-            return Ok(ToolResult::error(format!("搜索目录不存在: {}", search_dir.display())));
+            return Ok(ToolResult::error(format!("Search directory not found: {}", search_dir.display())));
         }
         if !search_dir.is_dir() {
-            return Ok(ToolResult::error(format!("'{}' 不是一个目录", search_dir.display())));
+            return Ok(ToolResult::error(format!("'{}' is not a directory", search_dir.display())));
         }
 
         // Build glob pattern
@@ -100,7 +100,7 @@ impl Tool for FindTool {
             .build() {
             Ok(g) => g,
             Err(e) => {
-                return Ok(ToolResult::error(format!("无效的 glob 模式 '{}': {}", parsed.pattern, e)));
+                return Ok(ToolResult::error(format!("Invalid glob pattern '{}': {}", parsed.pattern, e)));
             }
         };
 
@@ -110,7 +110,7 @@ impl Tool for FindTool {
             match builder.build() {
                 Ok(g) => g,
                 Err(e) => {
-                    return Ok(ToolResult::error(format!("无效的 glob 模式 '{}': {}", parsed.pattern, e)));
+                    return Ok(ToolResult::error(format!("Invalid glob pattern '{}': {}", parsed.pattern, e)));
                 }
             }
         };
@@ -167,14 +167,14 @@ impl Tool for FindTool {
 
         // Build output
         let mut output = String::new();
-        output.push_str(&format!("搜索: {}\n", parsed.pattern));
-        output.push_str(&format!("目录: {}\n", search_dir.display()));
+        output.push_str(&format!("Search: {}\n", parsed.pattern));
+        output.push_str(&format!("Directory: {}\n", search_dir.display()));
         output.push_str(&format!("{}", "─".repeat(50)));
 
         if matches.is_empty() {
-            output.push_str("\n(未找到匹配项)");
+            output.push_str("\n(No matches found)");
         } else {
-            output.push_str(&format!("\n找到 {} 个匹配项:\n", matches.len()));
+            output.push_str(&format!("\nFound {} matches:\n", matches.len()));
 
             let mut byte_count = output.len();
             for (i, m) in matches.iter().enumerate() {
@@ -182,7 +182,7 @@ impl Tool for FindTool {
 
                 if byte_count + entry_str.len() > self.max_output_bytes {
                     output.push_str(&format!(
-                        "\n... (输出已截断，共 {} 个匹配项，已达到字节上限 {} bytes)",
+                        "\n... (Output truncated, {} matches total, byte limit of {} bytes reached)",
                         matches.len(), self.max_output_bytes
                     ));
                     break;

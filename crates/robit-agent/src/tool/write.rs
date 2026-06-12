@@ -34,7 +34,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "创建或覆盖文件。自动创建父目录。如果文件已存在则覆盖。"
+        "Create or overwrite a file. Automatically creates parent directories. Overwrites if the file already exists."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -43,11 +43,11 @@ impl Tool for WriteTool {
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "目标文件路径（相对或绝对路径）"
+                    "description": "Target file path (relative or absolute)"
                 },
                 "content": {
                     "type": "string",
-                    "description": "写入的文件内容"
+                    "description": "File content to write"
                 }
             },
             "required": ["file_path", "content"]
@@ -61,12 +61,12 @@ impl Tool for WriteTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let parsed: WriteArgs = match serde_json::from_value(args) {
             Ok(a) => a,
-            Err(e) => return Ok(ToolResult::error(format!("参数解析失败: {}", e))),
+            Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
         // Validate file_path
         if parsed.file_path.trim().is_empty() {
-            return Ok(ToolResult::error("文件路径不能为空".to_string()));
+            return Ok(ToolResult::error("File path cannot be empty".to_string()));
         }
 
         let path = resolve_path(&parsed.file_path, &ctx.working_dir);
@@ -74,7 +74,7 @@ impl Tool for WriteTool {
         // Check if path is an existing directory
         if path.is_dir() {
             return Ok(ToolResult::error(format!(
-                "路径是目录: {}",
+                "Path is a directory: {}",
                 path.display()
             )));
         }
@@ -87,7 +87,7 @@ impl Tool for WriteTool {
             if !parent.exists() {
                 if let Err(e) = tokio::fs::create_dir_all(parent).await {
                     return Ok(ToolResult::error(format!(
-                        "无法创建目录 '{}': {}",
+                        "Failed to create directory '{}': {}",
                         parent.display(),
                         e
                     )));
@@ -101,13 +101,13 @@ impl Tool for WriteTool {
             Ok(()) => {
                 let msg = if existed {
                     format!(
-                        "已覆盖文件: {} ({} bytes)",
+                        "Overwritten file: {} ({} bytes)",
                         path.display(),
                         content_bytes.len()
                     )
                 } else {
                     format!(
-                        "已创建文件: {} ({} bytes)",
+                        "Created file: {} ({} bytes)",
                         path.display(),
                         content_bytes.len()
                     )
@@ -115,7 +115,7 @@ impl Tool for WriteTool {
                 Ok(ToolResult::success(msg))
             }
             Err(e) => Ok(ToolResult::error(format!(
-                "无法写入文件 '{}': {}",
+                "Failed to write file '{}': {}",
                 path.display(),
                 e
             ))),

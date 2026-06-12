@@ -158,7 +158,7 @@ impl App {
             }
             AgentEvent::SkillTriggered { name, description } => {
                 self.conversation.push(ConversationEntry::SystemNotice(
-                    format!("技能: {} — {}", name, description),
+                    format!("Skill: {} — {}", name, description),
                 ));
                 self.auto_scroll = true;
             }
@@ -232,16 +232,16 @@ impl App {
                     let _ = tx.send(FrontendMessage::UserInput("/clear".to_string())).await;
                 });
                 self.conversation
-                    .push(ConversationEntry::SystemNotice("对话历史已清空".to_string()));
+                    .push(ConversationEntry::SystemNotice("Conversation history cleared".to_string()));
             }
             "/model" => {
-                let msg = format!("当前模型: {}", self.status.model);
+                let msg = format!("Current model: {}", self.status.model);
                 self.conversation
                     .push(ConversationEntry::SystemNotice(msg));
             }
             "/tools" => {
                 let msg = format!(
-                    "已启用工具: {} 个",
+                    "Enabled tools: {}",
                     self.status.tools_enabled
                 );
                 self.conversation
@@ -250,9 +250,9 @@ impl App {
             "/scroll" => {
                 self.toggle_scroll_mode();
                 let msg = if self.scroll_mode {
-                    "滚动模式已开启 — 使用 ↑↓ 键浏览历史内容".to_string()
+                    "Scroll mode enabled — use ↑↓ keys to browse history".to_string()
                 } else {
-                    "滚动模式已关闭 — 回到最新位置".to_string()
+                    "Scroll mode disabled — returned to latest position".to_string()
                 };
                 self.conversation
                     .push(ConversationEntry::SystemNotice(msg));
@@ -261,11 +261,11 @@ impl App {
                 let skills = self.skills.skills();
                 if skills.is_empty() {
                     self.conversation.push(ConversationEntry::SystemNotice(
-                        "无可用技能。在 ~/.robit/skills/ 或 .robit/skills/ 中添加 .md 文件。"
+                        "No available skills. Add .md files to ~/.robit/skills/ or .robit/skills/."
                             .to_string(),
                     ));
                 } else {
-                    let mut msg = format!("可用技能 ({} 个):\n", skills.len());
+                    let mut msg = format!("Available skills ({}):\n", skills.len());
                     for skill in skills {
                         msg.push_str(&format!(
                             "- {} ({}) — {}\n",
@@ -275,7 +275,7 @@ impl App {
                         ));
                         if !skill.frontmatter.triggers.is_empty() {
                             msg.push_str(&format!(
-                                "  触发命令: {}\n",
+                                "  Trigger commands: {}\n",
                                 skill.frontmatter.triggers.join(", ")
                             ));
                         }
@@ -288,7 +288,7 @@ impl App {
                 // Check if this is a skill trigger — forward to Agent
                 if let Some((skill, _)) = self.skills.match_trigger(cmd) {
                     self.conversation.push(ConversationEntry::SystemNotice(
-                        format!("触发技能: {} — {}", skill.frontmatter.name, skill.frontmatter.description),
+                        format!("Triggered skill: {} — {}", skill.frontmatter.name, skill.frontmatter.description),
                     ));
                     let tx = message_tx.clone();
                     let cmd = cmd.to_string();
@@ -297,7 +297,7 @@ impl App {
                     });
                 } else {
                     self.conversation.push(ConversationEntry::Error(format!(
-                        "未知命令: {}",
+                        "Unknown command: {}",
                         parts[0]
                     )));
                 }

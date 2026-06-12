@@ -34,7 +34,7 @@ use tui_frontend::{ConfirmRequest, TuiFrontend};
 #[command(name = "robit")]
 #[command(about = "AI Programming Agent with TUI")]
 struct Cli {
-    /// 自动批准所有工具调用，跳过用户确认
+    /// Auto-approve all tool calls, skipping user confirmation
     #[arg(long)]
     auto_approve: bool,
 

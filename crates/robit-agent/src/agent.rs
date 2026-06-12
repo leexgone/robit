@@ -122,7 +122,7 @@ impl Agent {
                         let _ = self
                             .frontend
                             .on_event(AgentEvent::TextDelta(
-                                "\n[对话历史已清空]\n".to_string(),
+                                "\n[Conversation history cleared]\n".to_string(),
                             ))
                             .await;
                         let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
@@ -193,7 +193,7 @@ impl Agent {
         let _ = self
             .frontend
             .on_event(AgentEvent::Error(AgentError::InternalError(
-                format!("达到最大迭代次数 ({})", max_iterations),
+                format!("Max iterations reached ({})", max_iterations),
             )))
             .await;
         let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
@@ -217,7 +217,7 @@ impl Agent {
             // In production, spawn async task to call LLM and replace with summary
             if let Some(msg) = session.history.get_mut(truncation_result.insert_position) {
                 let notice = format!(
-                    "[已省略 {} 轮对话，共 {} 条消息。上下文已压缩以节省空间]",
+                    "[Omitted {} rounds, {} messages. Context compressed to save space]",
                     truncation_result.rounds_removed,
                     truncation_result.messages_removed
                 );
@@ -379,7 +379,7 @@ impl Agent {
 
                 self.tools.execute(&tc.function.name, args, &ctx).await
             } else {
-                ToolResult::error("用户拒绝执行此工具调用")
+                ToolResult::error("User rejected this tool call")
             };
 
             // Truncate output
@@ -441,7 +441,7 @@ impl Agent {
 
         // Inject skill content as a system message
         let skill_message = format!(
-            "## 技能：{}\n\n{}\n\n{}",
+            "## Skill: {}\n\n{}\n\n{}",
             skill.frontmatter.name,
             skill.frontmatter.description,
             skill.content
@@ -461,7 +461,7 @@ impl Agent {
 
         // Add user message (args or default)
         let user_content = if args.is_empty() {
-            "(用户触发技能，无额外参数)".to_string()
+            "(User triggered skill, no additional arguments)".to_string()
         } else {
             args.to_string()
         };
@@ -487,7 +487,7 @@ impl Agent {
                         break;
                     }
                     tracing::debug!(
-                        "技能迭代 {}: tool calls executed",
+                        "Skill iteration {}: tool calls executed",
                         iteration
                     );
                 }
@@ -502,7 +502,7 @@ impl Agent {
             let _ = self
                 .frontend
                 .on_event(AgentEvent::Error(AgentError::InternalError(
-                    format!("达到最大迭代次数 ({})", max_iterations),
+                    format!("Max iterations reached ({})", max_iterations),
                 )))
                 .await;
         }

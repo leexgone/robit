@@ -26,7 +26,7 @@ impl SkillRegistry {
             for required in &skill.frontmatter.tools_required {
                 if !tool_set.contains(required.as_str()) {
                     tracing::warn!(
-                        "技能 '{}' 需要工具 '{}' 但该工具未启用",
+                        "Skill '{}' requires tool '{}' but that tool is not enabled",
                         skill.frontmatter.name,
                         required
                     );
@@ -37,7 +37,7 @@ impl SkillRegistry {
             for trigger in &skill.frontmatter.triggers {
                 if let Some(existing_name) = trigger_map.get(trigger) {
                     tracing::warn!(
-                        "技能触发 '{}' 已被技能 '{}' 使用，现被 '{}' 覆盖",
+                        "Skill trigger '{}' is already used by skill '{}', now being overwritten by '{}'",
                         trigger,
                         existing_name,
                         skill.frontmatter.name

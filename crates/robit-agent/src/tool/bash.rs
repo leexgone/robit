@@ -41,7 +41,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "执行 Shell 命令。Windows 上使用 cmd.exe，Linux/macOS 上使用 sh。避免 cd，使用绝对路径。"
+        "Execute shell commands. Uses cmd.exe on Windows, sh on Linux/macOS. Avoid cd, use absolute paths."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -50,15 +50,15 @@ impl Tool for BashTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "要执行的命令"
+                    "description": "The command to execute"
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "超时时间（毫秒），默认 120000"
+                    "description": "Timeout in milliseconds, default 120000"
                 },
                 "working_dir": {
                     "type": "string",
-                    "description": "工作目录（可选，默认为项目根目录）"
+                    "description": "Working directory (optional, defaults to project root)"
                 }
             },
             "required": ["command"]
@@ -72,7 +72,7 @@ impl Tool for BashTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let parsed: BashArgs = match serde_json::from_value(args) {
             Ok(a) => a,
-            Err(e) => return Ok(ToolResult::error(format!("参数解析失败: {}", e))),
+            Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
         let work_dir = parsed
@@ -117,11 +117,11 @@ impl Tool for BashTool {
                     if !content.is_empty() {
                         content.push_str("\n");
                     }
-                    content.push_str(&format!("[退出码: {}]", exit_code));
+                    content.push_str(&format!("[exit code: {}]", exit_code));
                 }
 
                 if content.is_empty() {
-                    content = "(命令执行成功，无输出)".to_string();
+                    content = "(Command executed successfully, no output)".to_string();
                 }
 
                 Ok(ToolResult {
@@ -129,9 +129,9 @@ impl Tool for BashTool {
                     is_error: exit_code != 0,
                 })
             }
-            Ok(Err(e)) => Ok(ToolResult::error(format!("命令执行失败: {}", e))),
+            Ok(Err(e)) => Ok(ToolResult::error(format!("Command execution failed: {}", e))),
             Err(_) => Ok(ToolResult::error(format!(
-                "命令超时（{}ms 限制）",
+                "Command timed out ({}ms limit)",
                 timeout_ms
             ))),
         }
@@ -172,7 +172,7 @@ fn truncate_output(output: &str, max_bytes: usize) -> String {
     } else {
         let truncated: String = output.chars().take(max_bytes).collect();
         format!(
-            "{}\n... (输出已截断，共 {} bytes，显示前 {} bytes)",
+            "{}\n... (Output truncated, {} bytes total, showing first {} bytes)",
             truncated,
             output.len(),
             max_bytes

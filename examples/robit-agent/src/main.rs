@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 #[command(name = "robit-agent-cli")]
 #[command(about = "AI Programming Agent with stdin/stdout frontend")]
 struct Cli {
-    /// 自动批准所有工具调用，跳过用户确认
+    /// Auto-approve all tool calls, skipping user confirmation
     #[arg(long)]
     auto_approve: bool,
 
@@ -64,7 +64,7 @@ fn main() -> anyhow::Result<()> {
         client.profile(),
         client.model()
     );
-    println!("输入消息开始对话，输入 exit 或 /exit 退出\n");
+    println!("Type a message to start, enter exit or /exit to quit\n");
 
     let context_config = config.app.as_ref().and_then(|a| a.context.as_ref());
     let context_window = client.resolved().context_window;
@@ -185,7 +185,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         agent_handle.abort();
-        println!("\n再见！");
+        println!("\nGoodbye!");
     });
 
     Ok(())
@@ -225,18 +225,18 @@ fn render_event(event: &AgentEvent) {
         }
         AgentEvent::ToolCallResult { result, .. } => {
             if result.is_error {
-                println!("✗ 失败:\n{}", result.content);
+                println!("✗ Failed:\n{}", result.content);
             } else {
                 let display = if result.content.len() > 1000 {
                     format!(
-                        "{}\n... (输出已截断，共 {} bytes)",
+                        "{}\n... (Output truncated, {} bytes total)",
                         &result.content[..1000],
                         result.content.len()
                     )
                 } else {
                     result.content.clone()
                 };
-                println!("✓ 结果:\n{}", display);
+                println!("✓ Result:\n{}", display);
             }
         }
         AgentEvent::TurnComplete => {
@@ -244,10 +244,10 @@ fn render_event(event: &AgentEvent) {
             let _ = std::io::stdout().flush();
         }
         AgentEvent::Error(e) => {
-            eprintln!("\n[错误] {}", e);
+            eprintln!("\n[Error] {}", e);
         }
         AgentEvent::SkillTriggered { name, description } => {
-            println!("\n[技能] {} — {}", name, description);
+            println!("\n[Skill] {} — {}", name, description);
         }
     }
 }
@@ -273,7 +273,7 @@ impl Frontend for CliFrontend {
         &self,
         info: &ToolCallInfo,
     ) -> robit_agent::error::Result<bool> {
-        let prompt = format!("\n⚠️  工具 '{}' 需要确认执行 [Y/n]: ", info.name);
+        let prompt = format!("\n⚠️  Tool '{}' requires confirmation [Y/n]: ", info.name);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = self.confirm_tx.send((prompt, tx)).await;
         match rx.await {

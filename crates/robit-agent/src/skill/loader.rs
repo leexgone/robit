@@ -28,21 +28,21 @@ impl std::fmt::Display for SkillLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SkillLoadError::IoError { path, source } => {
-                write!(f, "无法读取文件 {}: {}", path.display(), source)
+                write!(f, "Failed to read file {}: {}", path.display(), source)
             }
             SkillLoadError::NoFrontmatter { path } => {
-                write!(f, "文件 {} 缺少 YAML frontmatter (--- 开头)", path.display())
+                write!(f, "File {} is missing YAML frontmatter (must start with ---)", path.display())
             }
             SkillLoadError::NoClosingDelimiter { path } => {
-                write!(f, "文件 {} 缺少 closing --- 分隔符", path.display())
+                write!(f, "File {} is missing closing --- delimiter", path.display())
             }
             SkillLoadError::YamlParseError { path, source } => {
-                write!(f, "文件 {} YAML 解析失败: {}", path.display(), source)
+                write!(f, "Failed to parse YAML in file {}: {}", path.display(), source)
             }
             SkillLoadError::MissingSkillFile { dir } => {
                 write!(
                     f,
-                    "技能目录 {} 中未找到 {} 文件",
+                    "Skill directory {} does not contain a {} file",
                     dir.display(),
                     SKILL_FILE_NAME
                 )
@@ -204,7 +204,7 @@ fn load_from_directory(
             Ok(skill) => {
                 if skills_by_name.contains_key(&skill.frontmatter.name) {
                     tracing::info!(
-                        "技能 '{}' ({}) 被 {} 覆盖",
+                        "Skill '{}' ({}) overridden by {}",
                         skill.frontmatter.name,
                         skills_by_name[&skill.frontmatter.name]
                             .source_path

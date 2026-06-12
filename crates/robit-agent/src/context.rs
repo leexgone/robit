@@ -65,12 +65,12 @@ pub fn truncate_output(content: &str, max_lines: usize, max_bytes: usize) -> Str
 
     if line_truncated {
         output.push_str(&format!(
-            "\n... (输出已截断，共 {} 行，显示前 {} 行。请使用 offset/limit 参数分段读取)",
+            "\n... (Output truncated, {} lines total, showing first {}. Use offset/limit to read more)",
             total_lines, displayed_lines
         ));
     } else if byte_truncated {
         output.push_str(&format!(
-            "\n... (输出已截断，共 {} bytes，显示前 {} bytes)",
+            "\n... (Output truncated, {} bytes total, showing first {} bytes)",
             total_bytes, byte_count
         ));
     }
@@ -278,9 +278,9 @@ impl ContextManager {
 
             // Insert placeholder or wait for summary
             let notice = if needs_compression {
-                "[正在生成对话摘要...]"
+                "[Generating conversation summary...]"
             } else {
-                &format!("[已省略 {} 轮对话，共 {} 条消息]", rounds_removed, messages_removed)
+                &format!("[Omitted {} rounds, {} messages]", rounds_removed, messages_removed)
             };
 
             let system_msg_count = messages
@@ -466,6 +466,6 @@ mod tests {
         assert!(truncated.contains("line2"));
         assert!(truncated.contains("line3"));
         assert!(!truncated.contains("line4"));
-        assert!(truncated.contains("已截断"));
+        assert!(truncated.contains("Output truncated"));
     }
 }

@@ -36,7 +36,7 @@ impl Tool for LoadSkillTool {
     }
 
     fn description(&self) -> &str {
-        "加载指定技能的详细内容。返回技能元数据（名称、描述）、完整的 Markdown 内容以及源文件路径。"
+        "Load detailed content of a specified skill. Returns skill metadata (name, description), full Markdown content, and source file path."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -45,7 +45,7 @@ impl Tool for LoadSkillTool {
             "properties": {
                 "skill_name": {
                     "type": "string",
-                    "description": "要加载的技能名称（英文名称，精确匹配）"
+                    "description": "Name of the skill to load (English name, exact match)"
                 }
             },
             "required": ["skill_name"]
@@ -59,7 +59,7 @@ impl Tool for LoadSkillTool {
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolResult> {
         let parsed: LoadSkillArgs = match serde_json::from_value(args) {
             Ok(a) => a,
-            Err(e) => return Ok(ToolResult::error(format!("参数解析失败: {}", e))),
+            Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
         let skill_name = parsed.skill_name.trim();
@@ -67,18 +67,18 @@ impl Tool for LoadSkillTool {
         match self.skills.get(skill_name) {
             Some(skill) => {
                 let output = format!(
-                    "## 技能: {name}\n\n\
-                     **描述**: {description}\n\
-                     **版本**: {version}\n\
-                     **触发命令**: {triggers}\n\
-                     **源文件**: {source_path}\n\n\
+                    "## Skill: {name}\n\n\
+                     **Description**: {description}\n\
+                     **Version**: {version}\n\
+                     **Trigger commands**: {triggers}\n\
+                     **Source file**: {source_path}\n\n\
                      ---\n\n\
                      {content}",
                     name = skill.frontmatter.name,
                     description = skill.frontmatter.description,
                     version = skill.frontmatter.version,
                     triggers = if skill.frontmatter.triggers.is_empty() {
-                        "(无)".to_string()
+                        "(None)".to_string()
                     } else {
                         skill.frontmatter.triggers.join(", ")
                     },
@@ -90,7 +90,7 @@ impl Tool for LoadSkillTool {
             None => {
                 let available: Vec<&str> = self.skills.skill_names();
                 Ok(ToolResult::error(format!(
-                    "技能 '{}' 不存在。可用技能: {:?}",
+                    "Skill '{}' does not exist. Available skills: {:?}",
                     skill_name, available
                 )))
             }

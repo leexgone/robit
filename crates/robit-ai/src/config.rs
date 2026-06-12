@@ -135,7 +135,7 @@ pub struct ResolvedModel {
 /// Returns the ~/.robit/ directory path.
 fn robit_home() -> Result<PathBuf, LlmError> {
     let home = dirs::home_dir().ok_or_else(|| {
-        LlmError::ConfigError("无法获取用户主目录".to_string())
+        LlmError::ConfigError("Cannot determine home directory".to_string())
     })?;
     Ok(home.join(".robit"))
 }
@@ -164,11 +164,11 @@ pub fn load_config(workdir: Option<&std::path::Path>) -> Result<RobitConfig, Llm
     let path = find_config_path(workdir)?;
 
     let content = std::fs::read_to_string(&path).map_err(|e| {
-        LlmError::ConfigError(format!("无法读取 {}: {}", path.display(), e))
+        LlmError::ConfigError(format!("Failed to read {}: {}", path.display(), e))
     })?;
 
     let mut config: RobitConfig = toml::from_str(&content).map_err(|e| {
-        LlmError::ConfigError(format!("解析 config.toml 失败: {}", e))
+        LlmError::ConfigError(format!("Failed to parse config.toml: {}", e))
     })?;
 
     // Resolve environment variables in api_key fields
@@ -214,10 +214,10 @@ fn find_config_path(workdir: Option<&std::path::Path>) -> Result<PathBuf, LlmErr
     }
 
     Err(LlmError::ConfigError(format!(
-        "未找到配置文件 config.toml。\n\
-         请创建以下任一文件:\n\
-         - 项目本地: .robit/config.toml\n\
-         - 全局: {}",
+        "Configuration file config.toml not found.\n\
+         Please create one of the following:\n\
+         - Project-local: .robit/config.toml\n\
+         - Global: {}",
         global_path.display()
     )))
 }
@@ -237,14 +237,14 @@ pub fn resolve_profile(
         // Explicit provider override — use its first model
         let provider = config.providers.get(name).ok_or_else(|| {
             LlmError::ConfigError(format!(
-                "Provider '{}' 未在 config.toml 中定义。可用 providers: {:?}",
+                "Provider '{}' is not defined in config.toml. Available providers: {:?}",
                 name,
                 config.providers.keys().collect::<Vec<_>>()
             ))
         })?;
         let first_model = provider.models.first().ok_or_else(|| {
             LlmError::ConfigError(format!(
-                "Provider '{}' 没有定义任何模型",
+                "Provider '{}' has no models defined",
                 name
             ))
         })?;
@@ -254,11 +254,11 @@ pub fn resolve_profile(
     } else {
         // Fall back to first available provider + first model
         let (key, provider) = config.providers.iter().next().ok_or_else(|| {
-            LlmError::ConfigError("config.toml 中没有定义任何 provider".to_string())
+            LlmError::ConfigError("No providers defined in config.toml".to_string())
         })?;
         let first_model = provider.models.first().ok_or_else(|| {
             LlmError::ConfigError(format!(
-                "Provider '{}' 没有定义任何模型",
+                "Provider '{}' has no models defined",
                 key
             ))
         })?;
@@ -267,7 +267,7 @@ pub fn resolve_profile(
 
     let provider = config.providers.get(&provider_key).ok_or_else(|| {
         LlmError::ConfigError(format!(
-            "Provider '{}' 未在 config.toml 中定义。可用 providers: {:?}",
+            "Provider '{}' is not defined in config.toml. Available providers: {:?}",
             provider_key,
             config.providers.keys().collect::<Vec<_>>()
         ))
@@ -277,15 +277,15 @@ pub fn resolve_profile(
     let model = provider.models.iter().find(|m| m.id == model_id).ok_or_else(|| {
         let available: Vec<&str> = provider.models.iter().map(|m| m.id.as_str()).collect();
         LlmError::ConfigError(format!(
-            "Provider '{}' 中未找到模型 '{}'。可用模型: {:?}",
-            provider_key, model_id, available
+            "Model '{}' not found in provider '{}'. Available models: {:?}",
+            model_id, provider_key, available
         ))
     })?;
 
     // Validate API key
     if provider.api_key.is_empty() || provider.api_key.starts_with("${") {
         return Err(LlmError::ConfigError(format!(
-            "Provider '{}' 的 API Key 未配置或环境变量未设置",
+            "Provider '{}' API key is not configured or the environment variable is not set",
             provider_key
         )));
     }
@@ -308,7 +308,7 @@ fn parse_default_model(default_model: &str) -> Result<(String, String), LlmError
     let parts: Vec<&str> = default_model.splitn(2, '/').collect();
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         return Err(LlmError::ConfigError(format!(
-            "default_model '{}' 格式错误，应为 'provider/model' 格式（如 'deepseek/deepseek-chat'）",
+            "Invalid default_model '{}' format, expected 'provider/model' (e.g. 'deepseek/deepseek-chat')",
             default_model
         )));
     }
@@ -522,7 +522,7 @@ mod tests {
         let config: RobitConfig = toml::from_str(toml_str).unwrap();
         let result = resolve_profile(&config, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("格式错误"));
+        assert!(result.unwrap_err().to_string().contains("Invalid default_model"));
     }
 
     #[test]

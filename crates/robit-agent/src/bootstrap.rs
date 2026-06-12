@@ -124,6 +124,6 @@ pub fn create_tools_from_config(
 /// Convenience function for frontends to log errors without duplicating code.
 pub fn log_skill_errors(errors: &[SkillLoadError]) {
     for err in errors {
-        tracing::warn!("技能加载错误: {:?}", err);
+        tracing::warn!("Skill load error: {:?}", err);
     }
 }

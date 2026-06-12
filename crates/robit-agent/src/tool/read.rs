@@ -39,7 +39,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "读取文件内容。支持文本文件。大文件可用 offset/limit 分段读取。输出带行号。"
+        "Read file contents. Supports text files. Large files can be read in segments using offset/limit. Output includes line numbers."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -48,15 +48,15 @@ impl Tool for ReadTool {
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "文件路径（相对或绝对路径）"
+                    "description": "File path (relative or absolute)"
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "起始行号（从 0 开始，默认 0）"
+                    "description": "Starting line number (0-based, default 0)"
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "读取行数上限（默认读取全部）"
+                    "description": "Max number of lines to read (default: read all)"
                 }
             },
             "required": ["file_path"]
@@ -70,7 +70,7 @@ impl Tool for ReadTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let parsed: ReadArgs = match serde_json::from_value(args) {
             Ok(a) => a,
-            Err(e) => return Ok(ToolResult::error(format!("参数解析失败: {}", e))),
+            Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
         // Resolve file path
@@ -78,12 +78,12 @@ impl Tool for ReadTool {
 
         // Check if file exists
         if !path.exists() {
-            return Ok(ToolResult::error(format!("文件不存在: {}", path.display())));
+            return Ok(ToolResult::error(format!("File not found: {}", path.display())));
         }
 
         if path.is_dir() {
             return Ok(ToolResult::error(format!(
-                "'{}' 是一个目录，不是文件",
+                "'{}' is a directory, not a file",
                 path.display()
             )));
         }
@@ -93,7 +93,7 @@ impl Tool for ReadTool {
             Ok(c) => c,
             Err(e) => {
                 return Ok(ToolResult::error(format!(
-                    "无法读取文件 '{}': {}",
+                    "Failed to read file '{}': {}",
                     path.display(),
                     e
                 )));
@@ -108,7 +108,7 @@ impl Tool for ReadTool {
         // Validate offset
         if offset > total_lines {
             return Ok(ToolResult::error(format!(
-                "offset {} 超出范围，文件共 {} 行",
+                "offset {} is out of range, file has {} lines",
                 offset, total_lines
             )));
         }
@@ -127,7 +127,7 @@ impl Tool for ReadTool {
             // Check byte limit
             if byte_count + formatted.len() > self.max_output_bytes {
                 output.push_str(&format!(
-                    "\n... (输出已截断，已达到字节上限 {} bytes)\n",
+                    "\n... (Output truncated, byte limit of {} bytes reached)\n",
                     self.max_output_bytes
                 ));
                 return Ok(ToolResult::success(output));
@@ -136,7 +136,7 @@ impl Tool for ReadTool {
             // Check line limit
             if i >= self.max_output_lines {
                 output.push_str(&format!(
-                    "\n... (输出已截断，共 {} 行，显示前 {} 行。请使用 offset/limit 参数分段读取)\n",
+                    "\n... (Output truncated, {} lines total, showing first {}. Use offset/limit to read more)\n",
                     total_lines, self.max_output_lines
                 ));
                 return Ok(ToolResult::success(output));
@@ -149,7 +149,7 @@ impl Tool for ReadTool {
         // Add summary if only part of file was shown
         if offset > 0 || end < total_lines {
             output.push_str(&format!(
-                "\n(显示第 {}-{} 行，共 {} 行)",
+                "\n(Showing lines {}-{} of {})",
                 offset + 1,
                 end,
                 total_lines

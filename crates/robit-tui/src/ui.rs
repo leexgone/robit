@@ -91,7 +91,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     // Scroll mode indicator at the right edge
     if app.scroll_mode {
         spans.push(Span::styled(
-            " ◤SCROLL◢ F8退出",
+            " ◤SCROLL◢ F8 exit",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -133,7 +133,7 @@ fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
 
     if app.is_agent_busy && app.current_assistant_text.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  ⏳ 思考中...",
+            "  ⏳ Thinking...",
             Style::default().fg(Color::DarkGray),
         )));
     }
@@ -141,11 +141,11 @@ fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
     if lines.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  欢迎使用 Robit — AI 编程代理",
+            "  Welcome to Robit — AI Programming Agent",
             Style::default().fg(Color::DarkGray),
         )));
         lines.push(Line::from(Span::styled(
-            "  输入消息开始对话，/exit 退出",
+            "  Type a message to start, /exit to quit",
             Style::default().fg(Color::DarkGray),
         )));
     }
@@ -352,18 +352,18 @@ fn render_tool_card(lines: &mut Vec<Line>, name: &str, arguments: &str, status: 
 
     // Status
     let status_line = match status {
-        ToolStatus::Pending => " 等待中...".to_string(),
-        ToolStatus::Running => " ⏳ 执行中...".to_string(),
+        ToolStatus::Pending => " Pending...".to_string(),
+        ToolStatus::Running => " ⏳ Running...".to_string(),
         ToolStatus::Success(output) => {
             let preview: String = output.lines().take(3).collect::<Vec<_>>().join(" | ");
-            format!(" ✓ 完成  {}", preview)
+            format!(" ✓ Done  {}", preview)
         }
         ToolStatus::Failed(err) => {
             let preview: String = err.lines().take(1).collect::<Vec<_>>().join("");
-            format!(" ✗ 失败  {}", preview)
+            format!(" ✗ Failed  {}", preview)
         }
-        ToolStatus::Rejected => " ⊘ 用户拒绝".to_string(),
-        ToolStatus::AwaitingConfirmation => " ⏳ 等待确认中...".to_string(),
+        ToolStatus::Rejected => " ⊘ Rejected by user".to_string(),
+        ToolStatus::AwaitingConfirmation => " ⏳ Awaiting confirmation...".to_string(),
     };
 
     let sw = UnicodeWidthStr::width(status_line.as_str());
@@ -419,7 +419,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
 
     let mode_indicator = match &app.input_mode {
         InputMode::Confirmation { .. } => " [Y/N] ",
-        _ if app.input.multi_line => " [多行] ",
+        _ if app.input.multi_line => " [Multi-line] ",
         _ => "",
     };
 
@@ -428,7 +428,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(border_color))
         .title_bottom(Line::from(Span::styled(
             format!(
-                " {}Enter 发送 | Tab 多行 | F8 滚动 | Ctrl+C 取消 | Ctrl+D 退出{}",
+                " {}Enter Send | Tab Multi-line | F8 Scroll | Ctrl+C Cancel | Ctrl+D Exit{}",
                 mode_indicator, ""
             ),
             Style::default().fg(Color::DarkGray),
@@ -436,9 +436,9 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
 
     let input_text = if app.input.content().is_empty() {
         if matches!(app.input_mode, InputMode::Confirmation { .. }) {
-            "按 Y 允许或 N 拒绝..."
+            "Press Y to allow or N to deny..."
         } else {
-            "输入消息..."
+            "Type a message..."
         }
     } else {
         app.input.content()
@@ -493,18 +493,18 @@ fn draw_confirmation_overlay(f: &mut Frame, app: &App, full_area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow))
-        .title(" 确认 ");
+        .title(" Confirm ");
 
     let text = Paragraph::new(Line::from(vec![
         Span::styled(
-            "[Y] 允许",
+            "[Y] Allow",
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("   "),
         Span::styled(
-            "[N] 拒绝",
+            "[N] Deny",
             Style::default()
                 .fg(Color::Red)
                 .add_modifier(Modifier::BOLD),

@@ -43,7 +43,7 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "在文件或目录中搜索文本模式。支持正则表达式。"
+        "Search for a text pattern in files or directories. Supports regex."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -52,23 +52,23 @@ impl Tool for GrepTool {
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "搜索模式（正则表达式）"
+                    "description": "Search pattern (regex)"
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "单个文件路径（与 dir_path 二选一）"
+                    "description": "Single file path (use either this or dir_path)"
                 },
                 "dir_path": {
                     "type": "string",
-                    "description": "目录路径（与 file_path 二选一）"
+                    "description": "Directory path (use either this or file_path)"
                 },
                 "ignore_case": {
                     "type": "boolean",
-                    "description": "忽略大小写，默认 false"
+                    "description": "Case-insensitive search, default false"
                 },
                 "recursive": {
                     "type": "boolean",
-                    "description": "递归搜索子目录（仅在指定 dir_path 时有效），默认 false"
+                    "description": "Recursively search subdirectories (only effective with dir_path), default false"
                 }
             },
             "required": ["pattern"]
@@ -82,15 +82,15 @@ impl Tool for GrepTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let parsed: GrepArgs = match serde_json::from_value(args) {
             Ok(a) => a,
-            Err(e) => return Ok(ToolResult::error(format!("参数解析失败: {}", e))),
+            Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
         // Validate arguments
         if parsed.file_path.is_none() && parsed.dir_path.is_none() {
-            return Ok(ToolResult::error("必须指定 file_path 或 dir_path 之一".to_string()));
+            return Ok(ToolResult::error("Either file_path or dir_path must be specified".to_string()));
         }
         if parsed.file_path.is_some() && parsed.dir_path.is_some() {
-            return Ok(ToolResult::error("不能同时指定 file_path 和 dir_path".to_string()));
+            return Ok(ToolResult::error("Cannot specify both file_path and dir_path simultaneously".to_string()));
         }
 
         // Build regex
@@ -103,7 +103,7 @@ impl Tool for GrepTool {
         let regex = match Regex::new(&regex_pattern) {
             Ok(r) => r,
             Err(e) => {
-                return Ok(ToolResult::error(format!("无效的正则表达式 '{}': {}", parsed.pattern, e)));
+                return Ok(ToolResult::error(format!("Invalid regex '{}': {}", parsed.pattern, e)));
             }
         };
 
@@ -113,26 +113,26 @@ impl Tool for GrepTool {
         if let Some(fp) = &parsed.file_path {
             let path = resolve_path(fp, &ctx.working_dir);
             if !path.exists() {
-                return Ok(ToolResult::error(format!("文件不存在: {}", path.display())));
+                return Ok(ToolResult::error(format!("File not found: {}", path.display())));
             }
             if path.is_dir() {
-                return Ok(ToolResult::error(format!("'{}' 是一个目录，请使用 dir_path 参数", path.display())));
+                return Ok(ToolResult::error(format!("'{}' is a directory, use dir_path parameter instead", path.display())));
             }
             files_to_search.push(path);
         } else if let Some(dp) = &parsed.dir_path {
             let path = resolve_path(dp, &ctx.working_dir);
             if !path.exists() {
-                return Ok(ToolResult::error(format!("目录不存在: {}", path.display())));
+                return Ok(ToolResult::error(format!("Directory not found: {}", path.display())));
             }
             if !path.is_dir() {
-                return Ok(ToolResult::error(format!("'{}' 不是一个目录", path.display())));
+                return Ok(ToolResult::error(format!("'{}' is not a directory", path.display())));
             }
             collect_files(&path, parsed.recursive, &mut files_to_search).await;
         }
 
         // Search each file
         let mut output = String::new();
-        output.push_str(&format!("搜索: {}\n", parsed.pattern));
+        output.push_str(&format!("Search: {}\n", parsed.pattern));
         output.push_str(&format!("{}", "─".repeat(50)));
 
         let mut line_count = 0;
@@ -165,7 +165,7 @@ impl Tool for GrepTool {
                 let file_header = format!("\n📄 {}\n", rel_path.display());
                 if byte_count + file_header.len() > self.max_output_bytes {
                     output.push_str(&format!(
-                        "\n... (输出已截断，已达到字节上限 {} bytes)",
+                        "\n... (Output truncated, byte limit of {} bytes reached)",
                         self.max_output_bytes
                     ));
                     break;
@@ -176,7 +176,7 @@ impl Tool for GrepTool {
                 for (line_num, line) in file_matches {
                     if line_count >= self.max_output_lines {
                         output.push_str(&format!(
-                            "\n... (输出已截断，已达到行数上限 {} 行)",
+                            "\n... (Output truncated, line limit of {} lines reached)",
                             self.max_output_lines
                         ));
                         return Ok(ToolResult::success(output));
@@ -185,7 +185,7 @@ impl Tool for GrepTool {
                     let line_str = format!("{:>6}: {}\n", line_num, line);
                     if byte_count + line_str.len() > self.max_output_bytes {
                         output.push_str(&format!(
-                            "\n... (输出已截断，已达到字节上限 {} bytes)",
+                            "\n... (Output truncated, byte limit of {} bytes reached)",
                             self.max_output_bytes
                         ));
                         break;
@@ -198,7 +198,7 @@ impl Tool for GrepTool {
         }
 
         if !has_matches {
-            output.push_str("\n(未找到匹配项)");
+            output.push_str("\n(No matches found)");
         }
 
         Ok(ToolResult::success(output))

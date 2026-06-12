@@ -35,7 +35,7 @@ impl Tool for LsTool {
     }
 
     fn description(&self) -> &str {
-        "列出目录内容。不指定路径则列出当前目录。"
+        "List directory contents. Lists current directory if no path is specified."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -44,11 +44,11 @@ impl Tool for LsTool {
             "properties": {
                 "dir_path": {
                     "type": "string",
-                    "description": "目录路径（可选，默认为当前目录）"
+                    "description": "Directory path (optional, defaults to current directory)"
                 },
                 "show_hidden": {
                     "type": "boolean",
-                    "description": "是否显示隐藏文件（以 . 开头的文件），默认 false"
+                    "description": "Whether to show hidden files (files starting with .), default false"
                 }
             },
             "required": []
@@ -62,7 +62,7 @@ impl Tool for LsTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let parsed: LsArgs = match serde_json::from_value(args) {
             Ok(a) => a,
-            Err(e) => return Ok(ToolResult::error(format!("参数解析失败: {}", e))),
+            Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
         // Resolve directory path
@@ -73,17 +73,17 @@ impl Tool for LsTool {
 
         // Check if path exists and is a directory
         if !dir_path.exists() {
-            return Ok(ToolResult::error(format!("路径不存在: {}", dir_path.display())));
+            return Ok(ToolResult::error(format!("Path does not exist: {}", dir_path.display())));
         }
         if !dir_path.is_dir() {
-            return Ok(ToolResult::error(format!("'{}' 不是一个目录", dir_path.display())));
+            return Ok(ToolResult::error(format!("'{}' is not a directory", dir_path.display())));
         }
 
         // Read directory contents
         let mut entries = match tokio::fs::read_dir(&dir_path).await {
             Ok(e) => e,
             Err(e) => {
-                return Ok(ToolResult::error(format!("无法读取目录 '{}': {}", dir_path.display(), e)));
+                return Ok(ToolResult::error(format!("Failed to read directory '{}': {}", dir_path.display(), e)));
             }
         };
 
@@ -119,25 +119,25 @@ impl Tool for LsTool {
         dirs.sort();
         files.sort();
 
-        output.push_str(&format!("目录: {}\n", dir_path.display()));
+        output.push_str(&format!("Directory: {}\n", dir_path.display()));
         output.push_str(&format!("{}", "─".repeat(50)));
 
         if !dirs.is_empty() {
-            output.push_str("\n📁 目录:\n");
+            output.push_str("\n📁 Directories:\n");
             for dir in &dirs {
                 output.push_str(&format!("  {}/\n", dir));
             }
         }
 
         if !files.is_empty() {
-            output.push_str("\n📄 文件:\n");
+            output.push_str("\n📄 Files:\n");
             for file in &files {
                 output.push_str(&format!("  {}\n", file));
             }
         }
 
         if dirs.is_empty() && files.is_empty() {
-            output.push_str("\n(目录为空)");
+            output.push_str("\n(Directory is empty)");
         }
 
         Ok(ToolResult::success(output))

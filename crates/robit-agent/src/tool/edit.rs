@@ -41,7 +41,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "精确替换文件中的文本。old_string 必须在文件中唯一匹配。匹配失败时返回相似片段辅助修正。"
+        "Precisely replace text in a file. old_string must have a unique match in the file. Returns similar matches on failure to help with correction."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -50,15 +50,15 @@ impl Tool for EditTool {
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "目标文件路径（相对或绝对路径）"
+                    "description": "Target file path (relative or absolute)"
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "要替换的原始文本（必须在文件中唯一存在）"
+                    "description": "The original text to replace (must exist uniquely in the file)"
                 },
                 "new_string": {
                     "type": "string",
-                    "description": "替换后的新文本"
+                    "description": "The replacement text"
                 }
             },
             "required": ["file_path", "old_string", "new_string"]
@@ -72,26 +72,26 @@ impl Tool for EditTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let parsed: EditArgs = match serde_json::from_value(args) {
             Ok(a) => a,
-            Err(e) => return Ok(ToolResult::error(format!("参数解析失败: {}", e))),
+            Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
         // Validate inputs
         if parsed.old_string.is_empty() {
-            return Ok(ToolResult::error("old_string 不能为空".to_string()));
+            return Ok(ToolResult::error("old_string cannot be empty".to_string()));
         }
         if parsed.file_path.trim().is_empty() {
-            return Ok(ToolResult::error("文件路径不能为空".to_string()));
+            return Ok(ToolResult::error("File path cannot be empty".to_string()));
         }
 
         let path = resolve_path(&parsed.file_path, &ctx.working_dir);
 
         if !path.exists() {
-            return Ok(ToolResult::error(format!("文件不存在: {}", path.display())));
+            return Ok(ToolResult::error(format!("File not found: {}", path.display())));
         }
 
         if path.is_dir() {
             return Ok(ToolResult::error(format!(
-                "'{}' 是一个目录，不是文件",
+                "'{}' is a directory, not a file",
                 path.display()
             )));
         }
@@ -100,7 +100,7 @@ impl Tool for EditTool {
             Ok(c) => c,
             Err(e) => {
                 return Ok(ToolResult::error(format!(
-                    "无法读取文件 '{}': {}",
+                    "Failed to read file '{}': {}",
                     path.display(),
                     e
                 )));
@@ -118,13 +118,13 @@ impl Tool for EditTool {
                 // No exact match — find similar lines
                 let similar = find_similar_matches(&content, &parsed.old_string);
                 let mut msg = format!(
-                    "在文件中未找到完全匹配的 old_string。\n\
-                     以下是最相似的 {} 个匹配片段，请检查是否选择错误：\n\n",
+                    "No exact match found for old_string in the file.\n\
+                     The following are the {} most similar matches. Please check if the selection is correct:\n\n",
                     similar.len()
                 );
                 for (i, m) in similar.iter().enumerate() {
                     msg.push_str(&format!(
-                        "匹配 {} (第 {} 行, 匹配度 {}):\n  期望: {}\n  实际: {}\n",
+                        "Match {} (line {}, score {}):\n  expected: {}\n  actual: {}\n",
                         i + 1,
                         m.line_number,
                         m.score,
@@ -145,13 +145,13 @@ impl Tool for EditTool {
                     Ok(()) => {
                         let line_num = count_lines_before(&content, matches[0]);
                         Ok(ToolResult::success(format!(
-                            "已修改文件: {} (第 {} 行)",
+                            "Modified file: {} (line {})",
                             path.display(),
                             line_num
                         )))
                     }
                     Err(e) => Ok(ToolResult::error(format!(
-                        "无法写入文件 '{}': {}",
+                        "Failed to write file '{}': {}",
                         path.display(),
                         e
                     ))),
@@ -166,12 +166,12 @@ impl Tool for EditTool {
                     .collect();
 
                 let mut msg = format!(
-                    "old_string 在文件中出现 {} 次",
+                    "old_string appears {} times",
                     n
                 );
                 let lines_str: Vec<String> = line_positions.iter().map(|l| l.to_string()).collect();
-                msg.push_str(&format!("（第 {} 行）", lines_str.join("、")));
-                msg.push_str("，无法唯一确定替换位置。\n请提供更多上下文使 old_string 唯一。\n\n");
+                msg.push_str(&format!(" (lines {})", lines_str.join(", ")));
+                msg.push_str(", cannot determine a unique replacement location.\nPlease provide more context to make old_string unique.\n\n");
 
                 // Show context for each match (up to first 5)
                 for &line_1based in line_positions.iter().take(5) {
@@ -179,7 +179,7 @@ impl Tool for EditTool {
                     let start = line_idx.saturating_sub(1);
                     let end = (line_idx + 2).min(lines.len());
                     msg.push_str("---\n");
-                    msg.push_str(&format!("第 {} 行:\n", line_1based));
+                    msg.push_str(&format!("Line {}:\n", line_1based));
                     for (j, line_text) in lines.iter().enumerate().skip(start).take(end - start) {
                         if j == line_idx {
                             msg.push_str(&format!("> {}\n", line_text));
@@ -190,7 +190,7 @@ impl Tool for EditTool {
                     msg.push_str("---\n");
                 }
                 if n > 5 {
-                    msg.push_str(&format!("... 还有 {} 处匹配，未显示\n", n - 5));
+                    msg.push_str(&format!("... and {} more matches not shown\n", n - 5));
                 }
 
                 Ok(ToolResult::error(msg))

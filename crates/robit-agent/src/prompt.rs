@@ -61,7 +61,7 @@ impl PromptBuilder {
     /// Build the tools description section.
     fn build_tools_section(tools: &[&dyn Tool]) -> String {
         if tools.is_empty() {
-            return "(无可用工具)".to_string();
+            return "(no available tools)".to_string();
         }
 
         let mut section = String::new();
@@ -71,7 +71,7 @@ impl PromptBuilder {
                 tool.name(),
                 tool.description(),
                 if tool.requires_confirmation() {
-                    "（需用户确认）"
+                    " (requires user confirmation)"
                 } else {
                     ""
                 }
@@ -83,7 +83,7 @@ impl PromptBuilder {
     /// Build the skills description section.
     fn build_skills_section(skills: &[(&str, &str)]) -> String {
         if skills.is_empty() {
-            return "(无可用技能)".to_string();
+            return "(no available skills)".to_string();
         }
 
         let mut section = String::new();
