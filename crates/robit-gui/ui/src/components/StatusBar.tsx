@@ -1,4 +1,4 @@
-import { Bot, Sparkles } from "lucide-react";
+import { Bot } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -20,14 +20,12 @@ export function StatusBar() {
         <span>
           Tools: {config?.tools_enabled || 0}/{config?.tools_total || 0}
         </span>
-      </div>
-      <div className="flex items-center gap-3">
-        <span className="flex items-center gap-1.5">
-          <Sparkles className="h-3.5 w-3.5" />
+        <span className="text-border">│</span>
+        <span>
           Skills: {config?.skills_enabled || 0}/{config?.skills_total || 0}
         </span>
-        <ThemeToggle />
       </div>
+      <ThemeToggle />
     </div>
   );
 }
