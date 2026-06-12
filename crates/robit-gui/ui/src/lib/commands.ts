@@ -1,5 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { SessionInfo, MessageData, ConfigInfo } from "./types";
+import type { SessionInfo, MessageData, ConfigInfo, ToolCallInfo } from "./types";
+
+function convertMessageData(msg: any): MessageData {
+  if (msg.tool_info) {
+    return {
+      ...msg,
+      tool_info: msg.tool_info as ToolCallInfo,
+    };
+  }
+  return msg;
+}
 
 export async function createSession(model: string): Promise<SessionInfo> {
   return invoke("create_session", { model });
@@ -10,7 +20,8 @@ export async function listSessions(): Promise<SessionInfo[]> {
 }
 
 export async function switchSession(sessionId: string): Promise<MessageData[]> {
-  return invoke("switch_session", { sessionId });
+  const msgs = await invoke<any[]>("switch_session", { sessionId });
+  return msgs.map(convertMessageData);
 }
 
 export async function sendMessage(
@@ -36,7 +47,8 @@ export async function renameSession(
 }
 
 export async function getMessages(sessionId: string): Promise<MessageData[]> {
-  return invoke("get_messages", { sessionId });
+  const msgs = await invoke<any[]>("get_messages", { sessionId });
+  return msgs.map(convertMessageData);
 }
 
 export async function confirmTool(

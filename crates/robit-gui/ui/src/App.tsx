@@ -5,7 +5,7 @@ import { SessionSidebar } from "@/components/SessionSidebar";
 import { ChatPanel } from "@/components/ChatPanel";
 import { useStore } from "@/lib/store";
 import { listSessions, getConfig } from "@/lib/commands";
-import type { UiEvent, MessageData } from "@/lib/types";
+import type { UiEvent, MessageData, ToolCallInfo } from "@/lib/types";
 
 function App() {
   const setSessions = useStore((s) => s.setSessions);
@@ -49,7 +49,7 @@ function App() {
 
         case "ToolCallRequested":
           // Create tool message and add to history
-          const toolInfoRequested = {
+          const toolInfoRequested: ToolCallInfo = {
             tool_call_id: payload.tool_call_id,
             name: payload.name,
             arguments: payload.arguments,
@@ -88,7 +88,7 @@ function App() {
                 ...msg,
                 tool_info: {
                   ...msg.tool_info,
-                  status: payload.is_error ? "error" : "success",
+                  status: (payload.is_error ? "error" : "success") as ToolCallInfo["status"],
                   output: payload.content,
                 },
               };
