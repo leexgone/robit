@@ -35,7 +35,7 @@ fn main() {
         .join(".robit")
         .join("robit.db");
 
-    let app_state = AppState::new(db_path, client, config).expect("Failed to initialize app state");
+    let app_state = AppState::new(db_path, client, config, None).expect("Failed to initialize app state");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

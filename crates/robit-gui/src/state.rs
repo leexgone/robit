@@ -86,6 +86,7 @@ impl AppState {
         db_path: PathBuf,
         llm_client: Arc<LlmClient>,
         config: RobitConfig,
+        working_dir: Option<PathBuf>,
     ) -> Result<Self, String> {
         // Ensure parent directory exists
         if let Some(parent) = db_path.parent() {
@@ -99,7 +100,23 @@ impl AppState {
 
         let db = Arc::new(Mutex::new(conn));
 
-        let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // Resolve and validate working directory
+        let working_dir = match working_dir {
+            Some(path) => {
+                if !path.exists() {
+                    return Err(format!("Working directory does not exist: {}", path.display()));
+                }
+                if !path.is_dir() {
+                    return Err(format!("Path is not a directory: {}", path.display()));
+                }
+                // Canonicalize to get absolute path (resolves symlinks, etc.)
+                std::fs::canonicalize(path)
+                    .map_err(|e| format!("Failed to resolve working directory path: {}", e))?
+            }
+            None => {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            }
+        };
 
         let auto_approve = config
             .app
