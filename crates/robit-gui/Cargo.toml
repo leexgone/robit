@@ -15,7 +15,7 @@ robit-agent = { path = "../robit-agent" }
 robit-ai = { path = "../robit-ai" }
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 tokio.workspace = true
 tokio-util = "0.7"
 async-trait.workspace = true
