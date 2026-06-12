@@ -14,7 +14,7 @@ use std::io::{self, BufRead, Write};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load configuration
-    let config = load_config()?;
+    let config = load_config(None)?;
 
     // Create LLM client
     let client = LlmClient::from_config(&config, None)?;

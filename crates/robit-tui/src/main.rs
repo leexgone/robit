@@ -43,6 +43,10 @@ struct Cli {
     /// 自动批准所有工具调用，跳过用户确认
     #[arg(long)]
     auto_approve: bool,
+
+    /// Working directory for the agent
+    #[arg(long, short = 'w')]
+    workdir: Option<std::path::PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -61,7 +65,20 @@ fn main() -> Result<()> {
         })
         .init();
 
-    let config = load_config()?;
+    // Resolve working directory
+    let working_dir = if let Some(ref workdir) = cli.workdir {
+        if !workdir.exists() {
+            anyhow::bail!("Working directory does not exist: {}", workdir.display());
+        }
+        if !workdir.is_dir() {
+            anyhow::bail!("Path is not a directory: {}", workdir.display());
+        }
+        std::fs::canonicalize(workdir)?
+    } else {
+        std::env::current_dir()?
+    };
+
+    let config = load_config(cli.workdir.as_deref())?;
 
     // Determine auto_approve: CLI flag takes priority, then config, then default false
     let auto_approve = cli.auto_approve || config.app.as_ref().and_then(|a| a.auto_approve).unwrap_or(false);
@@ -71,7 +88,6 @@ fn main() -> Result<()> {
 
     let context_config = config.app.as_ref().and_then(|a| a.context.as_ref());
     let context_window = client.resolved().context_window;
-    let working_dir = std::env::current_dir()?;
 
     // Load skills first (needed for LoadSkillTool)
     let global_skills_dir = dirs::home_dir().map(|h| h.join(".robit/skills"));

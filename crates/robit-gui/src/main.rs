@@ -37,7 +37,7 @@ fn main() {
         )
         .init();
 
-    let config = load_config().expect("Failed to load robit.toml configuration");
+    let config = load_config(cli.workdir.as_deref()).expect("Failed to load robit.toml configuration");
     let client = Arc::new(
         LlmClient::from_config(&config, None).expect("Failed to initialize LLM client"),
     );

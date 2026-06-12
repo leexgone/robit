@@ -154,13 +154,14 @@ fn resolve_env_var(value: &str) -> String {
 /// Automatically loads `~/.robit/.env` before resolving `${ENV_VAR}` patterns.
 ///
 /// Search order:
-///   1. `cwd/config/robit.toml` (project-local)
-///   2. `~/.robit/robit.toml`   (global fallback)
-pub fn load_config() -> Result<RobitConfig, LlmError> {
+///   1. `workdir/config/robit.toml` (project-local, if workdir provided)
+///   2. `cwd/config/robit.toml` (project-local, if workdir not provided)
+///   3. `~/.robit/robit.toml`   (global fallback)
+pub fn load_config(workdir: Option<&std::path::Path>) -> Result<RobitConfig, LlmError> {
     // Load .env first so ${ENV_VAR} substitutions work
     load_env();
 
-    let path = find_config_path()?;
+    let path = find_config_path(workdir)?;
 
     let content = std::fs::read_to_string(&path).map_err(|e| {
         LlmError::ConfigError(format!("无法读取 {}: {}", path.display(), e))
@@ -189,8 +190,16 @@ pub fn load_env() {
 }
 
 /// Find the config file path following the search order.
-fn find_config_path() -> Result<PathBuf, LlmError> {
-    // 1. Project-local: cwd/config/robit.toml
+fn find_config_path(workdir: Option<&std::path::Path>) -> Result<PathBuf, LlmError> {
+    // 1. Project-local: workdir/config/robit.toml (if workdir provided)
+    if let Some(workdir) = workdir {
+        let local_path = workdir.join("config").join("robit.toml");
+        if local_path.exists() {
+            return Ok(local_path);
+        }
+    }
+
+    // 2. Project-local: cwd/config/robit.toml (if workdir not provided or no config there)
     if let Ok(cwd) = std::env::current_dir() {
         let local_path = cwd.join("config").join("robit.toml");
         if local_path.exists() {
@@ -198,7 +207,7 @@ fn find_config_path() -> Result<PathBuf, LlmError> {
         }
     }
 
-    // 2. Global: ~/.robit/robit.toml
+    // 3. Global: ~/.robit/robit.toml
     let global_path = robit_home()?.join("robit.toml");
     if global_path.exists() {
         return Ok(global_path);
