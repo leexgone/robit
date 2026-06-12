@@ -12,12 +12,24 @@ mod state;
 
 use std::sync::Arc;
 
+use clap::Parser;
 use robit_ai::config::load_config;
 use robit_ai::LlmClient;
 
 use state::AppState;
 
+#[derive(Debug, Parser)]
+#[command(name = "robit-gui")]
+#[command(about = "AI Programming Agent with GUI")]
+struct Cli {
+    /// Working directory for the agent
+    #[arg(long, short = 'w')]
+    workdir: Option<std::path::PathBuf>,
+}
+
 fn main() {
+    let cli = Cli::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -35,7 +47,7 @@ fn main() {
         .join(".robit")
         .join("robit.db");
 
-    let app_state = AppState::new(db_path, client, config, None).expect("Failed to initialize app state");
+    let app_state = AppState::new(db_path, client, config, cli.workdir).expect("Failed to initialize app state");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
