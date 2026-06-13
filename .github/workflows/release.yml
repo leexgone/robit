@@ -111,14 +111,30 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build and upload Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0.0" --locked
+
+      - name: Build Tauri app
+        working-directory: crates/robit-gui
+        run: cargo tauri build --verbose
+
+      - name: Upload GUI assets
+        uses: softprops/action-gh-release@v2
         with:
-          projectPath: crates/robit-gui
-          tagName: ${{ github.ref_name }}
-          releaseName: "Robit ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install Robit."
-          releaseDraft: false
-          prerelease: false
+          files: |
+            target/release/bundle/**/*.AppImage
+            target/release/bundle/**/*.deb
+            target/release/bundle/**/*.rpm
+            target/release/bundle/**/*.dmg
+            target/release/bundle/**/*.msi
+            target/release/bundle/**/*.exe
+            target/release/bundle/**/*.app.tar.gz
+            target/release/bundle/**/*.sig
+            crates/robit-gui/target/release/bundle/**/*.AppImage
+            crates/robit-gui/target/release/bundle/**/*.deb
+            crates/robit-gui/target/release/bundle/**/*.rpm
+            crates/robit-gui/target/release/bundle/**/*.dmg
+            crates/robit-gui/target/release/bundle/**/*.msi
+            crates/robit-gui/target/release/bundle/**/*.exe
+            crates/robit-gui/target/release/bundle/**/*.app.tar.gz
+            crates/robit-gui/target/release/bundle/**/*.sig
