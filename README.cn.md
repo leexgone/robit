@@ -39,7 +39,7 @@ docs/            # 架构、协议、路线图和实现计划
 ### 克隆并构建
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/leexgone/robit.git
 cd robit
 cargo check --workspace
 ```

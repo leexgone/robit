@@ -2,9 +2,16 @@
 name = "robit-agent"
 version = "0.1.0"
 edition = "2021"
+description = "Agent runtime, tool system, skill system, and frontend trait for robit."
+license = "Apache-2.0"
+repository = "https://github.com/leexgone/robit"
+homepage = "https://github.com/leexgone/robit"
+readme = "../../README.md"
+keywords = ["llm", "agent", "automation", "tools"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-robit-ai = { path = "../robit-ai" }
+robit-ai = { version = "0.1.0", path = "../robit-ai" }
 async-openai.workspace = true
 tokio.workspace = true
 async-trait.workspace = true

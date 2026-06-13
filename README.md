@@ -41,7 +41,7 @@ docs/            # Architecture, protocol, roadmap, and implementation plans
 ### Clone and Build
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/leexgone/robit.git
 cd robit
 cargo check --workspace
 ```
