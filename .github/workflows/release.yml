@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-cli:
+    name: Build CLI (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            binary: robit
+            archive: robit-linux-x86_64.tar.gz
+          - name: windows-x86_64
+            os: windows-latest
+            binary: robit.exe
+            archive: robit-windows-x86_64.zip
+          - name: macos-x86_64
+            os: macos-13
+            binary: robit
+            archive: robit-macos-x86_64.tar.gz
+          - name: macos-aarch64
+            os: macos-latest
+            binary: robit
+            archive: robit-macos-aarch64.tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build robit CLI
+        run: cargo build -p robit --release
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/release/${{ matrix.binary }}" dist/
+          tar -czf "${{ matrix.archive }}" -C dist "${{ matrix.binary }}"
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/release/${{ matrix.binary }}" dist/
+          Compress-Archive -Path "dist/${{ matrix.binary }}" -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload CLI asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.archive }}
+
+  build-gui:
+    name: Build GUI (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - ubuntu-22.04
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/robit-gui/ui/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/robit-gui/ui
+        run: npm ci
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build and upload Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/robit-gui
+          tagName: ${{ github.ref_name }}
+          releaseName: "Robit ${{ github.ref_name }}"
+          releaseBody: "See the assets below to download and install Robit."
+          releaseDraft: false
+          prerelease: false
