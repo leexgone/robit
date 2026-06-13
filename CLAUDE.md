@@ -147,7 +147,7 @@ supports_tools = true
 [app]
 log_level = "DEBUG"
 max_steps = 10
-enabled_tools = ["read", "bash"]       # 可选，启用的工具列表
+enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]  # 可选，启用的工具列表。不配置时启用所有工具；read 和 load_skill 始终启用
 auto_approve = false                   # 可选，是否自动批准所有工具调用（默认 false）
 
 [app.context]                          # 上下文管理配置（可选，以下为默认值）

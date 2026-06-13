@@ -566,6 +566,36 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_enabled_tools() {
+        let toml_str = r#"
+            default_model = "deepseek/deepseek-chat"
+
+            [providers.deepseek]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.deepseek.models]]
+            id = "deepseek-chat"
+
+            [app]
+            enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
+        "#;
+
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let app = config.app.as_ref().unwrap();
+        assert!(app.enabled_tools.is_some());
+        let tools = app.enabled_tools.as_ref().unwrap();
+        assert_eq!(tools.len(), 7);
+        assert_eq!(tools[0], "read");
+        assert_eq!(tools[1], "bash");
+        assert_eq!(tools[2], "edit");
+        assert_eq!(tools[3], "write");
+        assert_eq!(tools[4], "grep");
+        assert_eq!(tools[5], "find");
+        assert_eq!(tools[6], "ls");
+    }
+
+    #[test]
     fn test_parse_auto_approve() {
         let toml_str = r#"
             default_model = "deepseek/deepseek-chat"

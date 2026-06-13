@@ -247,20 +247,24 @@ Agent 收到 LLM 的 tool_call
 ```
 
 **auto_approve 配置优先级**：
+
 1. 命令行参数 `--auto-approve`（最高优先级）
 2. `config.toml` 中的 `[app] auto_approve` 配置
 3. 默认 `false`（需要确认）
 
 ### 工具启用策略
 
-`grep`、`find`、`ls` 默认不启用，通过 `settings.toml` 中的 `enabled_tools` 属性配置：
+通过 `config.toml` 中的 `enabled_tools` 属性配置：
 
 ```toml
-model = "deepseek/deepseek-chat"
+[app]
 enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 ```
 
-未指定的工具使用默认值（`read`、`bash`、`edit`、`write` 默认启用）。
+**规则：**
+- **不配置 `enabled_tools`**：自动启用所有工具
+- **配置 `enabled_tools`**：只启用列表中指定的工具
+- **`read` 和 `load_skill`**：始终启用（基础功能必需）
 
 ## Bootstrap 模块
 
