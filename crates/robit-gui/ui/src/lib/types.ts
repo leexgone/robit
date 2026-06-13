@@ -60,4 +60,5 @@ export type UiEvent =
       session_id: string;
       name: string;
       description: string;
-    };
+    }
+  | { type: "SessionRenamed"; session_id: string; title: string };

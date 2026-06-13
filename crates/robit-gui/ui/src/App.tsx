@@ -15,6 +15,7 @@ function App() {
   const setAgentStatus = useStore((s) => s.setAgentStatus);
   const addToolCard = useStore((s) => s.addToolCard);
   const updateToolCard = useStore((s) => s.updateToolCard);
+  const updateSessionTitle = useStore((s) => s.updateSessionTitle);
   const messagesStore = useStore((s) => s.messages);
   const setMessages = useStore((s) => s.setMessages);
 
@@ -111,13 +112,17 @@ function App() {
         case "SkillTriggered":
           // Could show a toast notification here
           break;
+
+        case "SessionRenamed":
+          updateSessionTitle(payload.session_id, payload.title);
+          break;
       }
     });
 
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [appendStreaming, commitStreaming, setAgentStatus, addToolCard, updateToolCard, messagesStore, setMessages]);
+  }, [appendStreaming, commitStreaming, setAgentStatus, addToolCard, updateToolCard, updateSessionTitle, messagesStore, setMessages]);
 
   return (
     <div className="h-screen flex flex-col bg-background text-foreground">

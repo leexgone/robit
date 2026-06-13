@@ -1,9 +1,24 @@
 use robit_agent::event::{FrontendMessage, new_session_id};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::db;
-use crate::events::{ConfigInfo, MessageData, SessionInfo};
+use crate::events::{ConfigInfo, MessageData, SessionInfo, UiEvent};
 use crate::state::AppState;
+
+/// Generate a session title from user message content.
+/// Takes the first line and truncates to ~30 chars.
+fn generate_session_title(content: &str) -> String {
+    let first_line = content.lines().next().unwrap_or("New Session");
+    let trimmed = first_line.trim();
+    if trimmed.is_empty() {
+        return "New Session".to_string();
+    }
+    if trimmed.len() <= 30 {
+        trimmed.to_string()
+    } else {
+        format!("{}...", &trimmed[..28])
+    }
+}
 
 /// Create a new session and its Agent.
 #[tauri::command]
@@ -88,10 +103,33 @@ pub async fn switch_session(
 /// Send a user message to the active session's Agent.
 #[tauri::command]
 pub async fn send_message(
+    app_handle: AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     content: String,
 ) -> Result<(), String> {
+    // Check if this is a new session (only "New Session" title and no messages yet)
+    let should_auto_rename = {
+        let db = state.db.lock().await;
+        if let Ok(Some(session)) = db::get_session(&db, &session_id) {
+            session.title == "New Session"
+        } else {
+            false
+        }
+    };
+
+    // Auto-rename session based on first user message
+    if should_auto_rename {
+        let new_title = generate_session_title(&content);
+        let db = state.db.lock().await;
+        if db::update_session_title(&db, &session_id, &new_title).is_ok() {
+            let _ = app_handle.emit("agent-event", UiEvent::SessionRenamed {
+                session_id: session_id.clone(),
+                title: new_title,
+            });
+        }
+    }
+
     // Save user message to DB
     {
         let db = state.db.lock().await;

@@ -39,6 +39,11 @@ pub enum UiEvent {
         name: String,
         description: String,
     },
+    /// Session title was updated (auto-renamed or manual rename).
+    SessionRenamed {
+        session_id: String,
+        title: String,
+    },
 }
 
 /// Session metadata returned to the frontend.
