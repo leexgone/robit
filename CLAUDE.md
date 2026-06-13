@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**robit** 是一个基于 Rust 的单体仓库，构建 AI 编程代理框架。它提供可扩展的编程代理，包含终端 UI (TUI)、桌面 GUI (React + Tauri)、统一多提供商 LLM API 和代理运行时，支持 Windows、Linux 和 macOS 系统，兼容常用终端。
+**robit** 是一个基于 Rust 的单体仓库，构建 AI 编程代理框架。它提供可扩展的自动化代理，包含终端 UI (TUI)、桌面 GUI (React + Tauri)、统一多提供商 LLM API 和代理运行时，支持 Windows、Linux 和 macOS 系统，兼容常用终端。
 
 ## 仓库结构
 
