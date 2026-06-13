@@ -2,6 +2,7 @@
 name = "robit-gui"
 version = "0.1.0"
 edition = "2021"
+publish = false
 description = "Desktop GUI frontend for the robit AI automation agent."
 license = "Apache-2.0"
 repository = "https://github.com/leexgone/robit"

@@ -2,6 +2,7 @@
 name = "robit-agent-cli"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [dependencies]
 robit-ai = { path = "../../crates/robit-ai" }
