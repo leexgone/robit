@@ -14,7 +14,7 @@
 | --- | --- |
 | `crates/robit-ai` | 多提供商 LLM API，支持 OpenAI 协议，适配 DeepSeek、QWen 等模型 |
 | `crates/robit-agent` | 代理运行时（Agent 循环、工具执行、会话管理）。定义 `Frontend` trait 供前端实现。依赖 `robit-ai` |
-| `crates/robit-tui` | 终端前端（`ratatui` + `crossterm`），实现 `Frontend` trait。二进制名 `robit`。依赖 `robit-agent` |
+| `crates/robit-tui` | 终端前端（`ratatui` + `crossterm`），crate 和二进制名均为 `robit`。实现 `Frontend` trait，依赖 `robit-agent` |
 | `crates/robit-gui` | 桌面 GUI 前端（React + Tauri v2），实现 `Frontend` trait。SQLite 持久化会话。依赖 `robit-agent` |
 | `crates/robit-feishu` | _（计划）_ 飞书前端，实现 `Frontend` trait |
 | `crates/robit-qq` | _（计划）_ QQ 前端，实现 `Frontend` trait |

@@ -1,6 +1,6 @@
 //! robit — TUI frontend for the Robit AI automaton agent.
 //!
-//! Usage: cargo run -p robit-tui
+//! Usage: cargo run -p robit
 //!        or: robit (after install)
 
 mod app;

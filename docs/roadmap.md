@@ -28,7 +28,7 @@
 
 **验证**：`cargo run -p robit-agent-cli` 启动命令行 Agent，使用 `read`/`bash` 工具完成任务。
 
-## 阶段 3：TUI 前端（`robit-tui`） ✅ 已完成
+## 阶段 3：TUI 前端（`robit`） ✅ 已完成
 
 **目标**：完整的终端交互体验，可用于日常编程。
 
@@ -41,7 +41,7 @@
 - [x] 输入编辑器（历史记录、多行切换、光标移动）
 - [x] 鼠标支持（滚轮滚动 + 点击选择）
 
-**验证**：`cargo run -p robit-tui` 启动 TUI，用 `robit` 命令进行对话。
+**验证**：`cargo run -p robit` 启动 TUI，用 `robit` 命令进行对话。
 
 ## 阶段 4：扩展
 
