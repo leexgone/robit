@@ -1,4 +1,4 @@
-//! robit — TUI frontend for the Robit AI programming agent.
+//! robit — TUI frontend for the Robit AI automaton agent.
 //!
 //! Usage: cargo run -p robit-tui
 //!        or: robit (after install)
@@ -32,7 +32,7 @@ use tui_frontend::{ConfirmRequest, TuiFrontend};
 
 #[derive(Debug, Parser)]
 #[command(name = "robit")]
-#[command(about = "AI Programming Agent with TUI")]
+#[command(about = "AI Automaton Agent with TUI")]
 struct Cli {
     /// Auto-approve all tool calls, skipping user confirmation
     #[arg(long)]

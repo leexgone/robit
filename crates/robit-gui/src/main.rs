@@ -1,4 +1,4 @@
-//! robit-gui — Tauri v2 desktop GUI for the Robit AI programming agent.
+//! robit-gui — Tauri v2 desktop GUI for the Robit AI automaton agent.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(dead_code)] // Allow unused code for now, will be used in UI
@@ -20,7 +20,7 @@ use state::AppState;
 
 #[derive(Debug, Parser)]
 #[command(name = "robit-gui")]
-#[command(about = "AI Programming Agent with GUI")]
+#[command(about = "AI Automaton Agent with GUI")]
 struct Cli {
     /// Working directory for the agent
     #[arg(long, short = 'w')]

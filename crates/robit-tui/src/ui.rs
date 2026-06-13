@@ -141,7 +141,7 @@ fn draw_conversation(f: &mut Frame, app: &App, area: Rect) {
     if lines.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Welcome to Robit — AI Programming Agent",
+            "  Welcome to Robit — AI Automaton Agent",
             Style::default().fg(Color::DarkGray),
         )));
         lines.push(Line::from(Span::styled(

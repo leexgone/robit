@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Parser)]
 #[command(name = "robit-agent-cli")]
-#[command(about = "AI Programming Agent with stdin/stdout frontend")]
+#[command(about = "AI Automaton Agent with stdin/stdout frontend")]
 struct Cli {
     /// Auto-approve all tool calls, skipping user confirmation
     #[arg(long)]

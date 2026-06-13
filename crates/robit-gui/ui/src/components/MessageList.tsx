@@ -58,7 +58,7 @@ export function MessageList() {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         <div className="text-center">
-          <p className="text-lg mb-2">Robit AI Programming Agent</p>
+          <p className="text-lg mb-2">Robit AI Automaton Agent</p>
           <p className="text-sm">Select a session or create a new one to get started</p>
         </div>
       </div>
