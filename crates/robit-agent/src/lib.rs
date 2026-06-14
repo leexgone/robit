@@ -12,6 +12,7 @@ pub mod event;
 pub mod frontend;
 pub mod prompt;
 pub mod skill;
+pub mod storage;
 pub mod tool;
 
 pub use agent::Agent;

@@ -27,3 +27,4 @@ dirs.workspace = true
 encoding_rs = "0.8"
 globset.workspace = true
 regex.workspace = true
+rusqlite.workspace = true

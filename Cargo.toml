@@ -39,6 +39,7 @@ uuid = { version = "1.23", features = ["v4"] }
 globset = "0.4"
 regex = "1"
 time = { version = "0.3", features = ["formatting", "macros"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # TUI
 ratatui = "0.30"
