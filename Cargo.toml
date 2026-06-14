@@ -38,6 +38,7 @@ dotenvy = "0.15"
 uuid = { version = "1.23", features = ["v4"] }
 globset = "0.4"
 regex = "1"
+time = { version = "0.3", features = ["formatting", "macros"] }
 
 # TUI
 ratatui = "0.30"

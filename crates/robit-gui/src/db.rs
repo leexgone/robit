@@ -1,4 +1,5 @@
-use rusqlite::{Connection, Result as SqliteResult, params};
+use robit_agent::datetime::current_timestamp;
+use rusqlite::{params, Connection, Result as SqliteResult};
 
 use crate::events::{MessageData, SessionInfo};
 
@@ -30,7 +31,7 @@ pub fn init_db(conn: &Connection) -> SqliteResult<()> {
             ON messages(session_id);
         CREATE INDEX IF NOT EXISTS idx_messages_created
             ON messages(session_id, created_at);
-        "
+        ",
     )?;
 
     // Try to add tool_info column, ignore error if already exists
@@ -41,7 +42,7 @@ pub fn init_db(conn: &Connection) -> SqliteResult<()> {
 
 /// Insert a new session.
 pub fn insert_session(conn: &Connection, id: &str, title: &str, model: &str) -> SqliteResult<()> {
-    let now = chrono_now();
+    let now = current_timestamp();
     conn.execute(
         "INSERT INTO sessions (id, title, model, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![id, title, model, now, now],
@@ -90,7 +91,7 @@ pub fn get_session(conn: &Connection, id: &str) -> SqliteResult<Option<SessionIn
 
 /// Update a session's title.
 pub fn update_session_title(conn: &Connection, id: &str, title: &str) -> SqliteResult<()> {
-    let now = chrono_now();
+    let now = current_timestamp();
     conn.execute(
         "UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
         params![title, now, id],
@@ -100,7 +101,7 @@ pub fn update_session_title(conn: &Connection, id: &str, title: &str) -> SqliteR
 
 /// Update a session's updated_at timestamp.
 pub fn touch_session(conn: &Connection, id: &str) -> SqliteResult<()> {
-    let now = chrono_now();
+    let now = current_timestamp();
     conn.execute(
         "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
         params![now, id],
@@ -127,7 +128,7 @@ pub fn insert_message(
     tool_call_id: Option<&str>,
     tool_info: Option<&str>,
 ) -> SqliteResult<i64> {
-    let now = chrono_now();
+    let now = current_timestamp();
     conn.execute(
         "INSERT INTO messages (session_id, role, content, tool_name, tool_call_id, tool_info, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![session_id, role, content, tool_name, tool_call_id, tool_info, now],
@@ -168,40 +169,4 @@ pub fn update_tool_message(
         params![tool_info, session_id, tool_call_id],
     )?;
     Ok(())
-}
-
-/// Get an ISO 8601 timestamp string without chrono dependency.
-fn chrono_now() -> String {
-    use std::time::SystemTime;
-    let duration = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    let (year, month, day) = days_to_date(days as i64);
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-        year, month, day, hours, minutes, seconds
-    )
-}
-
-fn days_to_date(mut days: i64) -> (i64, u32, u32) {
-    days += 719468;
-    let era = if days >= 0 { days } else { days - 146096 } / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { (mp + 3) as u32 } else { (mp - 9) as u32 };
-    let year = if month <= 2 { year + 1 } else { year };
-    (year, month, day)
 }
