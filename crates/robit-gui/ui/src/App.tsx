@@ -16,7 +16,6 @@ function App() {
   const addToolCard = useStore((s) => s.addToolCard);
   const updateToolCard = useStore((s) => s.updateToolCard);
   const updateSessionTitle = useStore((s) => s.updateSessionTitle);
-  const messagesStore = useStore((s) => s.messages);
   const setMessages = useStore((s) => s.setMessages);
 
   // Initialize app data
@@ -71,7 +70,7 @@ function App() {
             tool_info: toolInfoRequested,
             created_at: new Date().toISOString(),
           };
-          const currentMsgs = messagesStore[sid] || [];
+          const currentMsgs = useStore.getState().messages[sid] || [];
           setMessages(sid, [...currentMsgs, toolMsg]);
           break;
 
@@ -82,7 +81,7 @@ function App() {
           });
 
           // Also update the tool message in history
-          const msgsToUpdate = messagesStore[sid] || [];
+          const msgsToUpdate = useStore.getState().messages[sid] || [];
           const updatedMsgs = msgsToUpdate.map(msg => {
             if (msg.tool_call_id === payload.tool_call_id && msg.tool_info) {
               return {
@@ -122,7 +121,7 @@ function App() {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [appendStreaming, commitStreaming, setAgentStatus, addToolCard, updateToolCard, updateSessionTitle, messagesStore, setMessages]);
+  }, [appendStreaming, commitStreaming, setAgentStatus, addToolCard, updateToolCard, updateSessionTitle, setMessages]);
 
   return (
     <div className="h-dvh w-screen min-h-0 min-w-0 overflow-hidden flex flex-col bg-background text-foreground">

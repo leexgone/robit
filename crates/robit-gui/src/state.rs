@@ -206,8 +206,15 @@ impl AppState {
         let mut info = crate::config::build_config_info(&self.config, &self.working_dir);
         info.tools_enabled = tools.len();
         info.tools_total = tools.len();
+        info.tool_names = tools.into_iter().map(str::to_string).collect();
         info.skills_enabled = self.skill_registry.count();
         info.skills_total = self.total_skills;
+        info.skill_names = self
+            .skill_registry
+            .skill_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         info
     }
 

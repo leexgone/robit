@@ -115,7 +115,7 @@ export function SessionItem({ session }: SessionItemProps) {
             autoFocus
           />
         ) : (
-          <span className="flex-1 truncate">{session.title}</span>
+          <span className="flex-1 truncate" title={session.title}>{session.title}</span>
         )}
         {session.status === "running" && (
           <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse shrink-0" />

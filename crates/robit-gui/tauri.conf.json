@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-docs-v2/main/src/content/docs/_schema/config.schema.json",
   "productName": "Robit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.robit.app",
   "build": {
     "frontendDist": "ui/dist",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Robit - AI Automaton Agent",
+        "title": "Robit v0.1.1 - AI Automaton Agent",
         "width": 1200,
         "height": 800,
         "minWidth": 800,

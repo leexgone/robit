@@ -48,4 +48,6 @@ pub struct ConfigInfo {
     pub skills_total: usize,
     pub auto_approve: bool,
     pub working_dir: String,
+    pub tool_names: Vec<String>,
+    pub skill_names: Vec<String>,
 }

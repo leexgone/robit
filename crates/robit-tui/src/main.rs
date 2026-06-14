@@ -33,6 +33,7 @@ use tui_frontend::{ConfirmRequest, TuiFrontend};
 #[derive(Debug, Parser)]
 #[command(name = "robit")]
 #[command(about = "AI Automaton Agent with TUI")]
+#[command(version)]
 struct Cli {
     /// Auto-approve all tool calls, skipping user confirmation
     #[arg(long)]

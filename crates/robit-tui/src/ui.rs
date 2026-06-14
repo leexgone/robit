@@ -66,7 +66,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(indicator_color),
         ),
         Span::styled(
-            "robit v0.1.0",
+            "robit v0.1.1",
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),

@@ -24,5 +24,7 @@ pub fn build_config_info(config: &robit_ai::config::RobitConfig, working_dir: &P
         skills_total: 0,
         auto_approve,
         working_dir: working_dir.display().to_string(),
+        tool_names: Vec::new(),
+        skill_names: Vec::new(),
     }
 }

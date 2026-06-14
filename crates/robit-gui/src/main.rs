@@ -21,6 +21,7 @@ use state::AppState;
 #[derive(Debug, Parser)]
 #[command(name = "robit-gui")]
 #[command(about = "AI Automaton Agent with GUI")]
+#[command(version)]
 struct Cli {
     /// Working directory for the agent
     #[arg(long, short = 'w')]
