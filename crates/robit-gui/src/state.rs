@@ -203,7 +203,7 @@ impl AppState {
     /// Build ConfigInfo for the frontend.
     pub fn config_info(&self) -> ConfigInfo {
         let tools = self.tool_registry.tool_names();
-        let mut info = crate::config::build_config_info(&self.config);
+        let mut info = crate::config::build_config_info(&self.config, &self.working_dir);
         info.tools_enabled = tools.len();
         info.tools_total = tools.len();
         info.skills_enabled = self.skill_registry.count();

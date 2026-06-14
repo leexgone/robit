@@ -72,8 +72,8 @@ export function InputArea() {
   };
 
   return (
-    <div className="border-t p-3 shrink-0">
-      <div className="flex items-end gap-2">
+    <div className="border-t p-3 shrink-0 min-w-0">
+      <div className="flex items-end gap-2 min-w-0">
         <textarea
           ref={textareaRef}
           value={value}
@@ -83,7 +83,7 @@ export function InputArea() {
           placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
           disabled={isBusy || !activeSessionId}
           rows={1}
-          className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 min-h-[36px] max-h-[200px]"
+          className="flex-1 min-w-0 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 min-h-[36px] max-h-[200px]"
         />
         <Button
           size="icon"

@@ -11,15 +11,15 @@ interface AssistantMessageProps {
 
 export function AssistantMessage({ content, isStreaming }: AssistantMessageProps) {
   return (
-    <div className="flex justify-start px-4 py-3">
-      <div className="flex items-start gap-3 max-w-[85%]">
+    <div className="flex justify-start px-4 py-3 min-w-0">
+      <div className="flex items-start gap-3 max-w-[min(85%,1100px)] min-w-0">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent mt-0.5">
           <Bot className="h-4 w-4 text-accent-foreground" />
         </div>
         <div className="flex flex-col items-start min-w-0">
           <div className="text-xs font-medium text-muted-foreground mb-1">Robit</div>
-          <div className="bg-accent text-accent-foreground rounded-2xl rounded-tl-sm px-4 py-3 max-w-full min-w-0">
-            <div className="markdown-body text-sm">
+          <div className="bg-accent text-accent-foreground rounded-2xl rounded-tl-sm px-4 py-3 max-w-full min-w-0 overflow-hidden">
+            <div className="markdown-body text-sm min-w-0 max-w-full">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -131,7 +131,7 @@ export function AssistantMessage({ content, isStreaming }: AssistantMessageProps
                   // 表格 (GFM)
                   table({ children }) {
                     return (
-                      <div className="overflow-x-auto my-2">
+                      <div className="overflow-x-auto my-2 max-w-full">
                         <table>{children}</table>
                       </div>
                     );

@@ -125,9 +125,9 @@ function App() {
   }, [appendStreaming, commitStreaming, setAgentStatus, addToolCard, updateToolCard, updateSessionTitle, messagesStore, setMessages]);
 
   return (
-    <div className="h-screen flex flex-col bg-background text-foreground">
+    <div className="h-dvh w-screen min-h-0 min-w-0 overflow-hidden flex flex-col bg-background text-foreground">
       <StatusBar />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
         <SessionSidebar />
         <ChatPanel />
       </div>

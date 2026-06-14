@@ -47,4 +47,5 @@ pub struct ConfigInfo {
     pub skills_enabled: usize,
     pub skills_total: usize,
     pub auto_approve: bool,
+    pub working_dir: String,
 }

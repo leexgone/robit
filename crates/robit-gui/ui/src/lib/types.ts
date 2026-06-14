@@ -25,6 +25,7 @@ export interface ConfigInfo {
   skills_enabled: number;
   skills_total: number;
   auto_approve: boolean;
+  working_dir: string;
 }
 
 export interface ToolCallInfo {

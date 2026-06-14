@@ -30,7 +30,8 @@ export function SessionSidebar() {
 
     const onMouseMove = (e: MouseEvent) => {
       const delta = e.clientX - startX;
-      const newWidth = Math.min(400, Math.max(160, startWidth + delta));
+      const maxWidth = Math.min(400, Math.max(160, window.innerWidth - 320));
+      const newWidth = Math.min(maxWidth, Math.max(160, startWidth + delta));
       setSidebarWidth(newWidth);
     };
 
@@ -44,16 +45,19 @@ export function SessionSidebar() {
   };
 
   return (
-    <div className="flex shrink-0 h-full" style={{ width: sidebarWidth }}>
-      <div className="flex flex-col flex-1 border-r min-w-0 h-full">
+    <div
+      className="flex shrink-0 h-full min-h-0 min-w-0"
+      style={{ width: `clamp(160px, ${sidebarWidth}px, min(400px, 40vw))` }}
+    >
+      <div className="flex flex-col flex-1 border-r min-w-0 min-h-0 h-full">
         <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
           <span className="text-xs font-medium text-muted-foreground">Sessions</span>
           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCreateSession}>
             <Plus className="h-3.5 w-3.5" />
           </Button>
         </div>
-        <ScrollArea className="flex-1">
-          <div className="p-2 space-y-0.5">
+        <ScrollArea className="flex-1 min-h-0 min-w-0">
+          <div className="p-2 space-y-0.5 min-w-0">
             {sessions.map((session) => (
               <SessionItem key={session.id} session={session} />
             ))}
