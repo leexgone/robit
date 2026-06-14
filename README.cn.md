@@ -184,7 +184,30 @@ DEEPSEEK_API_KEY=your-api-key
 
 TUI 中可以通过 `/skills` 查看已加载技能。技能文件格式和注册机制详见 [docs/architecture.md](docs/architecture.md)。
 
-## 发布建议
+## 发布版本
+
+预编译二进制包可在 [GitHub Releases](https://github.com/leexgone/robit/releases) 下载。每个发布版本包含适用于 Linux、macOS 和 Windows 的 CLI 和 GUI 包。
+
+### CLI（终端版）
+
+| 平台 | 资产 | 说明 |
+| --- | --- | --- |
+| Linux x86_64 | `robit-linux-x86_64.tar.gz` | 解压后运行 `./robit` |
+| macOS (Apple Silicon) | `robit-macos-aarch64.tar.gz` | 解压后运行 `./robit` |
+| Windows x86_64 | `robit-windows-x86_64.zip` | 解压后运行 `robit.exe` |
+
+### GUI（桌面版）
+
+| 平台 | 资产 | 说明 |
+| --- | --- | --- |
+| Linux | `Robit_*_amd64.AppImage` | 便携版，无需安装 |
+| Linux (Debian/Ubuntu) | `Robit_*_amd64.deb` | `sudo dpkg -i Robit_*.deb` |
+| Linux (Fedora/RHEL) | `Robit-*.x86_64.rpm` | `sudo rpm -i Robit-*.rpm` |
+| macOS (Apple Silicon) | `Robit_*_aarch64.dmg` | 打开后拖入 Applications |
+| Windows | `Robit_*_x64-setup.exe` | 运行安装程序 |
+| Windows (MSI) | `Robit_*_x64_en-US.msi` | 企业部署 |
+
+### 从源码安装
 
 - `robit-ai`、`robit-agent`：适合发布到 crates.io，供 Rust 项目依赖。
 - `robit`：终端程序，适合发布到 crates.io，用户可通过 `cargo install robit` 安装。

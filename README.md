@@ -186,10 +186,33 @@ Skills are prompt templates stored as Markdown/YAML files. They can be placed in
 
 Use `/skills` in the TUI to inspect loaded skills. See [docs/architecture.md](docs/architecture.md) for the skill file format and registration mechanism.
 
-## Release Guidance
+## Releases
+
+Pre-built binaries are available on [GitHub Releases](https://github.com/leexgone/robit/releases). Each release includes CLI and GUI packages for Linux, macOS, and Windows.
+
+### CLI (Terminal)
+
+| Platform | Asset | Notes |
+| --- | --- | --- |
+| Linux x86_64 | `robit-linux-x86_64.tar.gz` | Extract and run `./robit` |
+| macOS (Apple Silicon) | `robit-macos-aarch64.tar.gz` | Extract and run `./robit` |
+| Windows x86_64 | `robit-windows-x86_64.zip` | Extract and run `robit.exe` |
+
+### GUI (Desktop)
+
+| Platform | Asset | Notes |
+| --- | --- | --- |
+| Linux | `Robit_*_amd64.AppImage` | Portable, no installation required |
+| Linux (Debian/Ubuntu) | `Robit_*_amd64.deb` | `sudo dpkg -i Robit_*.deb` |
+| Linux (Fedora/RHEL) | `Robit-*.x86_64.rpm` | `sudo rpm -i Robit-*.rpm` |
+| macOS (Apple Silicon) | `Robit_*_aarch64.dmg` | Open and drag to Applications |
+| Windows | `Robit_*_x64-setup.exe` | Run the installer |
+| Windows (MSI) | `Robit_*_x64_en-US.msi` | Enterprise deployment |
+
+### From Source
 
 - `robit-ai` and `robit-agent`: suitable for crates.io as Rust library crates.
-- `robit`: suitable for crates.io as the terminal application; users can install it with `cargo install robit`.
+- `robit` (TUI): install with `cargo install robit`.
 - `robit-gui`: better distributed through GitHub Releases, a website, Homebrew Cask, Winget, Scoop, AppImage, deb/rpm, dmg/msi, or similar desktop distribution channels.
 
 ## Documentation
