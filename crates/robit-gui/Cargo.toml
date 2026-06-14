@@ -24,6 +24,8 @@ robit-ai = { version = "0.1.1", path = "../robit-ai" }
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 rusqlite.workspace = true
+# Pin transitive Tauri brotli stack to a compatible decompressor line.
+brotli-decompressor = "=5.0.1"
 tokio.workspace = true
 tokio-util = "0.7"
 async-trait.workspace = true
