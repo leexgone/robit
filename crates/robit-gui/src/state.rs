@@ -6,18 +6,50 @@ use tokio::sync::Mutex;
 use robit_agent::agent::Agent;
 use robit_agent::event::{FrontendMessage, SessionId};
 use robit_agent::skill::SkillRegistry;
+use robit_agent::storage::resolve_db_path;
 use robit_agent::tool::ToolRegistry;
 use robit_agent::{bootstrap, log_skill_errors};
-use tauri::Emitter;
 use robit_ai::config::RobitConfig;
 use robit_ai::LlmClient;
 use rusqlite::Connection;
+use tauri::Emitter;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::db;
 use crate::events::{ConfigInfo, SessionInfo};
 use crate::frontend::GuiFrontend;
+
+fn resolve_working_dir(working_dir: Option<PathBuf>) -> Result<PathBuf, String> {
+    match working_dir {
+        Some(path) => {
+            if !path.exists() {
+                return Err(format!(
+                    "Working directory does not exist: {}",
+                    path.display()
+                ));
+            }
+            if !path.is_dir() {
+                return Err(format!("Path is not a directory: {}", path.display()));
+            }
+            // Canonicalize to get absolute path (resolves symlinks, etc.)
+            std::fs::canonicalize(path)
+                .map_err(|e| format!("Failed to resolve working directory path: {}", e))
+        }
+        None => {
+            std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))
+        }
+    }
+}
+
+fn should_use_global_storage(config: &RobitConfig, cli_global_storage: bool) -> bool {
+    cli_global_storage
+        || config
+            .app
+            .as_ref()
+            .and_then(|a| a.global_storage)
+            .unwrap_or(false)
+}
 
 /// Agent run status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,40 +114,34 @@ pub struct AppState {
 impl AppState {
     /// Create a new AppState, initializing the database.
     pub fn new(
-        db_path: PathBuf,
         llm_client: Arc<LlmClient>,
         config: RobitConfig,
         working_dir: Option<PathBuf>,
+        cli_global_storage: bool,
     ) -> Result<Self, String> {
+        // Resolve and validate working directory
+        let working_dir = resolve_working_dir(working_dir)?;
+        let global_storage = should_use_global_storage(&config, cli_global_storage);
+        let db_path = resolve_db_path(&working_dir, global_storage)?;
+
         // Ensure parent directory exists
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create DB dir: {}", e))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create DB dir: {}", e))?;
         }
 
-        let conn = Connection::open(&db_path)
-            .map_err(|e| format!("Failed to open database: {}", e))?;
+        tracing::info!(
+            db_path = %db_path.display(),
+            global_storage,
+            "Using session database"
+        );
+
+        let conn =
+            Connection::open(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
         db::init_db(&conn).map_err(|e| format!("Failed to init database: {}", e))?;
 
         let db = Arc::new(Mutex::new(conn));
-
-        // Resolve and validate working directory
-        let working_dir = match working_dir {
-            Some(path) => {
-                if !path.exists() {
-                    return Err(format!("Working directory does not exist: {}", path.display()));
-                }
-                if !path.is_dir() {
-                    return Err(format!("Path is not a directory: {}", path.display()));
-                }
-                // Canonicalize to get absolute path (resolves symlinks, etc.)
-                std::fs::canonicalize(path)
-                    .map_err(|e| format!("Failed to resolve working directory path: {}", e))?
-            }
-            None => {
-                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-            }
-        };
 
         let auto_approve = config
             .app
@@ -166,7 +192,8 @@ impl AppState {
                     AgentStatus::Idle => "idle",
                     AgentStatus::Ready => "ready",
                     AgentStatus::Running => "running",
-                }.to_string();
+                }
+                .to_string();
             }
         }
 
@@ -240,7 +267,13 @@ impl AppState {
                     crate::events::UiEvent::TextDelta { delta, .. } => {
                         buffer.push_str(delta);
                     }
-                    crate::events::UiEvent::ToolCallRequested { tool_call_id, name, arguments, requires_confirm, .. } => {
+                    crate::events::UiEvent::ToolCallRequested {
+                        tool_call_id,
+                        name,
+                        arguments,
+                        requires_confirm,
+                        ..
+                    } => {
                         // Save tool call request to database
                         let tool_info = serde_json::json!({
                             "tool_call_id": tool_call_id,
@@ -262,7 +295,12 @@ impl AppState {
                         );
                         let _ = crate::db::touch_session(&db, &sid_clone);
                     }
-                    crate::events::UiEvent::ToolCallResult { tool_call_id, content, is_error, .. } => {
+                    crate::events::UiEvent::ToolCallResult {
+                        tool_call_id,
+                        content,
+                        is_error,
+                        ..
+                    } => {
                         // Update tool message with result
                         // First, get the current tool_info if it exists
                         let db = db_clone.lock().await;
@@ -272,7 +310,12 @@ impl AppState {
                             "output": content,
                         });
                         let tool_info_str = serde_json::to_string(&tool_info).unwrap_or_default();
-                        let _ = crate::db::update_tool_message(&db, &sid_clone, tool_call_id, &tool_info_str);
+                        let _ = crate::db::update_tool_message(
+                            &db,
+                            &sid_clone,
+                            tool_call_id,
+                            &tool_info_str,
+                        );
                     }
                     crate::events::UiEvent::TurnComplete { .. } => {
                         // Save assistant message to database

@@ -25,6 +25,10 @@ struct Cli {
     /// Working directory for the agent
     #[arg(long, short = 'w')]
     workdir: Option<std::path::PathBuf>,
+
+    /// Store session database in the global Robit config directory
+    #[arg(long)]
+    global_storage: bool,
 }
 
 fn main() {
@@ -37,17 +41,13 @@ fn main() {
         )
         .init();
 
-    let config = load_config(cli.workdir.as_deref()).expect("Failed to load config.toml configuration");
-    let client = Arc::new(
-        LlmClient::from_config(&config, None).expect("Failed to initialize LLM client"),
-    );
+    let config =
+        load_config(cli.workdir.as_deref()).expect("Failed to load config.toml configuration");
+    let client =
+        Arc::new(LlmClient::from_config(&config, None).expect("Failed to initialize LLM client"));
 
-    let db_path = dirs::home_dir()
-        .expect("Cannot determine home directory")
-        .join(".robit")
-        .join("robit.db");
-
-    let app_state = AppState::new(db_path, client, config, cli.workdir).expect("Failed to initialize app state");
+    let app_state = AppState::new(client, config, cli.workdir, cli.global_storage)
+        .expect("Failed to initialize app state");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

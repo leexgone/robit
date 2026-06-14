@@ -93,9 +93,11 @@
 ```txt
 配置目录结构
     |--项目本地：.robit/config.toml   # 项目配置（最高优先级）
+    |--项目本地：.robit/memory/robit.db # 默认 GUI 会话数据库
     |--全局：~/.robit/
     |   |-- .env                      # 环境变量（API keys 等）
     |   |-- config.toml               # 全局配置（fallback）
+    |   |-- memory/robit.db           # 启用 global_storage 后的 GUI 会话数据库
     |   |-- skills/                   # 全局技能目录
     |   |-- prompts/                  # 自定义提示词目录
     |       |-- system.txt            # 自定义系统提示词（可选）
@@ -149,6 +151,7 @@ log_level = "DEBUG"
 max_steps = 10
 enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]  # 可选，启用的工具列表。不配置时启用所有工具；read 和 load_skill 始终启用
 auto_approve = false                   # 可选，是否自动批准所有工具调用（默认 false）
+global_storage = false                 # 可选，是否使用全局会话存储 ~/.robit/memory/robit.db（默认 false，使用 cwd/.robit/memory/robit.db）
 
 [app.context]                          # 上下文管理配置（可选，以下为默认值）
 max_output_lines = 500                 # 单次工具输出最大行数

@@ -79,6 +79,14 @@ robit
 cargo run -p robit-gui
 ```
 
+By default, GUI session history is stored at `<workdir>/.robit/memory/robit.db`. Use global storage when you want all projects to share one session database:
+
+```bash
+cargo run -p robit-gui -- --global-storage
+```
+
+With global storage enabled, the GUI uses `~/.robit/memory/robit.db`.
+
 The GUI frontend builds and loads the React app according to [crates/robit-gui/tauri.conf.json](crates/robit-gui/tauri.conf.json).
 
 ## Configuration
@@ -113,6 +121,7 @@ log_level = "INFO"
 max_steps = 10
 enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 auto_approve = false
+global_storage = false  # true stores GUI sessions in ~/.robit/memory/robit.db
 
 [app.context]
 max_output_lines = 500

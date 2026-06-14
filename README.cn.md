@@ -77,6 +77,14 @@ robit
 cargo run -p robit-gui
 ```
 
+GUI 会话历史默认存储在 `<workdir>/.robit/memory/robit.db`。如果希望所有项目共享同一个会话数据库，可以启用全局存储：
+
+```bash
+cargo run -p robit-gui -- --global-storage
+```
+
+启用全局存储后，GUI 使用 `~/.robit/memory/robit.db`。
+
 GUI 前端会根据 [crates/robit-gui/tauri.conf.json](crates/robit-gui/tauri.conf.json) 构建并加载 React 前端。
 
 ## 配置
@@ -111,6 +119,7 @@ log_level = "INFO"
 max_steps = 10
 enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 auto_approve = false
+global_storage = false  # true 时 GUI 会话存储到 ~/.robit/memory/robit.db
 
 [app.context]
 max_output_lines = 500

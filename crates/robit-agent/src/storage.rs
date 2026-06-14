@@ -1,9 +1,25 @@
 //! Session and message storage helpers.
 
+use std::path::{Path, PathBuf};
+
 use rusqlite::{params, Connection, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
 
 use crate::datetime::current_timestamp;
+
+const ROBIT_DIR: &str = ".robit";
+const MEMORY_DIR: &str = "memory";
+const DB_FILE: &str = "robit.db";
+
+/// Resolve the session database path for a working directory and storage scope.
+pub fn resolve_db_path(working_dir: &Path, global_storage: bool) -> Result<PathBuf, String> {
+    if global_storage {
+        let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
+        Ok(home.join(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE))
+    } else {
+        Ok(working_dir.join(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE))
+    }
+}
 
 /// Session metadata returned to frontends.
 #[derive(Debug, Clone, Serialize)]
@@ -210,6 +226,26 @@ pub fn update_tool_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_local_db_path() {
+        let working_dir = PathBuf::from("project");
+        let path = resolve_db_path(&working_dir, false).unwrap();
+        assert_eq!(
+            path,
+            working_dir.join(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE)
+        );
+    }
+
+    #[test]
+    fn resolves_global_db_path() {
+        let path = resolve_db_path(&PathBuf::from("project"), true).unwrap();
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(DB_FILE)
+        );
+        assert!(path.ends_with(PathBuf::from(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE)));
+    }
 
     #[test]
     fn session_crud() {

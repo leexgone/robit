@@ -88,6 +88,7 @@ pub struct AppConfig {
     pub context: Option<ContextConfig>,
     pub retry: Option<RetryConfig>,
     pub auto_approve: Option<bool>,
+    pub global_storage: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,9 +135,8 @@ pub struct ResolvedModel {
 
 /// Returns the ~/.robit/ directory path.
 fn robit_home() -> Result<PathBuf, LlmError> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        LlmError::ConfigError("Cannot determine home directory".to_string())
-    })?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| LlmError::ConfigError("Cannot determine home directory".to_string()))?;
     Ok(home.join(".robit"))
 }
 
@@ -163,13 +163,11 @@ pub fn load_config(workdir: Option<&std::path::Path>) -> Result<RobitConfig, Llm
 
     let path = find_config_path(workdir)?;
 
-    let content = std::fs::read_to_string(&path).map_err(|e| {
-        LlmError::ConfigError(format!("Failed to read {}: {}", path.display(), e))
-    })?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| LlmError::ConfigError(format!("Failed to read {}: {}", path.display(), e)))?;
 
-    let mut config: RobitConfig = toml::from_str(&content).map_err(|e| {
-        LlmError::ConfigError(format!("Failed to parse config.toml: {}", e))
-    })?;
+    let mut config: RobitConfig = toml::from_str(&content)
+        .map_err(|e| LlmError::ConfigError(format!("Failed to parse config.toml: {}", e)))?;
 
     // Resolve environment variables in api_key fields
     for provider in config.providers.values_mut() {
@@ -243,10 +241,7 @@ pub fn resolve_profile(
             ))
         })?;
         let first_model = provider.models.first().ok_or_else(|| {
-            LlmError::ConfigError(format!(
-                "Provider '{}' has no models defined",
-                name
-            ))
+            LlmError::ConfigError(format!("Provider '{}' has no models defined", name))
         })?;
         (name.to_string(), first_model.id.clone())
     } else if let Some(ref default_model) = config.default_model {
@@ -257,10 +252,7 @@ pub fn resolve_profile(
             LlmError::ConfigError("No providers defined in config.toml".to_string())
         })?;
         let first_model = provider.models.first().ok_or_else(|| {
-            LlmError::ConfigError(format!(
-                "Provider '{}' has no models defined",
-                key
-            ))
+            LlmError::ConfigError(format!("Provider '{}' has no models defined", key))
         })?;
         (key.clone(), first_model.id.clone())
     };
@@ -274,13 +266,17 @@ pub fn resolve_profile(
     })?;
 
     // Find the matching model
-    let model = provider.models.iter().find(|m| m.id == model_id).ok_or_else(|| {
-        let available: Vec<&str> = provider.models.iter().map(|m| m.id.as_str()).collect();
-        LlmError::ConfigError(format!(
-            "Model '{}' not found in provider '{}'. Available models: {:?}",
-            model_id, provider_key, available
-        ))
-    })?;
+    let model = provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| {
+            let available: Vec<&str> = provider.models.iter().map(|m| m.id.as_str()).collect();
+            LlmError::ConfigError(format!(
+                "Model '{}' not found in provider '{}'. Available models: {:?}",
+                model_id, provider_key, available
+            ))
+        })?;
 
     // Validate API key
     if provider.api_key.is_empty() || provider.api_key.starts_with("${") {
@@ -380,6 +376,7 @@ mod tests {
             [app]
             log_level = "DEBUG"
             max_steps = 10
+            global_storage = true
 
             [app.context]
             max_output_lines = 500
@@ -392,7 +389,10 @@ mod tests {
         let config: RobitConfig = toml::from_str(toml_str).unwrap();
 
         // Default model
-        assert_eq!(config.default_model.as_deref(), Some("deepseek/deepseek-chat"));
+        assert_eq!(
+            config.default_model.as_deref(),
+            Some("deepseek/deepseek-chat")
+        );
 
         // Providers
         assert_eq!(config.providers.len(), 2);
@@ -420,6 +420,7 @@ mod tests {
         let app = config.app.as_ref().unwrap();
         assert_eq!(app.log_level.as_deref(), Some("DEBUG"));
         assert_eq!(app.max_steps, Some(10));
+        assert_eq!(app.global_storage, Some(true));
         assert!(app.context.is_some());
         assert_eq!(app.context.as_ref().unwrap().max_output_lines, Some(500));
         assert!(app.retry.is_some());
@@ -463,7 +464,10 @@ mod tests {
         let resolved = resolve_profile(&config, Some("qwen")).unwrap();
         assert_eq!(resolved.profile_name, "qwen");
         assert_eq!(resolved.model_id, "qwen-max");
-        assert_eq!(resolved.base_url, "https://dashscope.aliyuncs.com/compatible-mode/v1");
+        assert_eq!(
+            resolved.base_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        );
     }
 
     #[test]
@@ -522,7 +526,10 @@ mod tests {
         let config: RobitConfig = toml::from_str(toml_str).unwrap();
         let result = resolve_profile(&config, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid default_model"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid default_model"));
     }
 
     #[test]
