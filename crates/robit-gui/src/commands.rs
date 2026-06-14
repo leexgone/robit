@@ -13,10 +13,23 @@ fn generate_session_title(content: &str) -> String {
     if trimmed.is_empty() {
         return "New Session".to_string();
     }
-    if trimmed.len() <= 30 {
+    if trimmed.chars().count() <= 30 {
         trimmed.to_string()
     } else {
-        format!("{}...", &trimmed[..28])
+        let prefix: String = trimmed.chars().take(28).collect();
+        format!("{}...", prefix)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_session_title;
+
+    #[test]
+    fn generates_title_from_multibyte_text() {
+        let title = generate_session_title("这是一个很长的中文标题，需要安全截断，不能切到半个字符，否则会导致 IPC 失败");
+        assert!(title.ends_with("..."));
+        assert!(title.is_char_boundary(title.len()));
     }
 }
 
