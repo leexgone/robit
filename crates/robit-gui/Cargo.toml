@@ -26,6 +26,7 @@ tauri-plugin-shell = "2"
 rusqlite.workspace = true
 # Pin transitive Tauri brotli stack to a compatible decompressor line.
 brotli-decompressor = "=5.0.1"
+alloc-no-stdlib = "=2.0.4"
 tokio.workspace = true
 tokio-util = "0.7"
 async-trait.workspace = true

@@ -102,19 +102,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: crates/robit-gui/ui
-        run: |
-          npm ci --include=optional
-          npm install --include=optional
-
-      - name: Install Rollup native optional package
-        working-directory: crates/robit-gui/ui
-        shell: bash
-        run: |
-          case "${{ runner.os }}" in
-            Linux) npm install --no-save @rollup/rollup-linux-x64-gnu@4.61.1 ;;
-            macOS) npm install --no-save @rollup/rollup-darwin-arm64@4.61.1 ;;
-            Windows) npm install --no-save @rollup/rollup-win32-x64-msvc@4.61.1 ;;
-          esac
+        run: npm install
 
       - name: Build frontend
         working-directory: crates/robit-gui/ui
