@@ -102,6 +102,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: crates/robit-gui/ui
+        shell: bash
         run: |
           rm -rf node_modules package-lock.json
           npm install
