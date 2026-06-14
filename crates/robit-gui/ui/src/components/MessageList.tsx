@@ -9,8 +9,8 @@ import type { ToolCallInfo } from "@/lib/types";
 
 function ThinkingIndicator() {
   return (
-    <div className="flex justify-start px-4 py-3 min-w-0">
-      <div className="flex items-start gap-3 max-w-[min(85%,1100px)] min-w-0">
+    <div className="flex justify-start py-3 min-w-0">
+      <div className="flex items-start gap-3 max-w-full min-w-0">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent mt-0.5">
           <Bot className="h-4 w-4 text-accent-foreground" />
         </div>
@@ -97,7 +97,7 @@ export function MessageList() {
 
   return (
     <ScrollArea className="flex-1 min-h-0 min-w-0" ref={scrollAreaRef}>
-      <div className="py-2 min-w-0">
+      <div className="mx-auto w-full max-w-6xl px-4 py-2 min-w-0">
         {messages.map((msg) => {
           if (msg.role === "user") {
             return <UserMessage key={msg.id} content={msg.content} />;

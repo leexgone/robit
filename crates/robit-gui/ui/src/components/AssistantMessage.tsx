@@ -11,8 +11,8 @@ interface AssistantMessageProps {
 
 export function AssistantMessage({ content, isStreaming }: AssistantMessageProps) {
   return (
-    <div className="flex justify-start px-4 py-3 min-w-0">
-      <div className="flex items-start gap-3 max-w-[min(85%,1100px)] min-w-0">
+    <div className="flex justify-start py-3 min-w-0">
+      <div className="flex items-start gap-3 max-w-full min-w-0">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent mt-0.5">
           <Bot className="h-4 w-4 text-accent-foreground" />
         </div>

@@ -6,8 +6,8 @@ interface UserMessageProps {
 
 export function UserMessage({ content }: UserMessageProps) {
   return (
-    <div className="flex justify-end px-4 py-3 min-w-0">
-      <div className="flex items-end gap-3 max-w-[min(80%,900px)] min-w-0">
+    <div className="flex justify-end py-3 min-w-0">
+      <div className="flex items-end gap-3 max-w-[min(80%,720px)] min-w-0">
         <div className="flex flex-col items-end min-w-0">
           <div className="text-xs font-medium text-muted-foreground mb-1">You</div>
           <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-2 max-w-full min-w-0">

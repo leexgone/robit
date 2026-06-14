@@ -47,7 +47,7 @@ export function ToolCard({ info }: ToolCardProps) {
   };
 
   return (
-    <div className="mx-4 my-2 border rounded-lg overflow-hidden bg-card min-w-0">
+    <div className="my-2 border rounded-lg overflow-hidden bg-card min-w-0 max-w-full">
       <div className="flex items-center gap-2 px-3 py-2 bg-secondary/50 border-b text-xs min-w-0">
         {statusIcon()}
         <span className="font-medium truncate">🔧 {info.name}</span>
