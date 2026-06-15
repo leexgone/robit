@@ -1,6 +1,6 @@
 [package]
 name = "robit-gui"
-version = "0.1.1"
+version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Desktop GUI frontend for the robit AI automation agent."
@@ -19,8 +19,8 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-robit-agent = { version = "0.1.1", path = "../robit-agent" }
-robit-ai = { version = "0.1.1", path = "../robit-ai" }
+robit-agent = { version = "0.1.0", path = "../robit-agent" }
+robit-ai = { version = "0.1.0", path = "../robit-ai" }
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 rusqlite = { version = "0.40", features = ["bundled"] }
