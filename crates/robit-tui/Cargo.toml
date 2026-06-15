@@ -1,6 +1,6 @@
 [package]
 name = "robit"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Terminal UI for the robit AI automation agent."
 license = "Apache-2.0"
@@ -15,8 +15,8 @@ name = "robit"
 path = "src/main.rs"
 
 [dependencies]
-robit-agent = { version = "0.1.0", path = "../robit-agent" }
-robit-ai = { version = "0.1.0", path = "../robit-ai" }
+robit-agent = { version = "0.1.1", path = "../robit-agent" }
+robit-ai = { version = "0.1.1", path = "../robit-ai" }
 ratatui.workspace = true
 crossterm.workspace = true
 unicode-width.workspace = true
