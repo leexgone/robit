@@ -734,30 +734,109 @@ The `ChatbotFrontend` adapts its behavior based on `PlatformCaps` — no per-pla
 
 ---
 
-## 6. Markdown Sanitization
+## 6. Markdown Processing
 
 ### 6.1 Problem
 
 LLM outputs are in Markdown. QQ Bot supports a subset of Markdown. Unsupported syntax (tables, task lists, HTML) must be converted or stripped before sending.
 
-### 6.2 Sanitizer Design
+### 6.2 Design Decision: Scheme 1 — Passthrough Raw Markdown (Preferred)
 
-Located in `robit-chatbot/src/markdown.rs`:
+**Rationale**:
+- QQ Official Bot API likely supports a reasonable subset of CommonMark
+- Pulldown-cmark is already in the workspace (used by TUI in `crates/robit-tui/src/markdown.rs`)
+- Simplicity: start with passthrough, only strip/sanitize known-unsupported features if needed
+
+### 6.3 Implementation: Using pulldown-cmark
+
+**Existing art**: [`crates/robit-tui/src/markdown.rs`](/e:/GitHub/robit/crates/robit-tui/src/markdown.rs) has a complete pulldown-cmark event-driven parser example for rendering to terminal UI.
+
+For QQ Bot, we start simple:
 
 ```rust
-/// Convert LLM Markdown output to a platform-compatible format.
-pub fn sanitize_markdown(text: &str, features: &MarkdownFeatures) -> String {
-    // 1. Strip HTML tags (never supported by Bot platforms)
-    // 2. Convert tables → aligned plain text (if !features.tables)
-    // 3. Convert task lists → unordered lists (if !features.task_lists)
-    // 4. Convert image syntax to "[Image: alt_text]" (if !features.images)
-    // 5. Strip unsupported inline formatting
-    // 6. Preserve supported syntax as-is
-    // 7. Truncate code blocks that exceed max_message_length
+// robit-chatbot/src/markdown.rs
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+/// Prepare Markdown for QQ Bot — pass through supported syntax, strip/convert unsupported.
+/// Uses pulldown-cmark (already in workspace) for safe parsing.
+pub fn prepare_markdown_for_platform(text: &str, features: &MarkdownFeatures) -> String {
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_STRIKETHROUGH);  // Enable what QQ supports
+
+    let parser = Parser::new_ext(text, opts);
+    let mut output = String::new();
+
+    let mut in_code_block = false;
+
+    for event in parser {
+        match event {
+            Event::Text(t) => output.push_str(&t),
+            
+            Event::Code(c) => {
+                if features.inline_code {
+                    output.push('`');
+                    output.push_str(&c);
+                    output.push('`');
+                } else {
+                    output.push_str(&c);  // Fallback to plain text
+                }
+            }
+
+            Event::Start(Tag::CodeBlock(_)) if features.code_blocks => {
+                in_code_block = true;
+                output.push_str("\n```\n");
+            }
+
+            Event::End(TagEnd::CodeBlock) if in_code_block => {
+                in_code_block = false;
+                output.push_str("\n```\n");
+            }
+
+            Event::Start(Tag::Strong) if features.bold => output.push_str("**"),
+            Event::End(TagEnd::Strong) if features.bold => output.push_str("**"),
+
+            Event::Start(Tag::Emphasis) if features.italic => output.push_str("*"),
+            Event::End(TagEnd::Emphasis) if features.italic => output.push_str("*"),
+
+            Event::Start(Tag::List(_)) => output.push_str("\n"),
+            Event::Start(Tag::Item) => output.push_str("- "),
+            Event::End(TagEnd::Item) => output.push_str("\n"),
+
+            Event::SoftBreak | Event::HardBreak => output.push_str("\n"),
+
+            // Fallbacks for unsupported features
+            Event::Start(Tag::Heading { .. }) if features.headings => {}
+            Event::End(TagEnd::Heading(_)) if features.headings => output.push_str("\n\n"),
+
+            Event::Start(Tag::Link { url, .. }) if features.links => {
+                output.push('[');
+            }
+            Event::End(TagEnd::Link { url, .. }) if features.links => {
+                output.push_str(&format!("]({})", url));
+            }
+
+            // Strip/convert known-unsupported
+            Event::Start(Tag::Image { alt, .. }) if !features.images => {
+                output.push_str(&format!("![Image: {}]", alt));
+            }
+            Event::Html(_) => {}  // Strip HTML tags entirely
+            Event::InlineHtml(_) => {}
+
+            _ => {}  // Preserve everything else as-is
+        }
+    }
+
+    output
 }
 ```
 
-The sanitizer runs automatically in `ChatbotFrontend::maybe_flush()` before sending.
+### 6.4 Future: Markdown → Plain Text Fallback (if needed)
+
+If QQ Markdown support is limited, a simplified converter can be built following the same event-driven pattern as TUI's `render_markdown()` function.
+
+### 6.5 Integration Point
+
+The Markdown processor runs automatically in `ChatbotFrontend::maybe_flush()` before sending.
 
 ### 6.3 QQ Markdown Features
 
