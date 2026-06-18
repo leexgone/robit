@@ -395,22 +395,33 @@ impl Frontend for ChatbotFrontend {
                 self.maybe_flush(&mut buffer).await;
             }
             AgentEvent::ToolCallRequested { tool_call_id, name, arguments } => {
-                // Flush any buffered text first
+                // Flush any buffered text before showing progress
                 self.flush_buffer().await;
-                // Tool call info is handled within the confirmation flow
+                // Auto-approve mode: send a brief progress hint so the user
+                // knows the bot is working (not silent/hung).
+                // Manual confirm mode: Confirmer already sent the confirm prompt,
+                // no extra hint needed.
+                if self.auto_approve {
+                    self.send_progress_hint(&name).await;
+                }
             }
             AgentEvent::ToolCallResult { tool_call_id, result } => {
-                // Send result as a system notice (optional, could skip for brevity)
+                // Silent: tool outputs are internal; the user only sees the
+                // final text reply. The progress hint (if any) will be replaced
+                // by the actual reply on TurnComplete.
             }
             AgentEvent::TurnComplete => {
-                self.flush_buffer().await;
+                self.flush_buffer().await;  // replaces or follows progress hint
             }
             AgentEvent::Error(e) => {
                 self.flush_buffer().await;
-                self.platform_sender.send(&self.chat_id, &format!("❌ Error: {}", e)).await;
+                self.platform_sender.send(
+                    &self.chat_id, &format!("❌ Error: {}", e)
+                ).await;
             }
             AgentEvent::SkillTriggered { name, description } => {
-                // Optional: send a brief notice
+                // Silent: skill trigger is internal; the skill's own output
+                // will arrive as TextDelta events.
             }
         }
         Ok(())
@@ -419,6 +430,62 @@ impl Frontend for ChatbotFrontend {
     async fn request_tool_confirmation(&self, info: &ToolCallInfo) -> Result<bool> {
         self.confirmer.request(&self.chat_id, info, self.auto_approve).await
     }
+}
+```
+
+The `send_progress_hint` method is rate-limited to avoid flooding the chat when the Agent loop executes multiple tools in sequence:
+
+```rust
+impl ChatbotFrontend {
+    /// Send a brief progress hint. Only sends once per turn to avoid spam.
+    async fn send_progress_hint(&self, tool_name: &str) {
+        let mut sent = self.progress_hint_sent.lock().await;
+        if *sent {
+            return;  // already sent one this turn, skip
+        }
+        *sent = true;
+
+        let hint = match tool_name {
+            "bash" => "🔧 正在执行命令...",
+            "read" => "📖 正在读取文件...",
+            "write" => "✏️ 正在写入文件...",
+            "edit" => "✏️ 正在编辑文件...",
+            "grep" => "🔍 正在搜索...",
+            "find" => "🔍 正在查找...",
+            _ => "🔧 正在处理...",
+        };
+        // Send the hint and remember its msg_id so TurnComplete can edit it
+        if let Ok(result) = self.platform_sender.send(&self.chat_id, hint).await {
+            *self.last_msg_id.lock().await = Some(result.msg_id);
+        }
+    }
+}
+```
+
+### 3.3.1 Tool Output Visibility Rules
+
+| Mode | Tool Call Requested | Tool Call Result | User Sees |
+|------|-------------------|-----------------|-----------|
+| **Auto-approve** | Progress hint (rate-limited, one per turn) | Silent | Hint → final text reply (edit if supported, otherwise append) |
+| **Manual confirm** | Confirmer sends confirm prompt with tool name + args | Silent | Confirm prompt → "已确认"/"已取消" → final text reply |
+
+Key design points:
+- **No tool cards in chat** — unlike GUI which shows rich tool cards, Bot chat is conversational. Tool execution details are internal noise.
+- **One progress hint per turn** — even if the Agent loops through multiple tools (LLM → tool → LLM → tool → reply), only the first tool triggers a hint. `progress_hint_sent` resets on `TurnComplete`.
+- **Edit-overwrite when possible** — on platforms with `supports_edit`, the progress hint's `msg_id` is stored so `TurnComplete` can replace it with the actual reply, creating a smooth "thinking → answer" transition.
+- **No output for read-only tools** — `read`, `grep`, `find`, `ls` are internal operations. The user only needs the final answer, not "I read 3 files."
+
+### 3.3.2 ChatbotFrontend Fields (Updated)
+
+```rust
+pub struct ChatbotFrontend {
+    pub chat_id: String,
+    pub platform_sender: Arc<dyn PlatformSender>,
+    pub confirmer: Arc<Confirmer>,
+    pub buffer: Mutex<String>,                  // streaming text buffer
+    pub last_msg_id: Mutex<Option<String>>,     // for edit-based streaming updates
+    pub progress_hint_sent: Mutex<bool>,        // one progress hint per turn
+    pub auto_approve: bool,
 }
 ```
 
