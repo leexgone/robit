@@ -183,7 +183,7 @@ impl AppState {
     /// Get the session list from the database, merging with in-memory Agent statuses.
     pub async fn session_list(&self) -> Result<Vec<SessionInfo>, String> {
         let db = self.db.lock().await;
-        let mut sessions = db::list_sessions(&db).map_err(|e| format!("DB error: {}", e))?;
+        let mut sessions = db::list_sessions(&db, None).map_err(|e| format!("DB error: {}", e))?;
 
         let agents = self.agents.lock().await;
         for session in &mut sessions {

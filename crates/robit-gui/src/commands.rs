@@ -46,7 +46,7 @@ pub async fn create_session(
     // Insert into DB
     {
         let db = state.db.lock().await;
-        db::insert_session(&db, &session_id, &title, &model)
+        db::insert_session(&db, &session_id, None, &title, &model, "gui")
             .map_err(|e| format!("DB error: {}", e))?;
     }
 
@@ -67,8 +67,10 @@ pub async fn create_session(
 
     Ok(SessionInfo {
         id: session_id,
+        chat_id: None,
         title,
         model,
+        source: "gui".to_string(),
         status: "ready".to_string(),
         created_at: String::new(),
         updated_at: String::new(),
@@ -210,7 +212,7 @@ pub async fn delete_session(
         let mut active = state.active_session.lock().await;
         if active.as_deref() == Some(&session_id) {
             let db = state.db.lock().await;
-            let sessions = db::list_sessions(&db).map_err(|e| format!("DB error: {}", e))?;
+            let sessions = db::list_sessions(&db, None).map_err(|e| format!("DB error: {}", e))?;
             *active = sessions.first().map(|s| s.id.clone());
         }
     }

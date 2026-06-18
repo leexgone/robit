@@ -11,10 +11,10 @@ fn test_session_crud() {
     init_db(&conn).unwrap();
 
     // Insert test session
-    insert_session(&conn, "test-123", "Test Session", "deepseek/deepseek-chat").unwrap();
+    insert_session(&conn, "test-123", None, "Test Session", "deepseek/deepseek-chat", "gui").unwrap();
 
     // List sessions
-    let sessions = list_sessions(&conn).unwrap();
+    let sessions = list_sessions(&conn, None).unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].id, "test-123");
     assert_eq!(sessions[0].title, "Test Session");
@@ -32,7 +32,7 @@ fn test_session_crud() {
 
     // Soft delete
     delete_session(&conn, "test-123").unwrap();
-    let sessions_after_delete = list_sessions(&conn).unwrap();
+    let sessions_after_delete = list_sessions(&conn, None).unwrap();
     assert_eq!(sessions_after_delete.len(), 0);
 }
 
@@ -42,7 +42,7 @@ fn test_message_operations() {
     let conn = Connection::open_in_memory().unwrap();
     init_db(&conn).unwrap();
 
-    insert_session(&conn, "session-msg", "Chat Session", "model").unwrap();
+    insert_session(&conn, "session-msg", None, "Chat Session", "model", "gui").unwrap();
 
     // Insert messages
     insert_message(&conn, "session-msg", "user", "Hello Robit", None, None, None).unwrap();
@@ -63,7 +63,7 @@ fn test_empty_sessions() {
     let conn = Connection::open_in_memory().unwrap();
     init_db(&conn).unwrap();
 
-    let sessions = list_sessions(&conn).unwrap();
+    let sessions = list_sessions(&conn, None).unwrap();
     assert_eq!(sessions.len(), 0);
 }
 
@@ -112,8 +112,10 @@ fn test_session_info_serialization() {
 
     let info = SessionInfo {
         id: "test-id".to_string(),
+        chat_id: None,
         title: "Test".to_string(),
         model: "deepseek-chat".to_string(),
+        source: "gui".to_string(),
         status: "ready".to_string(),
         created_at: "2024-01-01T00:00:00".to_string(),
         updated_at: "2024-01-01T00:00:00".to_string(),
