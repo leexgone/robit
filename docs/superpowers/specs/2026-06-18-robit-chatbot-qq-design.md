@@ -1006,7 +1006,7 @@ impl PlatformAdapter for QqPlatformAdapter {
 
 ```toml
 # In config.toml
-[providers.qq_bot]
+[channels.qq_bot]
 app_id = "123456789"
 app_secret = "${QQ_BOT_SECRET}"
 bot_token = "${QQ_BOT_TOKEN}"
@@ -1092,7 +1092,7 @@ async fn main() {
     robit_agent::log_skill_errors(&bootstrap_result.skill_load_errors);
 
     // Create QQ platform adapter
-    let qq_config = QqConfig::from_robit_config(&config)
+    let qq_config = QqConfig::from_config(&config)
         .expect("QQ Bot config not found");
     let platform = QqPlatformAdapter::connect(&qq_config).await
         .expect("Failed to connect to QQ");
@@ -1151,9 +1151,11 @@ Key differences from QQ:
 
 ### 12.1 New Config Sections
 
+`channels` is a new top-level section for communication channel configurations (QQ Bot, Feishu, etc.), separate from `providers` which configures LLM model providers.
+
 ```toml
-# QQ Bot provider
-[providers.qq_bot]
+# QQ Bot channel
+[channels.qq_bot]
 app_id = "123456789"
 app_secret = "${QQ_BOT_SECRET}"
 bot_token = "${QQ_BOT_TOKEN}"
