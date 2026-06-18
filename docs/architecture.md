@@ -40,16 +40,12 @@ pub trait Frontend: Send + Sync {
     /// Agent 推送事件给前端（文本、工具调用、错误等）
     async fn on_event(&self, event: AgentEvent) -> Result<()>;
 
-    /// 请求用户确认工具调用（阻塞等待）
-    async fn request_tool_confirmation(
-        &self,
-        tool_call: &ToolCall,
-    ) -> Result<ConfirmationResult>;
-
-    /// 接收前端发来的消息（用户输入、取消、确认回复）
-    fn event_receiver(&self) -> mpsc::Receiver<FrontendMessage>;
+    /// 请求用户确认工具调用（阻塞等待），返回是否批准
+    async fn request_tool_confirmation(&self, info: &ToolCallInfo) -> Result<bool>;
 }
 ```
+
+前端通过独立 channel 向 Agent 推送 `FrontendMessage`（`UserInput` / `Cancel` / `ConfirmationResponse`），由 `Agent::run(message_rx)` 消费。
 
 **各前端实现：**
 
@@ -57,8 +53,8 @@ pub trait Frontend: Send + Sync {
 | --- | --- | --- | --- |
 | `robit` | 键盘直接输入 | 终端实时渲染（流式） | Y/N 键盘快捷键 |
 | `robit-gui` | Tauri IPC 命令 | Tauri 事件推送 → React 渲染（流式） | UI 按钮点击 |
-| `robit-chatbot`（计划） | 平台消息推送 | 平台 API 发送消息（智能分段） | 内联关键字回复 |
-| `robit-qq`（计划） | QQ WebSocket 推送 | QQ API 发送/编辑消息 | 内联关键字回复 |
+| `robit-chatbot` | 平台消息推送 | 平台 API 发送消息（智能分段） | 内联关键字回复 |
+| `robit-qq` | QQ WebSocket 推送 | QQ API 发送消息 | 内联关键字回复 |
 | `robit-feishu`（计划） | 飞书 WebSocket 推送 | 飞书 API 发送消息 | 消息卡片按钮 |
 
 **TUI 与消息平台的差异处理：**
@@ -93,25 +89,35 @@ robit-chatbot (共享基座)
 
 ## 会话管理
 
-当前 MVP 实现单会话，但 `SessionId` 从第一天引入，为未来多会话做准备。
+会话由 `SessionId`（UUID v4）唯一标识。不同前端采用不同的会话模型：
+
+- **TUI**：单进程单会话
+- **GUI**：多会话，每个会话一个 `Agent` 实例（`Arc` 共享 `LlmClient`/`ToolRegistry`/`SkillRegistry`）
+- **Bot 平台**（`robit-chatbot`）：每个聊天（群/私聊）一个 `Agent` 实例，由 `ChatbotManager` 按 `chat_id` 路由
 
 ```rust
 pub struct AgentSession {
-    session_id: SessionId,
-    history: Vec<Message>,
-    // 上下文窗口管理
+    pub session_id: SessionId,
+    pub history: Vec<ChatCompletionRequestMessage>,
+    pub working_dir: PathBuf,
 }
 
 pub struct Agent {
     llm_client: Arc<LlmClient>,
     tools: Arc<ToolRegistry>,
+    skills: Arc<SkillRegistry>,
     sessions: HashMap<SessionId, AgentSession>,
+    default_session_id: SessionId,
+    // ...
 }
 ```
 
-**MVP 阶段**：只有一个默认 session，HashMap 中只有一条记录。
+> 注：`AgentSession` 与 `Agent::sessions` 为 crate 私有，`Agent::run()` 消费 `self` 并运行单一会话循环。
+> 因此多会话前端（GUI、Bot）通过为每个会话 spawn 一个独立 `Agent` 实现隔离（见 `robit-gui`、`robit-chatbot`）。
 
-**多会话阶段**（飞书/QQ 接入时）：每个用户/群聊对应一个 `AgentSession`，共享 `LlmClient` 和 `ToolRegistry`。
+### 会话持久化（SQLite）
+
+所有前端共用 `robit-agent::storage` 的统一 schema（含版本化迁移）。`sessions` 表新增 `chat_id`（平台聊天标识，GUI/TUI 为 NULL）和 `source`（创建前端：`gui`/`tui`/`qq`/`feishu`）两列，详见 QQ 设计规格 §8。Bot 平台通过 `find_session_by_chat_id()` 恢复会话记录。
 
 ## 工具系统
 
@@ -669,7 +675,11 @@ TurnComplete → 输入区域恢复可用
 
 ### 对话历史持久化
 
-**MVP 阶段不持久化**，每次启动是新对话。后续再做会话保存到 `~/.robit/sessions/` 和恢复功能。
+TUI 不持久化，每次启动是新对话。GUI 与 Bot 平台通过 SQLite 持久化会话元数据与消息（`robit-agent::storage`，schema 版本化，当前 v2）：
+
+- DB 路径：`cwd/.robit/memory/robit.db`（默认）或 `~/.robit/memory/robit.db`（`global_storage = true`）
+- GUI 重开会话时会重新读取 DB 消息用于显示；Bot 平台重启后按 `chat_id` 恢复会话记录
+- 注：当前 MVP 不会把 DB 历史注入回 Agent 的内存 `history`（`AgentSession` 私有），重启后 Agent 从空历史开始；完整历史恢复是后续增强
 
 ## 上下文管理
 

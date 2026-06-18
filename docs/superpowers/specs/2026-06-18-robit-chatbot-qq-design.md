@@ -1,8 +1,16 @@
 # robit-chatbot & robit-qq Design Specification
 
 > **Date:** 2026-06-18
-> **Status:** Draft
+> **Status:** Implemented (MVP)
 > **Related:** [[Frontend trait]], [[architecture]], [[robit-gui]], [[robit-feishu]]
+>
+> **实现差异说明**：本规格于 2026-06-18 实现完成。实现与规格有以下有意偏差：
+>
+> - **`PlatformAdapter` trait 移除了 `connect()` 方法和关联类型 `Config`**（§3.1）。连接生命周期改由平台 crate 自身负责，`ChatbotManager::new()` 接收已连接的 `Arc<T>`。这解决了"适配器 spawn 持有 `Arc<Self>` 的后台任务"与"`connect() -> Self`"之间的矛盾。
+> - **会话历史恢复**（§4.4）：MVP 不实现。`AgentSession` 为 crate 私有，`Agent::new()` 总是创建带系统提示词的新会话；DB 仍记录消息，重启后 Agent 从空历史开始（与 robit-gui 行为一致）。
+> - **WebSocket 断线重连（Resume）**（§9.3）：MVP 仅记录断开并退出，未实现自动重连。
+>
+> 其余章节（trait、`ChatbotManager`、`ChatbotFrontend`、`Confirmer`、Markdown 清洗、存储 schema 迁移）按规格实现。
 
 ## 1. Overview
 

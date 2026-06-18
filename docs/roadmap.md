@@ -76,9 +76,9 @@
 
 - [ ] 飞书前端（`robit-feishu`）
 - [x] QQ 前端设计（`robit-qq`）— 详见 [`docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md`](docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md)
-- [ ] QQ 前端实现（`robit-qq`）
+- [x] QQ 前端实现（`robit-qq`）— QQ 官方 Bot WebSocket 网关 + HTTP 发消息，多会话管理
 - [x] Bot 共享基座设计（`robit-chatbot`）— 提取 QQ/飞书的通用多会话 Bot 逻辑
-- [ ] Bot 共享基座实现（`robit-chatbot`）
+- [x] Bot 共享基座实现（`robit-chatbot`）— `PlatformAdapter` trait + `ChatbotManager` + `ChatbotFrontend` + `Confirmer` + Markdown 清洗
 
 ### 基础设施
 
