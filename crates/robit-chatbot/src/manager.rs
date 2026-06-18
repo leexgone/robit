@@ -80,26 +80,23 @@ pub struct ChatbotManager<T: PlatformAdapter> {
     context_window: Option<u64>,
     /// Idle session expiry.
     session_timeout: Duration,
-    /// Whether to use global (~/.robit) storage.
-    global_storage: bool,
 }
 
 impl<T: PlatformAdapter> ChatbotManager<T> {
     /// Create a new `ChatbotManager`.
     ///
     /// Opens (or creates) the session database and initializes the shared
-    /// `Confirmer` and platform sender bridge. The platform must already be
-    /// connected.
+    /// `Confirmer` and platform sender bridge. `platform` must already be
+    /// connected (the platform crate owns connection lifecycle).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        platform: T,
+        platform: Arc<T>,
         config: RobitConfig,
         working_dir: PathBuf,
         llm_client: Arc<LlmClient>,
         tool_registry: Arc<ToolRegistry>,
         skill_registry: Arc<SkillRegistry>,
     ) -> Result<Self, ManagerError> {
-        let platform = Arc::new(platform);
         let caps = T::capabilities();
         let platform_sender: Arc<dyn PlatformSender> = Arc::new(PlatformSenderBridge {
             platform: Arc::clone(&platform),
@@ -163,7 +160,6 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             auto_approve,
             context_window,
             session_timeout,
-            global_storage,
         })
     }
 
@@ -409,16 +405,8 @@ mod tests {
 
     #[async_trait]
     impl PlatformAdapter for MockPlatform {
-        type Config = ();
-
         fn capabilities() -> PlatformCaps {
             PlatformCaps::qq()
-        }
-        async fn connect(_config: &Self::Config) -> robit_agent::error::Result<Self>
-        where
-            Self: Sized,
-        {
-            unreachable!("mock connects via new()")
         }
         async fn send_message(&self, chat_id: &str, text: &str) -> robit_agent::error::Result<SendResult> {
             self.sent

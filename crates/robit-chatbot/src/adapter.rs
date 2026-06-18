@@ -137,22 +137,28 @@ pub enum PlatformEvent {
 }
 
 /// The trait every chat platform must implement.
+///
+/// Connection lifecycle (WebSocket/HTTP setup, auth, background tasks) is the
+/// platform crate's responsibility — it constructs a connected adapter and
+/// hands it to [`ChatbotManager`](crate::manager::ChatbotManager) as an
+/// `Arc<Self>`. This avoids the tension between a `connect() -> Self` trait
+/// method and adapters that spawn background tasks holding `Arc<Self>`.
 #[async_trait]
 pub trait PlatformAdapter: Send + Sync + 'static {
-    type Config: Send + Sync;
-
+    /// Platform capabilities. Used by `ChatbotFrontend` for streaming strategy
+    /// and by the Markdown sanitizer.
     fn capabilities() -> PlatformCaps;
 
-    async fn connect(config: &Self::Config) -> Result<Self>
-    where
-        Self: Sized;
-
+    /// Send a text message to a chat. Returns the platform message ID.
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult>;
 
-    async fn edit_message(&self, chat_id: &str, msg_id: &str, text: &str) -> Result<()> {
+    /// Edit a previously-sent message. Default implementation falls back
+    /// to `send_message` for platforms that don't support editing.
+    async fn edit_message(&self, chat_id: &str, _msg_id: &str, text: &str) -> Result<()> {
         let _ = self.send_message(chat_id, text).await;
         Ok(())
     }
 
+    /// Receive the next platform event. Blocks until an event arrives.
     async fn recv_event(&self) -> Result<PlatformEvent>;
 }
