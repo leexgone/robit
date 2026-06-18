@@ -16,8 +16,9 @@
 | `crates/robit-agent` | 代理运行时（Agent 循环、工具执行、会话管理）。定义 `Frontend` trait 供前端实现。依赖 `robit-ai` |
 | `crates/robit-tui` | 终端前端（`ratatui` + `crossterm`），crate 和二进制名均为 `robit`。实现 `Frontend` trait，依赖 `robit-agent` |
 | `crates/robit-gui` | 桌面 GUI 前端（React + Tauri v2），实现 `Frontend` trait。SQLite 持久化会话。依赖 `robit-agent` |
-| `crates/robit-feishu` | _（计划）_ 飞书前端，实现 `Frontend` trait |
-| `crates/robit-qq` | _（计划）_ QQ 前端，实现 `Frontend` trait |
+| `crates/robit-chatbot` | _（计划）_ 多会话 Bot 基础设施，提供 `PlatformAdapter` trait 和 `ChatbotManager`。QQ 和飞书等平台接入的共享基座 |
+| `crates/robit-feishu` | _（计划）_ 飞书前端，实现 `PlatformAdapter` trait |
+| `crates/robit-qq` | _（计划）_ QQ 前端，实现 `PlatformAdapter` trait，依赖 `robit-chatbot` |
 
 ### 验证工程（`examples/`）
 
@@ -176,5 +177,6 @@ max_backoff_ms = 30000
 | [`docs/plans/phase2-implementation.md`](docs/plans/phase2-implementation.md) | 阶段 2 实现计划（`robit-agent` Agent 运行时） |
 | [`docs/plans/config-unification.md`](docs/plans/config-unification.md) | 配置统一计划（`robit.toml` 取代 `llms.toml` + `settings.toml`） |
 | [`docs/superpowers/specs/2026-06-10-robit-gui-design.md`](docs/superpowers/specs/2026-06-10-robit-gui-design.md) | robit-gui 设计规格（桌面 GUI 前端） |
+| [`docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md`](docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md) | robit-chatbot & robit-qq 设计规格（多会话 Bot 基座 + QQ Bot 接入） |
 | [`docs/superpowers/plans/2026-06-10-robit-gui-implementation.md`](docs/superpowers/plans/2026-06-10-robit-gui-implementation.md) | robit-gui 实现计划 |
 | [`docs/superpowers/2026-06-11-robit-gui-progress.md`](docs/superpowers/2026-06-11-robit-gui-progress.md) | robit-gui 开发进度记录 |

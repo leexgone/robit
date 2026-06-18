@@ -56,13 +56,40 @@ pub trait Frontend: Send + Sync {
 | 前端 | 输入方式 | 输出方式 | 确认方式 |
 | --- | --- | --- | --- |
 | `robit` | 键盘直接输入 | 终端实时渲染（流式） | Y/N 键盘快捷键 |
-| `robit-feishu`（计划） | 消息事件推送 | 飞书 API 发送消息 | 消息卡片按钮 |
-| `robit-qq`（计划） | 消息事件推送 | QQ API 发送消息 | 消息卡片按钮 |
+| `robit-gui` | Tauri IPC 命令 | Tauri 事件推送 → React 渲染（流式） | UI 按钮点击 |
+| `robit-chatbot`（计划） | 平台消息推送 | 平台 API 发送消息（智能分段） | 内联关键字回复 |
+| `robit-qq`（计划） | QQ WebSocket 推送 | QQ API 发送/编辑消息 | 内联关键字回复 |
+| `robit-feishu`（计划） | 飞书 WebSocket 推送 | 飞书 API 发送消息 | 消息卡片按钮 |
 
 **TUI 与消息平台的差异处理：**
 
-- 流式输出：TUI 逐字显示；飞书/QQ 可选择分段发送或完成后一次性发送
-- 会话模型：TUI 单进程单会话；飞书/QQ 天然多用户多会话
+- 流式输出：TUI/GUI 逐字显示；Bot 平台采用智能分段 + 消息编辑实现近似流式体验
+- 会话模型：TUI 单进程单会话；GUI 多会话；Bot 平台天然多用户多会话
+- 工具确认：TUI/GUI 同步弹窗；Bot 平台异步内联消息 + 超时机制
+
+**Bot 平台分层架构（`robit-chatbot` + `robit-qq`）：**
+
+```txt
+robit-qq (平台实现)
+  └── 实现 PlatformAdapter trait
+        ├── QQ WebSocket 连接
+        ├── QQ 消息协议解析
+        └── QQ Token 鉴权
+
+robit-chatbot (共享基座)
+  └── ChatbotManager<T: PlatformAdapter>
+        ├── 多会话管理（chat_id → Agent 映射）
+        ├── 会话持久化（SQLite，复用 robit-agent::storage）
+        ├── ChatbotFrontend（实现 Frontend trait）
+        │     ├── 流式输出缓冲 + 智能分段
+        │     └── 进度提示（自动批准模式）
+        ├── Confirmer（工具确认协调器）
+        │     ├── 内联确认消息
+        │     └── 关键字匹配 + 超时
+        └── Markdown 处理（pulldown-cmark 解析）
+```
+
+详见 [`docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md`](docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md)。
 
 ## 会话管理
 
