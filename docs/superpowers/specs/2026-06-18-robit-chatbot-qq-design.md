@@ -818,58 +818,346 @@ Only exact keyword matches trigger confirmation routing. This means:
 
 ## 8. Database Schema
 
-### 8.1 Schema Extension
+### 8.1 Design Decision: Unified Storage in `robit-agent`
 
-The existing `storage.rs` schema in `robit-agent` supports sessions and messages. For Bot platforms, we extend it with a `chat_id` mapping:
+Rather than having each frontend manage its own schema, **`robit_agent::storage` is the single source of truth** for the database schema. All frontends (GUI, TUI, chatbot/QQ, future Feishu) use the same `init_db()` entry point, which handles both fresh creation and versioned migrations.
+
+Key changes from the current `storage.rs`:
+
+- `chat_id` column added to `sessions` — maps platform chat identifiers (nullable, unused by GUI/TUI)
+- `source` column added to `sessions` — records which frontend created the session (`"gui"`, `"tui"`, `"qq"`, `"feishu"`)
+- `init_db()` becomes the single schema entry point with auto-detection of fresh vs existing DBs
+- Schema versioning via `_schema_meta` table for future-proof migrations
+
+### 8.2 Schema (Current Version: 2)
 
 ```sql
--- Existing tables (unchanged)
+-- Metadata: tracks schema version for migrations
+CREATE TABLE IF NOT EXISTS _schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+-- Stores: ('version', '2')
+
 CREATE TABLE sessions (
-    id          TEXT PRIMARY KEY,     -- UUID v4 (session_id)
-    title       TEXT NOT NULL,
-    model       TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    is_active   INTEGER DEFAULT 1
+    id          TEXT PRIMARY KEY,           -- UUID v4 (session_id)
+    chat_id     TEXT,                       -- Platform chat ID (nullable, for Bot platforms)
+    title       TEXT NOT NULL,              -- Auto-generated from first message
+    model       TEXT NOT NULL,              -- "deepseek/deepseek-chat"
+    source      TEXT NOT NULL DEFAULT 'gui', -- "gui" | "tui" | "qq" | "feishu"
+    created_at  TEXT NOT NULL,              -- ISO 8601
+    updated_at  TEXT NOT NULL,              -- ISO 8601
+    is_active   INTEGER DEFAULT 1           -- Soft delete flag
 );
 
 CREATE TABLE messages (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id   TEXT NOT NULL REFERENCES sessions(id),
-    role         TEXT NOT NULL,
+    role         TEXT NOT NULL,             -- "user" | "assistant" | "tool" | "system"
     content      TEXT NOT NULL,
-    tool_name    TEXT,
-    tool_call_id TEXT,
-    tokens       INTEGER,
-    created_at   TEXT NOT NULL
+    tool_name    TEXT,                      -- Tool name (when role = "tool")
+    tool_call_id TEXT,                      -- Links request and result
+    tool_info    TEXT,                      -- JSON: tool call metadata (status, output, etc.)
+    tokens       INTEGER,                   -- Estimated token count
+    created_at   TEXT NOT NULL              -- ISO 8601
 );
 
--- NEW: chat_id mapping for Bot platforms
--- Allows session lookup by platform chat identifier
-ALTER TABLE sessions ADD COLUMN chat_id TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_chat_id
+CREATE INDEX idx_messages_session ON messages(session_id);
+CREATE INDEX idx_messages_created ON messages(session_id, created_at);
+CREATE UNIQUE INDEX idx_sessions_chat_id
     ON sessions(chat_id) WHERE chat_id IS NOT NULL;
 ```
 
-### 8.2 Session ↔ Chat Mapping
+### 8.3 Session ↔ Chat Mapping
 
-| Column | Example Value | Description |
-|--------|--------------|-------------|
-| `sessions.id` | `a1b2c3d4-...` | Agent session UUID |
-| `sessions.chat_id` | `group:abc123` | Platform chat identifier |
-| `sessions.title` | `技术讨论群` | Auto-generated from first message |
+| Column | GUI/TUI Value | Bot Platform Value | Description |
+| --- | --- | --- | --- |
+| `sessions.id` | `a1b2c3d4-...` | `e5f6g7h8-...` | Agent session UUID |
+| `sessions.chat_id` | `NULL` | `group:abc123` / `private:xyz789` | Platform chat identifier |
+| `sessions.source` | `"gui"` | `"qq"` | Which frontend created the session |
+| `sessions.title` | `"Fix main.rs bug"` | `"技术讨论群"` | Auto-generated from first message |
 
-The `chat_id` column is `NULL` for non-Bot frontends (TUI, GUI). The unique index ensures one session per chat.
+The `chat_id` column is `NULL` for non-Bot frontends. The unique partial index ensures one session per chat on Bot platforms while allowing multiple `NULL` values for GUI/TUI.
 
-### 8.3 Storage Scope
+### 8.4 Schema Versioning & Migration
 
-Bot platforms use **project-local** storage by default:
+#### Design Principles
+
+| Principle | Description |
+| --- | --- |
+| **Incremental** | Each version change has a single `migrate_vN_to_vN+1` function, chained in sequence |
+| **Add-only** | Only add columns and tables; never drop, rename, or change column types (SQLite best practice) |
+| **Idempotent** | `CREATE TABLE IF NOT EXISTS` everywhere; ALTER TABLE errors (column exists) are caught and ignored |
+| **Monotonic** | Integer version numbers, always increasing |
+| **Single entry** | `init_db()` is the only schema entry point, used by all crates |
+
+#### Migration Chain
 
 ```
-.robit/memory/robit.db    # in working directory
+Version 0 (fresh)       Version 1 (legacy)      Version 2 (current)       Version 3 (future)
+─────────────────       ─────────────────       ─────────────────       ─────────────────
+                         sessions                sessions                 sessions
+                           id                      id                       id
+                           title                   title                    title
+                           model                   model                    model
+                           created_at              created_at               created_at
+                           updated_at              updated_at               updated_at
+                           is_active               is_active                is_active
+                         messages                  chat_id    ← NEW         source
+                           ...                     source     ← NEW         ...
+                                                 messages                  maybe new table
+                                                   tool_info  ← NEW
+                                                   ...
+                                                 _schema_meta ← NEW
 ```
 
-`global_storage` config is also supported, resolving to `~/.robit/memory/robit.db`.
+#### Implementation
+
+```rust
+// robit_agent/src/storage.rs
+
+/// Current schema version. Increment when the schema changes.
+const CURRENT_SCHEMA_VERSION: i32 = 2;
+
+/// Initialize the database: create tables if needed, then run migrations.
+/// This is the single entry point used by all frontends.
+pub fn init_db(conn: &Connection) -> SqliteResult<()> {
+    // 1. Ensure _schema_meta table exists (needed even for fresh DBs)
+    ensure_meta_table(conn)?;
+
+    // 2. Read current version (0 = completely fresh database)
+    let version = read_schema_version(conn)?;
+
+    // 3. For fresh DB, create everything at current version in one shot
+    if version == 0 {
+        create_all_tables(conn)?;
+        write_schema_version(conn, CURRENT_SCHEMA_VERSION)?;
+        tracing::info!("Database initialized at schema v{}", CURRENT_SCHEMA_VERSION);
+        return Ok(());
+    }
+
+    // 4. For existing DB, run the migration chain
+    migrate(conn, version, CURRENT_SCHEMA_VERSION)?;
+
+    Ok(())
+}
+
+fn create_all_tables(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            id          TEXT PRIMARY KEY,
+            chat_id     TEXT,
+            title       TEXT NOT NULL,
+            model       TEXT NOT NULL,
+            source      TEXT NOT NULL DEFAULT 'gui',
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL,
+            is_active   INTEGER DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS messages (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   TEXT NOT NULL REFERENCES sessions(id),
+            role         TEXT NOT NULL,
+            content      TEXT NOT NULL,
+            tool_name    TEXT,
+            tool_call_id TEXT,
+            tool_info    TEXT,
+            tokens       INTEGER,
+            created_at   TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(session_id, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_chat_id
+            ON sessions(chat_id) WHERE chat_id IS NOT NULL;",
+    )?;
+    Ok(())
+}
+
+fn migrate(conn: &Connection, from: i32, to: i32) -> SqliteResult<()> {
+    let mut current = from;
+    while current < to {
+        tracing::info!("Migrating database: v{} → v{}", current, current + 1);
+        match current {
+            1 => migrate_v1_to_v2(conn)?,
+            // 2 => migrate_v2_to_v3(conn)?,  // future
+            _ => return Err(rusqlite::Error::InvalidParameterName(
+                format!("Unknown schema version: {}", current),
+            )),
+        }
+        current += 1;
+        write_schema_version(conn, current)?;
+        tracing::info!("Database migrated to v{}", current);
+    }
+    Ok(())
+}
+
+/// v1 → v2: Add chat_id, source to sessions; add tool_info to messages.
+fn migrate_v1_to_v2(conn: &Connection) -> SqliteResult<()> {
+    // Each ALTER TABLE is wrapped to ignore "duplicate column" errors
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN chat_id TEXT", ());
+    let _ = conn.execute(
+        "ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'gui'",
+        (),
+    );
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN tool_info TEXT", ());
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_chat_id
+            ON sessions(chat_id) WHERE chat_id IS NOT NULL;",
+    )?;
+    Ok(())
+}
+
+// ============================================================
+// Schema version helpers (private)
+// ============================================================
+
+fn ensure_meta_table(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS _schema_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )",
+    )
+}
+
+fn read_schema_version(conn: &Connection) -> SqliteResult<i32> {
+    match conn.query_row(
+        "SELECT value FROM _schema_meta WHERE key = 'version'",
+        (),
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(v) => v.parse().map_err(|_| {
+            rusqlite::Error::InvalidParameterName(format!("Invalid schema version: {}", v))
+        }),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0), // fresh DB, no version yet
+        Err(e) => Err(e),
+    }
+}
+
+fn write_schema_version(conn: &Connection, version: i32) -> SqliteResult<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO _schema_meta (key, value) VALUES ('version', ?1)",
+        rusqlite::params![version.to_string()],
+    )?;
+    Ok(())
+}
+```
+
+### 8.5 Updated Public API
+
+```rust
+// robit_agent/src/storage.rs — public API changes
+
+/// Insert a new session. `chat_id` is Some only for Bot platforms.
+pub fn insert_session(
+    conn: &Connection,
+    id: &str,
+    chat_id: Option<&str>,    // NEW: platform chat identifier
+    title: &str,
+    model: &str,
+    source: &str,             // NEW: "gui" | "tui" | "qq" | "feishu"
+) -> SqliteResult<()>;
+
+/// Find a session by its platform chat_id. Returns None for GUI/TUI sessions
+/// (where chat_id is NULL).
+pub fn find_session_by_chat_id(       // NEW
+    conn: &Connection,
+    chat_id: &str,
+) -> SqliteResult<Option<SessionInfo>>;
+
+/// List all active sessions, optionally filtered by source.
+pub fn list_sessions(
+    conn: &Connection,
+    source_filter: Option<&str>,      // NEW: filter by "qq", "gui", etc.
+) -> SqliteResult<Vec<SessionInfo>>;
+
+// Existing functions preserved with updated signatures:
+// - insert_message (unchanged)
+// - get_messages (unchanged)
+// - update_session_title (unchanged)
+// - touch_session (unchanged)
+// - delete_session (unchanged)
+// - update_tool_message (unchanged)
+```
+
+### 8.6 Impact on Existing Crates
+
+#### `robit-gui`
+
+Minimal changes — just pass the new parameters:
+
+```rust
+// Before:
+db::insert_session(&db, &session_id, &title, &model)?;
+
+// After:
+db::insert_session(&db, &session_id, None, &title, &model, "gui")?;
+
+// Before:
+let sessions = db::list_sessions(&db)?;
+
+// After (optional: filter by source):
+let sessions = db::list_sessions(&db, None)?;  // all sources
+```
+
+`robit-gui/src/db.rs` remains the thin re-export: `pub use robit_agent::storage::*;`
+
+#### `robit-chatbot`
+
+Uses the new `chat_id` and `source` parameters directly — no need for its own storage layer:
+
+```rust
+// Creating a new Bot session
+db::insert_session(&db, &session_id, Some("group:abc123"), "技术讨论群", &model, "qq")?;
+
+// Looking up by chat_id
+let existing = db::find_session_by_chat_id(&db, "group:abc123")?;
+if let Some(session) = existing {
+    // Restore Agent from persisted history
+}
+
+// Listing only QQ sessions
+let qq_sessions = db::list_sessions(&db, Some("qq"))?;
+```
+
+#### `robit-tui`
+
+If TUI ever adopts persistence, same pattern: `chat_id: None, source: "tui"`.
+
+### 8.7 Storage Scope
+
+All frontends use the same DB path resolution:
+
+```
+.robit/memory/robit.db    # project-local (default)
+~/.robit/memory/robit.db  # global (when global_storage = true)
+```
+
+`global_storage` config is respected by all frontends uniformly via `resolve_db_path()`.
+
+### 8.8 Future Migration Example
+
+When the next schema change is needed (e.g., adding an `avatar_url` column to sessions for Feishu):
+
+```rust
+// 1. Bump the constant
+const CURRENT_SCHEMA_VERSION: i32 = 3;
+
+// 2. Add a migration function
+fn migrate_v2_to_v3(conn: &Connection) -> SqliteResult<()> {
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN avatar_url TEXT", ());
+    Ok(())
+}
+
+// 3. Add the case to migrate()
+match current {
+    1 => migrate_v1_to_v2(conn)?,
+    2 => migrate_v2_to_v3(conn)?,   // ← add this line
+    ...
+}
+```
+
+No changes needed in any consuming crate — `init_db()` handles everything.
 
 ---
 
@@ -1215,7 +1503,9 @@ struct MockPlatform {
 | 6 | Confirmer with oneshot channels | Same pattern as GuiFrontend; blocking wait with timeout |
 | 7 | Exact keyword matching for confirm | Prevents false positives; only intercepts when pending confirmation exists |
 | 8 | No official Rust QQ SDK | Self-implement WebSocket protocol via tokio-tungstenite; protocol is well-documented |
-| 9 | Extend sessions table with chat_id | Clean mapping without schema redesign; NULL for non-Bot frontends |
-| 10 | Project-local DB by default | Matches robit-gui; global_storage config override available |
-| 11 | Text-only MVP | Image/file handling adds significant complexity; can be layered on later |
-| 12 | No Guild/频道 support in MVP | Group + private chat covers 90% of use cases; Guild requires additional intents |
+| 9 | Unified storage in `robit-agent` | Single schema source of truth for all frontends; `chat_id` + `source` columns serve both GUI and Bot use cases |
+| 10 | Schema versioning via `_schema_meta` | Add-only incremental migrations; `init_db()` auto-detects and upgrades; no manual migration steps |
+| 11 | `channels` config section | Separate from `providers` (LLM models); clear conceptual boundary between model providers and communication channels |
+| 12 | Project-local DB by default | Matches robit-gui; global_storage config override available |
+| 13 | Text-only MVP | Image/file handling adds significant complexity; can be layered on later |
+| 14 | No Guild/频道 support in MVP | Group + private chat covers 90% of use cases; Guild requires additional intents |
