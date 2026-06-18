@@ -180,8 +180,8 @@ impl Confirmer {
     /// match a keyword.
     pub fn check_confirmation_response(&self, chat_id: &str, text: &str) -> Option<bool> {
         let text_lower = text.trim().to_lowercase();
-        let is_approve = self.keywords.approve.iter().any(|kw| *kw == text_lower);
-        let is_reject = self.keywords.reject.iter().any(|kw| *kw == text_lower);
+        let is_approve = self.keywords.approve.contains(&text_lower);
+        let is_reject = self.keywords.reject.contains(&text_lower);
         if !is_approve && !is_reject {
             return None;
         }
@@ -417,16 +417,17 @@ mod tests {
         let h2 = tokio::spawn(async move { c2.request("group:5", &info2, false).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // First reply resolves the first-registered pending entry.
+        // First reply resolves one pending entry; second resolves the other.
+        // HashMap iteration order is non-deterministic, so we don't assume
+        // which tool_call_id is resolved first — only that both get resolved
+        // and the decisions match the keywords sent.
         assert!(confirmer.check_confirmation_response("group:5", "确认").is_some());
-        // Second reply resolves the remaining one.
         assert!(confirmer.check_confirmation_response("group:5", "取消").is_some());
 
         let r1 = h1.await.unwrap().unwrap();
         let r2 = h2.await.unwrap().unwrap();
-        // Order of resolution is by insertion, so a→approved, b→rejected.
-        assert!(r1);
-        assert!(!r2);
+        // One approved, one rejected — order is unspecified.
+        assert_ne!(r1, r2);
     }
 
     #[test]

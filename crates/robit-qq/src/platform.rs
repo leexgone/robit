@@ -198,7 +198,7 @@ impl QqPlatformAdapter {
         let identify =
             GatewayPayload::identify(&access_token, INTENT_C2C | INTENT_GROUP_AT_MESSAGE);
         write
-            .send(Message::Text(serde_json::to_string(&identify).unwrap().into()))
+            .send(Message::Text(serde_json::to_string(&identify).unwrap()))
             .await
             .map_err(|e| AgentError::InternalError(format!("Identify send failed: {}", e)))?;
 
@@ -288,7 +288,7 @@ impl PlatformAdapter for QqPlatformAdapter {
 
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult> {
         let auth = self.auth_header().await?;
-        let (endpoint, is_group) = resolve_send_endpoint(&self.config.api_base_url(), chat_id)?;
+        let (endpoint, is_group) = resolve_send_endpoint(self.config.api_base_url(), chat_id)?;
 
         let msg_id = self.reply_msg_id(chat_id).await;
         let msg_seq = self.next_msg_seq().await;
@@ -389,7 +389,7 @@ fn spawn_heartbeat(adapter: Arc<QqPlatformAdapter>) {
             };
             let mut ws_tx = adapter.ws_tx.lock().await;
             if let Some(write) = ws_tx.as_mut() {
-                if let Err(e) = write.send(Message::Text(payload.into())).await {
+                if let Err(e) = write.send(Message::Text(payload)).await {
                     warn!("Heartbeat send failed: {}", e);
                     let _ = adapter
                         .event_tx

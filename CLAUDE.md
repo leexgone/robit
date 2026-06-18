@@ -16,9 +16,9 @@
 | `crates/robit-agent` | 代理运行时（Agent 循环、工具执行、会话管理）。定义 `Frontend` trait 供前端实现。依赖 `robit-ai` |
 | `crates/robit-tui` | 终端前端（`ratatui` + `crossterm`），crate 和二进制名均为 `robit`。实现 `Frontend` trait，依赖 `robit-agent` |
 | `crates/robit-gui` | 桌面 GUI 前端（React + Tauri v2），实现 `Frontend` trait。SQLite 持久化会话。依赖 `robit-agent` |
-| `crates/robit-chatbot` | _（计划）_ 多会话 Bot 基础设施，提供 `PlatformAdapter` trait 和 `ChatbotManager`。QQ 和飞书等平台接入的共享基座 |
+| `crates/robit-chatbot` | 多会话 Bot 基础设施，提供 `PlatformAdapter` trait 和 `ChatbotManager`。QQ 和飞书等平台接入的共享基座。依赖 `robit-agent`、`robit-ai` |
 | `crates/robit-feishu` | _（计划）_ 飞书前端，实现 `PlatformAdapter` trait |
-| `crates/robit-qq` | _（计划）_ QQ 前端，实现 `PlatformAdapter` trait，依赖 `robit-chatbot` |
+| `crates/robit-qq` | QQ 前端，实现 `PlatformAdapter` trait（QQ 官方 Bot WebSocket 网关 + HTTP 发消息），二进制名 `robit-qq`。依赖 `robit-chatbot` |
 
 ### 验证工程（`examples/`）
 
@@ -53,6 +53,8 @@
 | 正则搜索 | `regex` | `grep` 工具实现 |
 | 文件查找 | `globset` | `find` 工具实现 |
 | 字符编码 | `encoding_rs` | 处理非 UTF-8 文件 |
+| WebSocket | `tokio-tungstenite` | QQ Bot 网关连接（robit-qq） |
+| HTTP 客户端（Bot） | `reqwest` | QQ Bot HTTP 发消息 + access token 获取 |
 
 **后续版本待引入**：
 
@@ -163,6 +165,21 @@ reserve_ratio = 0.2                    # 为 LLM 响应预留的上下文比例 
 max_retries = 3
 initial_backoff_ms = 1000
 max_backoff_ms = 30000
+
+# 通信渠道配置（可选，QQ/飞书等 Bot 平台接入）
+[channels.qq_bot]                      # QQ 官方 Bot 渠道
+app_id = "123456789"
+app_secret = "${QQ_BOT_SECRET}"        # 支持 ${ENV_VAR} 替换
+bot_token = "${QQ_BOT_TOKEN}"
+
+[app.bot]                              # Bot 平台共享设置（可选，以下为默认值）
+auto_approve = false                   # 自动批准工具调用（覆盖 app.auto_approve）
+confirm_timeout_secs = 60              # 工具确认超时（秒）
+session_timeout_minutes = 30           # 空闲会话过期（分钟）
+
+[app.bot.confirm_keywords]             # 确认/取消关键词（可选）
+approve = ["确认", "同意", "yes", "y", "approve", "ok", "允许"]
+reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
 ```
 
 ## 文档索引
