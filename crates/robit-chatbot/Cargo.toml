@@ -21,3 +21,4 @@ tracing.workspace = true
 uuid.workspace = true
 rusqlite.workspace = true
 pulldown-cmark.workspace = true
+thiserror.workspace = true

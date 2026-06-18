@@ -18,4 +18,4 @@ pub use adapter::{
 };
 pub use confirmer::{ConfirmKeywords, Confirmer};
 pub use frontend::{ChatbotFrontend, PlatformSender};
-pub use manager::{AgentHandle, ChatbotManager};
+pub use manager::{AgentHandle, ChatbotManager, ManagerError};
