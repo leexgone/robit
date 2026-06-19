@@ -1,6 +1,6 @@
 //! System prompt builder — assembles the system prompt from multiple modules.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::datetime::current_date;
 use crate::tool::Tool;
@@ -15,15 +15,34 @@ pub struct PromptBuilder {
 
 impl PromptBuilder {
     pub fn new() -> Self {
-        // Check for custom prompt file
-        let custom_path = Self::custom_prompt_path();
-        let custom_prompt = if let Some(path) = custom_path {
-            std::fs::read_to_string(&path).ok()
-        } else {
-            None
-        };
+        Self::with_working_dir(None)
+    }
 
-        Self { custom_prompt }
+    /// Create PromptBuilder with a specific working directory to check for
+    /// project-local custom prompt.
+    /// Priority: {cwd}/.robit/prompts/system.md > ~/.robit/prompts/system.md
+    pub fn with_working_dir(working_dir: Option<&Path>) -> Self {
+        // Check project-local prompt first (higher priority)
+        let local_prompt = working_dir.and_then(|cwd| {
+            let path = cwd.join(".robit/prompts/system.md");
+            std::fs::read_to_string(&path).ok()
+        });
+
+        if local_prompt.is_some() {
+            return Self {
+                custom_prompt: local_prompt,
+            };
+        }
+
+        // Fallback to global prompt
+        let global_prompt = dirs::home_dir().and_then(|home| {
+            let path = home.join(".robit/prompts/system.md");
+            std::fs::read_to_string(&path).ok()
+        });
+
+        Self {
+            custom_prompt: global_prompt,
+        }
     }
 
     /// Build the complete system prompt.
@@ -94,9 +113,6 @@ impl PromptBuilder {
         section
     }
 
-    fn custom_prompt_path() -> Option<PathBuf> {
-        dirs::home_dir().map(|home| home.join(".robit/prompts/system.txt"))
-    }
 }
 
 impl Default for PromptBuilder {

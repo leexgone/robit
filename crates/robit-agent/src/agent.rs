@@ -79,7 +79,7 @@ impl Agent {
         working_dir: PathBuf,
         auto_approve: bool,
     ) -> Self {
-        let prompt_builder = PromptBuilder::new();
+        let prompt_builder = PromptBuilder::with_working_dir(Some(&working_dir));
         let context_manager = ContextManager::new(context_window, context_config);
 
         // Build system prompt with tools AND skills
