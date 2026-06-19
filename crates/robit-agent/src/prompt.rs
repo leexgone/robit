@@ -5,13 +5,13 @@ use std::path::Path;
 use crate::datetime::current_date;
 use crate::tool::Tool;
 
-/// Default system prompt template (user-editable part).
+/// Default agent prompt template (user-editable part).
 /// Does NOT include Tools/Skills/Environment sections - those are appended automatically.
-const DEFAULT_PROMPT: &str = include_str!("../prompts/default.md");
+const DEFAULT_AGENT_PROMPT: &str = include_str!("../prompts/default.md");
 
-/// System suffix - automatically appended to all prompts.
-/// Contains Tools, Skills, and Environment sections.
-const SYSTEM_SUFFIX: &str = include_str!("../prompts/suffix.md");
+/// Built-in system prompt - automatically appended to all prompts.
+/// Contains Tools, Skills, and Environment sections (never overridden by users).
+const SYSTEM_PROMPT: &str = include_str!("../prompts/system.md");
 
 pub struct PromptBuilder {
     custom_prompt: Option<String>,
@@ -24,11 +24,11 @@ impl PromptBuilder {
 
     /// Create PromptBuilder with a specific working directory to check for
     /// project-local custom prompt.
-    /// Priority: {cwd}/.robit/prompts/system.md > ~/.robit/prompts/system.md
+    /// Priority: {cwd}/.robit/prompts/agent.md > ~/.robit/prompts/agent.md
     pub fn with_working_dir(working_dir: Option<&Path>) -> Self {
         // Check project-local prompt first (higher priority)
         let local_prompt = working_dir.and_then(|cwd| {
-            let path = cwd.join(".robit/prompts/system.md");
+            let path = cwd.join(".robit/prompts/agent.md");
             std::fs::read_to_string(&path).ok()
         });
 
@@ -40,7 +40,7 @@ impl PromptBuilder {
 
         // Fallback to global prompt
         let global_prompt = dirs::home_dir().and_then(|home| {
-            let path = home.join(".robit/prompts/system.md");
+            let path = home.join(".robit/prompts/agent.md");
             std::fs::read_to_string(&path).ok()
         });
 
@@ -52,8 +52,9 @@ impl PromptBuilder {
     /// Build the complete system prompt.
     ///
     /// The prompt is composed of:
-    /// 1. User-provided (or default) prompt (from system.md or default.md)
-    /// 2. System suffix (Tools, Skills, Environment) - automatically appended
+    /// 1. Agent prompt (user-provided from agent.md, or default from default.md)
+    /// 2. System prompt (Tools, Skills, Environment) - automatically appended,
+    ///    defined in system.md (built-in, never overridden by users)
     ///
     /// `skills` is a list of (name, description) pairs for enabled skills.
     pub fn build_system_prompt(
@@ -68,19 +69,19 @@ impl PromptBuilder {
         let cwd = working_dir.display().to_string();
         let date = current_date();
 
-        // Select base prompt: custom or default
-        let base_prompt = self.custom_prompt.as_deref().unwrap_or(DEFAULT_PROMPT);
+        // Select base prompt: custom agent prompt or default agent prompt
+        let agent_prompt = self.custom_prompt.as_deref().unwrap_or(DEFAULT_AGENT_PROMPT);
 
-        // Replace variables in the suffix (Tools, Skills, Environment sections)
-        let suffix = SYSTEM_SUFFIX
+        // Replace variables in the system prompt (Tools, Skills, Environment sections)
+        let system_part = SYSTEM_PROMPT
             .replace("{os}", os)
             .replace("{cwd}", &cwd)
             .replace("{date}", &date)
             .replace("{tools_section}", &tools_section)
             .replace("{skills_section}", &skills_section);
 
-        // Combine: base prompt + system suffix
-        format!("{}\n\n{}", base_prompt.trim(), suffix)
+        // Combine: agent prompt + system prompt
+        format!("{}\n\n{}", agent_prompt.trim(), system_part)
     }
 
     /// Build the tools description section.
