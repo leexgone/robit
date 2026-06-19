@@ -5,9 +5,13 @@ use std::path::Path;
 use crate::datetime::current_date;
 use crate::tool::Tool;
 
-/// Default system prompt template.
-/// Placeholders: {os}, {cwd}, {date}, {tools_section}, {skills_section}
+/// Default system prompt template (user-editable part).
+/// Does NOT include Tools/Skills/Environment sections - those are appended automatically.
 const DEFAULT_PROMPT: &str = include_str!("../prompts/default.md");
+
+/// System suffix - automatically appended to all prompts.
+/// Contains Tools, Skills, and Environment sections.
+const SYSTEM_SUFFIX: &str = include_str!("../prompts/suffix.md");
 
 pub struct PromptBuilder {
     custom_prompt: Option<String>,
@@ -47,6 +51,10 @@ impl PromptBuilder {
 
     /// Build the complete system prompt.
     ///
+    /// The prompt is composed of:
+    /// 1. User-provided (or default) prompt (from system.md or default.md)
+    /// 2. System suffix (Tools, Skills, Environment) - automatically appended
+    ///
     /// `skills` is a list of (name, description) pairs for enabled skills.
     pub fn build_system_prompt(
         &self,
@@ -60,22 +68,19 @@ impl PromptBuilder {
         let cwd = working_dir.display().to_string();
         let date = current_date();
 
-        if let Some(custom) = &self.custom_prompt {
-            // Custom prompt: still inject dynamic variables
-            custom
-                .replace("{os}", os)
-                .replace("{cwd}", &cwd)
-                .replace("{date}", &date)
-                .replace("{tools_section}", &tools_section)
-                .replace("{skills_section}", &skills_section)
-        } else {
-            DEFAULT_PROMPT
-                .replace("{os}", os)
-                .replace("{cwd}", &cwd)
-                .replace("{date}", &date)
-                .replace("{tools_section}", &tools_section)
-                .replace("{skills_section}", &skills_section)
-        }
+        // Select base prompt: custom or default
+        let base_prompt = self.custom_prompt.as_deref().unwrap_or(DEFAULT_PROMPT);
+
+        // Replace variables in the suffix (Tools, Skills, Environment sections)
+        let suffix = SYSTEM_SUFFIX
+            .replace("{os}", os)
+            .replace("{cwd}", &cwd)
+            .replace("{date}", &date)
+            .replace("{tools_section}", &tools_section)
+            .replace("{skills_section}", &skills_section);
+
+        // Combine: base prompt + system suffix
+        format!("{}\n\n{}", base_prompt.trim(), suffix)
     }
 
     /// Build the tools description section.
