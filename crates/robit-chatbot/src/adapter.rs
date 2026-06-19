@@ -39,21 +39,22 @@ pub struct MarkdownFeatures {
 
 impl MarkdownFeatures {
     /// QQ Official Bot Markdown feature subset.
+    /// QQ Bot only supports very limited Markdown - use plain text fallback for most features.
     pub fn qq() -> Self {
         Self {
-            headings: true,
-            bold: true,
-            italic: true,
-            code_blocks: true,
-            inline_code: true,
-            links: true,
-            unordered_lists: true,
-            ordered_lists: true,
-            blockquotes: true,
+            headings: false,      // Not supported
+            bold: false,          // Not supported
+            italic: false,        // Not supported
+            code_blocks: true,    // Supported
+            inline_code: false,   // Not supported
+            links: false,         // Not supported
+            unordered_lists: false,
+            ordered_lists: false,
+            blockquotes: false,
             tables: false,
             task_lists: false,
             images: false,
-            strikethrough: true,
+            strikethrough: false,
         }
     }
 
@@ -79,11 +80,13 @@ impl MarkdownFeatures {
 
 impl PlatformCaps {
     /// QQ Official Bot capabilities.
+    /// Note: QQ Bot has very limited Markdown support - we use the sanitizer to convert
+    /// Markdown to readable plain text with only minimal formatting preserved.
     pub fn qq() -> Self {
         Self {
             supports_edit: true,
             returns_msg_id: true,
-            supports_markdown: true,
+            supports_markdown: true,  // Enable sanitizer
             markdown_features: MarkdownFeatures::qq(),
             max_message_length: 2000,
         }

@@ -73,5 +73,18 @@ async fn main() {
     .expect("Failed to create ChatbotManager");
 
     tracing::info!("robit-qq bot is running");
-    manager.run().await.expect("ChatbotManager error");
+
+    // 6. Run with graceful shutdown on Ctrl+C.
+    tokio::select! {
+        result = manager.run() => {
+            if let Err(e) = result {
+                tracing::error!("ChatbotManager error: {}", e);
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received Ctrl+C, shutting down...");
+        }
+    }
+
+    tracing::info!("robit-qq bot has stopped");
 }

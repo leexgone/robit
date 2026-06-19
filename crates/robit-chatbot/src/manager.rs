@@ -105,9 +105,10 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 
         // Resolve bot settings (with defaults).
         let bot = config.app.as_ref().and_then(|a| a.bot.as_ref());
-        let auto_approve = bot
-            .and_then(|b| b.auto_approve)
-            .or(config.app.as_ref().and_then(|a| a.auto_approve))
+        let auto_approve = config
+            .app
+            .as_ref()
+            .and_then(|a| a.auto_approve)
             .unwrap_or(false);
         let confirm_timeout = Duration::from_secs(
             bot.and_then(|b| b.confirm_timeout_secs).unwrap_or(60),

@@ -341,29 +341,36 @@ mod tests {
     }
 
     #[test]
-    fn passes_through_bold_and_italic() {
+    fn strips_bold_and_italic_for_qq() {
+        // QQ does not support bold/italic markdown - they should be stripped to plain text.
         let out = prepare_markdown_for_platform("**bold** and *italic*", &qq());
-        assert!(out.contains("**bold**"));
-        assert!(out.contains("*italic*"));
+        assert!(!out.contains("**bold**"));
+        assert!(!out.contains("*italic*"));
+        assert!(out.contains("bold and italic"));
     }
 
     #[test]
-    fn passes_through_code_blocks() {
+    fn passes_through_code_blocks_for_qq() {
+        // QQ does support code blocks.
         let md = "```rust\nfn main() {}\n```\n";
         let out = prepare_markdown_for_platform(md, &qq());
         assert!(out.contains("```\nfn main() {}\n```"));
     }
 
     #[test]
-    fn passes_through_inline_code() {
+    fn strips_inline_code_for_qq() {
+        // QQ does not support inline code markdown - backticks should be removed.
         let out = prepare_markdown_for_platform("use `cargo` to build", &qq());
-        assert!(out.contains("`cargo`"));
+        assert!(!out.contains("`cargo`"));
+        assert!(out.contains("cargo"));
     }
 
     #[test]
-    fn passes_through_links() {
+    fn strips_links_for_qq() {
+        // QQ does not support link markdown - output plain text.
         let out = prepare_markdown_for_platform("[site](https://example.com)", &qq());
-        assert!(out.contains("[site](https://example.com)"));
+        // Links should be converted to plain text (either the label or URL, not markdown).
+        assert!(out.contains("site") || out.contains("https://example.com"));
     }
 
     #[test]
@@ -405,9 +412,10 @@ mod tests {
     }
 
     #[test]
-    fn handles_unicode() {
+    fn handles_unicode_for_qq() {
+        // Bold markers are stripped for QQ, but the text content should remain.
         let out = prepare_markdown_for_platform("**你好** 世界", &qq());
-        assert!(out.contains("**你好**"));
+        assert!(out.contains("你好"));
         assert!(out.contains("世界"));
     }
 

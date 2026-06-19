@@ -22,10 +22,6 @@ use tokio::sync::Mutex;
 use crate::adapter::{PlatformCaps, SendResult};
 use crate::confirmer::Confirmer;
 use crate::markdown::prepare_markdown_for_platform;
-
-/// Buffer threshold (in characters) at which to flush a streaming segment.
-const FLUSH_THRESHOLD: usize = 200;
-
 /// Abstracted message sending capability (platform-agnostic).
 ///
 /// `ChatbotFrontend` talks to the platform through this trait rather than
@@ -44,7 +40,8 @@ pub trait PlatformSender: Send + Sync {
 /// Per-session Frontend trait implementation for Bot platforms.
 ///
 /// Each chat (group or private) gets its own `ChatbotFrontend` instance.
-/// `TextDelta` events are buffered and flushed in smart segments.
+/// `TextDelta` events are buffered and flushed once at TurnComplete with
+/// full Markdown sanitization to ensure clean output on platforms like QQ.
 pub struct ChatbotFrontend {
     /// The chat this frontend belongs to (`group:{id}` or `private:{id}`).
     pub chat_id: String,
@@ -52,9 +49,10 @@ pub struct ChatbotFrontend {
     pub platform_sender: Arc<dyn PlatformSender>,
     /// Tool confirmation coordinator (shared).
     pub confirmer: Arc<Confirmer>,
-    /// Streaming text buffer.
+    /// Buffer to accumulate text until TurnComplete.
     pub buffer: Mutex<String>,
-    /// ID of the last message sent (for edit-based streaming updates).
+    /// ID of the last message sent (for edit-based updates, e.g., replacing a
+    /// progress hint with the actual response).
     pub last_msg_id: Mutex<Option<String>>,
     /// Whether a progress hint has already been sent this turn (rate limit).
     pub progress_hint_sent: Mutex<bool>,
@@ -81,22 +79,16 @@ impl ChatbotFrontend {
         }
     }
 
-    /// Append a delta to the buffer and flush a segment if a natural boundary
-    /// is reached.
+    /// Append a delta to the buffer (no streaming send, just accumulate).
+    /// For QQ Bot, we send the full sanitized message at TurnComplete to
+    /// avoid duplicate messages and ensure proper Markdown handling.
     async fn append_delta(&self, delta: &str) {
         let mut buffer = self.buffer.lock().await;
         buffer.push_str(delta);
-        if buffer.chars().count() >= FLUSH_THRESHOLD {
-            if let Some((segment, remainder)) = split_at_natural_boundary(&buffer, FLUSH_THRESHOLD)
-            {
-                *buffer = remainder;
-                drop(buffer); // release lock before sending
-                self.send_segment(&segment).await;
-            }
-        }
     }
 
-    /// Flush all remaining buffered content.
+    /// Flush the buffer: take all accumulated text, sanitize it, and send it.
+    /// This ensures Markdown is parsed as a whole and we only send once per turn.
     async fn flush_buffer(&self) {
         let mut buffer = self.buffer.lock().await;
         if buffer.is_empty() {
@@ -104,43 +96,28 @@ impl ChatbotFrontend {
         }
         let text = std::mem::take(&mut *buffer);
         drop(buffer);
-        self.send_segment(&text).await;
-    }
 
-    /// Send a text segment, applying Markdown sanitization. Uses edit-based
-    /// streaming (accumulated text) when the platform supports it and a
-    /// previous message exists; otherwise sends a new message.
-    async fn send_segment(&self, text: &str) {
-        if text.trim().is_empty() {
-            return;
-        }
         let caps = self.platform_sender.capabilities();
         let prepared = if caps.supports_markdown {
-            prepare_markdown_for_platform(text, &caps.markdown_features)
+            prepare_markdown_for_platform(&text, &caps.markdown_features)
         } else {
-            text.to_string()
+            text
         };
         let prepared = truncate_to_max(&prepared, caps.max_message_length);
 
+        // Just send once, no edit tricks - simple and reliable
         let mut last_msg_id = self.last_msg_id.lock().await;
         if caps.supports_edit && last_msg_id.is_some() {
-            // Edit in place: accumulate the full text so the message "grows".
-            // We store accumulated text by editing to the segment itself; for
-            // simplicity in MVP we edit to the current segment (no accumulated
-            // state kept). A future improvement can accumulate across segments.
+            // Edit if we already sent something this turn (e.g., progress hint)
             let msg_id = last_msg_id.clone().unwrap();
-            if self
-                .platform_sender
-                .edit(&self.chat_id, &msg_id, &prepared)
-                .await
-                .is_err()
-            {
-                // Edit failed — fall back to a fresh send.
+            if self.platform_sender.edit(&self.chat_id, &msg_id, &prepared).await.is_err() {
+                // Edit failed, fall back to send
                 if let Ok(res) = self.platform_sender.send(&self.chat_id, &prepared).await {
                     *last_msg_id = Some(res.msg_id);
                 }
             }
         } else {
+            // No previous message this turn, just send
             if let Ok(res) = self.platform_sender.send(&self.chat_id, &prepared).await {
                 *last_msg_id = Some(res.msg_id);
             }
@@ -232,77 +209,6 @@ fn truncate_to_max(text: &str, max: usize) -> String {
     out
 }
 
-/// Find the best natural break point at or before `threshold` characters and
-/// split the buffer into `(segment, remainder)`.
-///
-/// Priority (searching backward from `threshold`):
-/// 1. Paragraph break (`\n\n`)
-/// 2. Code block fence end (` ``` `)
-/// 3. Line break (`\n`)
-/// 4. Sentence end (`.` `。` `!` `！` `?` `？` followed by space or end)
-/// 5. Space (word boundary)
-///
-/// Returns `None` if no suitable break point is found (caller keeps buffering).
-fn split_at_natural_boundary(buffer: &str, threshold: usize) -> Option<(String, String)> {
-    let chars: Vec<char> = buffer.chars().collect();
-    if chars.len() < threshold {
-        return None;
-    }
-    // Search window: from the start up to `threshold` (plus a little slack to
-    // avoid cutting a paragraph break that straddles the boundary).
-    let window_end = threshold.min(chars.len());
-
-    // 1. Paragraph break (\n\n) — split after the second newline.
-    let mut best: Option<usize> = None;
-    for i in 1..window_end {
-        if chars[i - 1] == '\n' && chars[i] == '\n' {
-            best = Some(i + 1); // include the blank line in the segment
-        }
-    }
-    if let Some(pos) = best {
-        return Some(split_chars(&chars, pos));
-    }
-
-    // 2. Code block fence end (```).
-    let s: String = chars[..window_end].iter().collect();
-    if let Some(idx) = s.rfind("```") {
-        let pos = idx + 3;
-        return Some(split_chars(&chars, pos));
-    }
-
-    // 3. Line break.
-    for i in (0..window_end).rev() {
-        if chars[i] == '\n' {
-            return Some(split_chars(&chars, i + 1));
-        }
-    }
-
-    // 4. Sentence end.
-    for i in (0..window_end).rev() {
-        let c = chars[i];
-        if matches!(c, '.' | '。' | '!' | '！' | '?' | '？') {
-            return Some(split_chars(&chars, i + 1));
-        }
-    }
-
-    // 5. Space (word boundary).
-    for i in (0..window_end).rev() {
-        if chars[i] == ' ' {
-            return Some(split_chars(&chars, i + 1));
-        }
-    }
-
-    None
-}
-
-/// Split a char slice at `pos` into two owned strings.
-fn split_chars(chars: &[char], pos: usize) -> (String, String) {
-    let pos = pos.min(chars.len());
-    let segment: String = chars[..pos].iter().collect();
-    let remainder: String = chars[pos..].iter().collect();
-    (segment, remainder)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,37 +270,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn textdelta_accumulates_until_threshold() {
+    async fn textdelta_accumulates_until_turn_complete() {
         let sender = MockSender::new_with_edit(false);
         let fe = make_frontend(sender.clone(), false);
-        // Small deltas below threshold should not send.
-        fe.on_event(AgentEvent::TextDelta("短文本".to_string())).await.unwrap();
+        // Text deltas only accumulate, nothing is sent until TurnComplete.
+        fe.on_event(AgentEvent::TextDelta("你好".to_string())).await.unwrap();
+        fe.on_event(AgentEvent::TextDelta("世界".to_string())).await.unwrap();
         assert!(sender.sent_texts().is_empty());
+        // Nothing sent until TurnComplete.
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+        assert_eq!(sender.sent_texts().len(), 1);
+        assert!(sender.sent_texts()[0].contains("你好世界"));
     }
 
     #[tokio::test]
-    async fn turn_complete_flushes_remaining_buffer() {
+    async fn turn_complete_flushes_accumulated_text() {
         let sender = MockSender::new_with_edit(false);
         let fe = make_frontend(sender.clone(), false);
         fe.on_event(AgentEvent::TextDelta("一段未被刷新的文本".to_string())).await.unwrap();
         assert!(sender.sent_texts().is_empty());
         fe.on_event(AgentEvent::TurnComplete).await.unwrap();
-        assert_eq!(sender.sent_texts(), vec!["一段未被刷新的文本\n".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn large_delta_flushes_at_paragraph_boundary() {
-        let sender = MockSender::new_with_edit(false);
-        let fe = make_frontend(sender.clone(), false);
-        // Build text with a paragraph break past the threshold.
-        let part1 = "x".repeat(180);
-        let part2 = "\n\n".to_string() + &"y".repeat(100);
-        let text = format!("{}{}", part1, part2);
-        fe.on_event(AgentEvent::TextDelta(text)).await.unwrap();
-        // A segment should have been flushed at the paragraph break.
-        let sent = sender.sent_texts();
-        assert!(!sent.is_empty());
-        assert!(sent[0].contains(&part1));
+        assert_eq!(sender.sent_texts().len(), 1);
+        assert!(sender.sent_texts()[0].contains("一段未被刷新的文本"));
     }
 
     #[tokio::test]
@@ -467,18 +364,4 @@ mod tests {
         assert!(sender.sent_texts().iter().any(|t| t.contains("Error") && t.contains("boom")));
     }
 
-    #[test]
-    fn split_at_sentence_end() {
-        let (seg, rem) = split_at_natural_boundary(
-            "Hello world. Next sentence here.",
-            15,
-        ).unwrap();
-        assert!(seg.contains("Hello world."));
-        assert!(rem.starts_with(" Next"));
-    }
-
-    #[test]
-    fn split_returns_none_below_threshold() {
-        assert!(split_at_natural_boundary("short", 200).is_none());
-    }
 }

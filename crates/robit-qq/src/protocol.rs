@@ -186,7 +186,9 @@ pub struct SendMessageResponse {
 /// Request body for the getAppAccessToken endpoint.
 #[derive(Debug, Serialize)]
 pub struct AccessTokenRequest {
+    #[serde(rename = "appId")]
     pub app_id: String,
+    #[serde(rename = "clientSecret")]
     pub client_secret: String,
 }
 
@@ -195,8 +197,29 @@ pub struct AccessTokenRequest {
 pub struct AccessTokenResponse {
     pub access_token: String,
     /// Seconds until expiry.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_number")]
     pub expires_in: u64,
+    #[serde(default)]
+    pub code: Option<i32>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+fn deserialize_string_or_number<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrNumber {
+        String(String),
+        Number(u64),
+    }
+
+    match StringOrNumber::deserialize(deserializer)? {
+        StringOrNumber::String(s) => s.parse().map_err(serde::de::Error::custom),
+        StringOrNumber::Number(n) => Ok(n),
+    }
 }
 
 #[cfg(test)]

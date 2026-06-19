@@ -229,15 +229,23 @@ impl QqPlatformAdapter {
             app_id: self.config.app_id.clone(),
             client_secret: self.config.app_secret.clone(),
         };
-        let resp: AccessTokenResponse = self
+
+        let response = self
             .http
             .post(self.config.access_token_url())
             .json(&req)
             .send()
             .await
-            .map_err(|e| AgentError::InternalError(format!("Access token request failed: {}", e)))?
-            .json()
-            .await
+            .map_err(|e| AgentError::InternalError(format!("Access token request failed: {}", e)))?;
+
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            return Err(AgentError::InternalError(format!("Access token request failed ({}): {}", status, text)));
+        }
+
+        let resp: AccessTokenResponse = serde_json::from_str(&text)
             .map_err(|e| AgentError::InternalError(format!("Access token parse failed: {}", e)))?;
 
         let token = resp.access_token.clone();

@@ -141,8 +141,6 @@ pub struct QqBotConfig {
 /// Shared Bot platform settings under `[app.bot]`.
 #[derive(Debug, Deserialize, Default)]
 pub struct BotConfig {
-    /// Auto-approve all tool calls (overrides the global `app.auto_approve`).
-    pub auto_approve: Option<bool>,
     /// Timeout (seconds) for waiting on a tool confirmation reply.
     pub confirm_timeout_secs: Option<u64>,
     /// Idle session expiry (minutes) before cleanup.
@@ -735,7 +733,6 @@ mod tests {
             bot_token = "token-value"
 
             [app.bot]
-            auto_approve = false
             confirm_timeout_secs = 60
             session_timeout_minutes = 30
 
@@ -758,7 +755,6 @@ mod tests {
 
         // app.bot
         let bot = config.app.as_ref().unwrap().bot.as_ref().unwrap();
-        assert_eq!(bot.auto_approve, Some(false));
         assert_eq!(bot.confirm_timeout_secs, Some(60));
         assert_eq!(bot.session_timeout_minutes, Some(30));
         let kw = bot.confirm_keywords.as_ref().unwrap();
