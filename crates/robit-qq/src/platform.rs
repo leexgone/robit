@@ -22,15 +22,16 @@ use futures_util::{SinkExt, StreamExt};
 use robit_agent::error::{AgentError, Result};
 use robit_ai::config::RobitConfig;
 use robit_chatbot::adapter::{
-    ChatMessage, ChatType, PlatformAdapter, PlatformCaps, PlatformEvent, SendResult, SenderInfo,
+    ChatMessage, ChatType, MediaAttachment, PlatformAdapter, PlatformCaps, PlatformEvent,
+    SendResult, SenderInfo, UploadResult,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
 use crate::protocol::{
-    event_type, AccessTokenRequest, AccessTokenResponse, GatewayPayload, HelloData, MessageEvent,
-    SendMessageRequest, SendMessageResponse, op,
+    event_type, AccessTokenRequest, AccessTokenResponse, GatewayPayload, HelloData, MediaFileInfo,
+    MessageEvent, SendMessageRequest, SendMessageResponse, op,
 };
 
 /// QQ Bot configuration parsed from `[channels.qq_bot]`.
@@ -305,6 +306,7 @@ impl PlatformAdapter for QqPlatformAdapter {
             msg_type: crate::protocol::msg_type::TEXT,
             msg_id,
             msg_seq: Some(msg_seq),
+            media: None,
         };
 
         let resp = self
@@ -348,6 +350,148 @@ impl PlatformAdapter for QqPlatformAdapter {
         Ok(())
     }
 
+    async fn upload_file(
+        &self,
+        chat_id: &str,
+        file_path: &str,
+        media_type: &str,
+    ) -> Result<UploadResult> {
+        let auth = self.auth_header().await?;
+        let (endpoint, _is_group) =
+            resolve_upload_endpoint(self.config.api_base_url(), chat_id)?;
+
+        let file_type = match media_type {
+            "image" => crate::protocol::file_type::IMAGE,
+            "video" => crate::protocol::file_type::VIDEO,
+            "voice" => crate::protocol::file_type::VOICE,
+            _ => crate::protocol::file_type::FILE,
+        };
+
+        // Read file from disk.
+        let file_data = tokio::fs::read(file_path)
+            .await
+            .map_err(|e| AgentError::InternalError(format!("Failed to read file {}: {}", file_path, e)))?;
+
+        let file_name = std::path::Path::new(file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file");
+
+        // Build multipart form: QQ expects `file` part with the file content,
+        // plus `file_type` as a form field.
+        let part = reqwest::multipart::Part::bytes(file_data)
+            .file_name(file_name.to_string());
+        let form = reqwest::multipart::Form::new()
+            .text("file_type", file_type.to_string())
+            .part("file", part);
+
+        let resp = self
+            .http
+            .post(&endpoint)
+            .header("Authorization", &auth)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| AgentError::InternalError(format!("QQ upload failed: {}", e)))?;
+
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            warn!("QQ upload {} failed ({}): {}", endpoint, status, body);
+            return Err(AgentError::InternalError(format!(
+                "QQ upload failed ({}): {}",
+                status, body
+            )));
+        }
+
+        let parsed: crate::protocol::UploadMediaResponse = serde_json::from_str(&body)
+            .map_err(|e| {
+                AgentError::InternalError(format!(
+                    "QQ upload response parse failed: {} (body: {})",
+                    e, body
+                ))
+            })?;
+
+        let file_info = parsed.file_info.ok_or_else(|| {
+            AgentError::InternalError(format!(
+                "QQ upload response missing file_info: {}",
+                body
+            ))
+        })?;
+
+        let file_id = parsed
+            .file_uuid
+            .or(parsed.id)
+            .unwrap_or_else(|| file_info.clone());
+
+        debug!("QQ file uploaded: file_info={}, file_id={}", file_info, file_id);
+
+        Ok(UploadResult {
+            file_id,
+            url: file_info,
+        })
+    }
+
+    async fn send_media_message(
+        &self,
+        chat_id: &str,
+        file_url: &str,
+        file_name: &str,
+        media_type: &str,
+    ) -> Result<SendResult> {
+        let auth = self.auth_header().await?;
+        let (endpoint, _is_group) = resolve_send_endpoint(self.config.api_base_url(), chat_id)?;
+
+        let msg_id = self.reply_msg_id(chat_id).await;
+        let msg_seq = self.next_msg_seq().await;
+        let body = SendMessageRequest {
+            content: file_name.to_string(),
+            msg_type: crate::protocol::msg_type::MEDIA,
+            msg_id,
+            msg_seq: Some(msg_seq),
+            media: Some(MediaFileInfo {
+                file_info: file_url.to_string(),
+            }),
+        };
+
+        let resp = self
+            .http
+            .post(&endpoint)
+            .header("Authorization", &auth)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AgentError::InternalError(format!("QQ media send failed: {}", e)))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            warn!("QQ media send {} failed ({}): {}", endpoint, status, text);
+            return Err(AgentError::InternalError(format!(
+                "QQ media send failed ({}): {}",
+                status, text
+            )));
+        }
+
+        let parsed: SendMessageResponse = resp
+            .json()
+            .await
+            .map_err(|e| {
+                AgentError::InternalError(format!("QQ media send response parse: {}", e))
+            })?;
+
+        let id = parsed
+            .id
+            .or(parsed.msg_id)
+            .unwrap_or_else(|| format!("media-{}", msg_seq));
+        debug!(
+            "QQ media message sent to {} (id={}, type={})",
+            chat_id, id, media_type
+        );
+        Ok(SendResult { msg_id: id })
+    }
+
     async fn recv_event(&self) -> Result<PlatformEvent> {
         self.event_rx
             .lock()
@@ -368,10 +512,39 @@ const INTENT_GROUP_AT_MESSAGE: u32 = crate::protocol::INTENT_GROUP_AT_MESSAGE;
 /// `private:{openid}` → `/v2/users/{openid}/messages`
 fn resolve_send_endpoint(base: &str, chat_id: &str) -> Result<(String, bool)> {
     if let Some(group_id) = chat_id.strip_prefix("group:") {
-        return Ok((format!("{}/v2/groups/{}/messages", base, group_id), true));
+        return Ok((
+            format!("{}/v2/groups/{}/messages", base, group_id),
+            true,
+        ));
     }
     if let Some(user_id) = chat_id.strip_prefix("private:") {
-        return Ok((format!("{}/v2/users/{}/messages", base, user_id), false));
+        return Ok((
+            format!("{}/v2/users/{}/messages", base, user_id),
+            false,
+        ));
+    }
+    Err(AgentError::InternalError(format!(
+        "Invalid chat_id '{}': expected 'group:{{id}}' or 'private:{{id}}'",
+        chat_id
+    )))
+}
+
+/// Resolve the HTTP upload endpoint for a chat_id.
+///
+/// `group:{openid}` → `/v2/groups/{openid}/files`
+/// `private:{openid}` → `/v2/users/{openid}/files`
+fn resolve_upload_endpoint(base: &str, chat_id: &str) -> Result<(String, bool)> {
+    if let Some(group_id) = chat_id.strip_prefix("group:") {
+        return Ok((
+            format!("{}/v2/groups/{}/files", base, group_id),
+            true,
+        ));
+    }
+    if let Some(user_id) = chat_id.strip_prefix("private:") {
+        return Ok((
+            format!("{}/v2/users/{}/files", base, user_id),
+            false,
+        ));
     }
     Err(AgentError::InternalError(format!(
         "Invalid chat_id '{}': expected 'group:{{id}}' or 'private:{{id}}'",
@@ -523,7 +696,32 @@ fn build_platform_event(event_name: &str, ev: &MessageEvent) -> Option<PlatformE
     };
     let user_id = ev.user_id().unwrap_or("unknown").to_string();
     // QQ group @-message content typically has a leading space from the @mention.
-    let text = ev.content.trim().to_string();
+    let mut text = ev.content.trim().to_string();
+
+    // Convert QQ attachments to platform-agnostic media attachments.
+    let attachments: Vec<MediaAttachment> = ev
+        .attachments
+        .iter()
+        .map(|att| MediaAttachment {
+            content_type: att.content_type.clone().unwrap_or_else(|| "application/octet-stream".into()),
+            url: att.url.clone(),
+            filename: att.filename.clone(),
+            size: att.size,
+            width: att.width,
+            height: att.height,
+        })
+        .collect();
+
+    // Append attachment descriptions to the text so the LLM knows about them.
+    if !attachments.is_empty() {
+        let descs: Vec<String> = attachments.iter().map(|a| a.describe()).collect();
+        if text.is_empty() {
+            text = descs.join("\n");
+        } else {
+            text = format!("{}\n{}", text, descs.join("\n"));
+        }
+    }
+
     Some(PlatformEvent::Message(ChatMessage {
         text,
         sender: SenderInfo {
@@ -531,6 +729,7 @@ fn build_platform_event(event_name: &str, ev: &MessageEvent) -> Option<PlatformE
             chat_id,
             chat_type,
         },
+        attachments,
     }))
 }
 
@@ -568,6 +767,28 @@ mod tests {
     }
 
     #[test]
+    fn resolves_group_upload_endpoint() {
+        let (url, is_group) =
+            resolve_upload_endpoint("https://api.sgroup.qq.com", "group:abc").unwrap();
+        assert_eq!(
+            url,
+            "https://api.sgroup.qq.com/v2/groups/abc/files"
+        );
+        assert!(is_group);
+    }
+
+    #[test]
+    fn resolves_private_upload_endpoint() {
+        let (url, is_group) =
+            resolve_upload_endpoint("https://api.sgroup.qq.com", "private:user1").unwrap();
+        assert_eq!(
+            url,
+            "https://api.sgroup.qq.com/v2/users/user1/files"
+        );
+        assert!(!is_group);
+    }
+
+    #[test]
     fn builds_platform_event_for_group() {
         let ev = MessageEvent {
             id: "m1".into(),
@@ -577,6 +798,7 @@ mod tests {
                 member_openid: Some("mem1".into()),
             },
             group_openid: Some("grp1".into()),
+            attachments: vec![],
         };
         let pe = build_platform_event(event_type::GROUP_AT_MESSAGE_CREATE, &ev).unwrap();
         match pe {
@@ -585,6 +807,7 @@ mod tests {
                 assert_eq!(m.sender.chat_type, ChatType::Group);
                 assert_eq!(m.text, "hello"); // leading space trimmed
                 assert_eq!(m.sender.user_id, "mem1");
+                assert!(m.attachments.is_empty());
             }
             _ => panic!("expected Message"),
         }
@@ -600,12 +823,47 @@ mod tests {
                 member_openid: None,
             },
             group_openid: None,
+            attachments: vec![],
         };
         let pe = build_platform_event(event_type::C2C_MESSAGE_CREATE, &ev).unwrap();
         match pe {
             PlatformEvent::Message(m) => {
                 assert_eq!(m.sender.chat_id, "private:u1");
                 assert_eq!(m.sender.chat_type, ChatType::Private);
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn builds_platform_event_with_attachments() {
+        let ev = MessageEvent {
+            id: "m3".into(),
+            content: "look".into(),
+            author: crate::protocol::Author {
+                user_openid: Some("u2".into()),
+                member_openid: None,
+            },
+            group_openid: None,
+            attachments: vec![crate::protocol::QqAttachment {
+                url: "https://cdn.qq.com/img/test.png".into(),
+                content_type: Some("image/png".into()),
+                filename: Some("test.png".into()),
+                size: Some(204800),
+                width: Some(800),
+                height: Some(600),
+            }],
+        };
+        let pe = build_platform_event(event_type::C2C_MESSAGE_CREATE, &ev).unwrap();
+        match pe {
+            PlatformEvent::Message(m) => {
+                assert_eq!(m.attachments.len(), 1);
+                assert_eq!(m.attachments[0].content_type, "image/png");
+                assert_eq!(m.attachments[0].url, "https://cdn.qq.com/img/test.png");
+                assert!(m.attachments[0].is_image());
+                // Text should include attachment description.
+                assert!(m.text.contains("用户发送了图片"));
+                assert!(m.text.contains("test.png"));
             }
             _ => panic!("expected Message"),
         }

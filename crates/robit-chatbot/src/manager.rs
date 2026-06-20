@@ -24,7 +24,7 @@ use rusqlite::Connection;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
-use crate::adapter::{ChatMessage, PlatformAdapter, PlatformCaps, PlatformEvent, SendResult};
+use crate::adapter::{ChatMessage, PlatformAdapter, PlatformCaps, PlatformEvent, SendResult, UploadResult};
 use crate::confirmer::{ConfirmKeywords, Confirmer};
 use crate::frontend::{ChatbotFrontend, PlatformSender};
 
@@ -53,6 +53,25 @@ impl<T: PlatformAdapter> PlatformSender for PlatformSenderBridge<T> {
     }
     async fn edit(&self, chat_id: &str, msg_id: &str, text: &str) -> robit_agent::error::Result<()> {
         self.platform.edit_message(chat_id, msg_id, text).await
+    }
+    async fn upload_file(
+        &self,
+        chat_id: &str,
+        file_path: &str,
+        media_type: &str,
+    ) -> robit_agent::error::Result<UploadResult> {
+        self.platform.upload_file(chat_id, file_path, media_type).await
+    }
+    async fn send_media_message(
+        &self,
+        chat_id: &str,
+        file_url: &str,
+        file_name: &str,
+        media_type: &str,
+    ) -> robit_agent::error::Result<SendResult> {
+        self.platform
+            .send_media_message(chat_id, file_url, file_name, media_type)
+            .await
     }
     fn capabilities(&self) -> PlatformCaps {
         self.caps.clone()
@@ -396,6 +415,7 @@ mod tests {
                     chat_id: chat_id.to_string(),
                     chat_type: ChatType::Group,
                 },
+                attachments: vec![],
             }));
         }
 

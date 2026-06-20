@@ -245,7 +245,7 @@ fn _ensure_agent_error_used() -> AgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::{MarkdownFeatures, PlatformCaps, SendResult};
+    use crate::adapter::{MarkdownFeatures, PlatformCaps, SendResult, UploadResult};
     use async_trait::async_trait;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::Mutex;
@@ -265,6 +265,9 @@ mod tests {
                     supports_markdown: true,
                     markdown_features: MarkdownFeatures::qq(),
                     max_message_length: 2000,
+                    supports_images: true,
+                    supports_files: true,
+                    max_upload_size: 20 * 1024 * 1024,
                 },
             })
         }
@@ -287,6 +290,23 @@ mod tests {
         }
         async fn edit(&self, _chat_id: &str, _msg_id: &str, _text: &str) -> Result<()> {
             Ok(())
+        }
+        async fn upload_file(&self, _chat_id: &str, _file_path: &str, _media_type: &str) -> Result<UploadResult> {
+            Ok(UploadResult {
+                file_id: "mock-file-id".into(),
+                url: "/mock/upload.png".into(),
+            })
+        }
+        async fn send_media_message(
+            &self,
+            _chat_id: &str,
+            _file_url: &str,
+            _file_name: &str,
+            _media_type: &str,
+        ) -> Result<SendResult> {
+            Ok(SendResult {
+                msg_id: "mock-media-id".to_string(),
+            })
         }
         fn capabilities(&self) -> PlatformCaps {
             self.caps.clone()

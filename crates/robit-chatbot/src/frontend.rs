@@ -19,7 +19,7 @@ use robit_agent::frontend::Frontend;
 use robit_agent::tool::ToolCallInfo;
 use tokio::sync::Mutex;
 
-use crate::adapter::{PlatformCaps, SendResult};
+use crate::adapter::{PlatformCaps, SendResult, UploadResult};
 use crate::confirmer::Confirmer;
 use crate::markdown::prepare_markdown_for_platform;
 /// Abstracted message sending capability (platform-agnostic).
@@ -33,6 +33,10 @@ pub trait PlatformSender: Send + Sync {
     async fn send(&self, chat_id: &str, text: &str) -> Result<SendResult>;
     /// Edit a previously-sent message in place.
     async fn edit(&self, chat_id: &str, msg_id: &str, text: &str) -> Result<()>;
+    /// Upload a file to the platform. Returns the platform file URL/ID.
+    async fn upload_file(&self, chat_id: &str, file_path: &str, media_type: &str) -> Result<UploadResult>;
+    /// Send a media message (image/file) to a chat.
+    async fn send_media_message(&self, chat_id: &str, file_url: &str, file_name: &str, media_type: &str) -> Result<SendResult>;
     /// Platform capabilities (drives streaming strategy).
     fn capabilities(&self) -> PlatformCaps;
 }
@@ -232,6 +236,9 @@ mod tests {
                     supports_markdown: true,
                     markdown_features: MarkdownFeatures::qq(),
                     max_message_length: 2000,
+                    supports_images: true,
+                    supports_files: true,
+                    max_upload_size: 20 * 1024 * 1024,
                 },
             })
         }
@@ -258,6 +265,27 @@ mod tests {
                 text.to_string(),
             ));
             Ok(())
+        }
+        async fn upload_file(&self, _chat_id: &str, _file_path: &str, _media_type: &str) -> Result<UploadResult> {
+            Ok(UploadResult {
+                file_id: "mock-file-id".into(),
+                url: "/mock/upload.png".into(),
+            })
+        }
+        async fn send_media_message(
+            &self,
+            chat_id: &str,
+            _file_url: &str,
+            file_name: &str,
+            media_type: &str,
+        ) -> Result<SendResult> {
+            self.sent
+                .lock()
+                .unwrap()
+                .push((chat_id.to_string(), format!("[media:{}] {}", media_type, file_name)));
+            Ok(SendResult {
+                msg_id: format!("msg-{}", self.sent.lock().unwrap().len()),
+            })
         }
         fn capabilities(&self) -> PlatformCaps {
             self.caps.clone()

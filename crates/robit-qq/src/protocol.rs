@@ -110,6 +110,29 @@ pub struct HelloData {
 // Message events
 // ===========================================================================
 
+/// An attachment in a QQ message event (image, file, etc.).
+#[derive(Debug, Clone, Deserialize)]
+pub struct QqAttachment {
+    /// Download URL for the attachment.
+    #[serde(default)]
+    pub url: String,
+    /// MIME content type (e.g. "image/jpeg", "image/png").
+    #[serde(default, rename = "content_type")]
+    pub content_type: Option<String>,
+    /// Original filename.
+    #[serde(default)]
+    pub filename: Option<String>,
+    /// File size in bytes.
+    #[serde(default)]
+    pub size: Option<u64>,
+    /// Image width in pixels.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Image height in pixels.
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
 /// Common fields of an incoming message event (`C2C_MESSAGE_CREATE`,
 /// `GROUP_AT_MESSAGE_CREATE`).
 #[derive(Debug, Clone, Deserialize)]
@@ -124,6 +147,9 @@ pub struct MessageEvent {
     /// For group messages: the group's openid.
     #[serde(default, rename = "group_openid")]
     pub group_openid: Option<String>,
+    /// Media attachments (images, files) included in the message.
+    #[serde(default)]
+    pub attachments: Vec<QqAttachment>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -155,6 +181,26 @@ pub mod msg_type {
     pub const TEXT: u32 = 0;
     /// Markdown (template / raw).
     pub const MARKDOWN: u32 = 2;
+    /// Rich media message (image / file).
+    pub const MEDIA: u32 = 7;
+}
+
+/// File type constants for the upload API.
+pub mod file_type {
+    /// Image file.
+    pub const IMAGE: u32 = 1;
+    /// Video file.
+    pub const VIDEO: u32 = 2;
+    /// Voice/audio file.
+    pub const VOICE: u32 = 3;
+    /// General file (document, archive, etc.).
+    pub const FILE: u32 = 4;
+}
+
+/// Media file info for sending media messages (msg_type=7).
+#[derive(Debug, Clone, Serialize)]
+pub struct MediaFileInfo {
+    pub file_info: String, // The file info string returned by the upload API
 }
 
 /// Request body for POSTing a message to a group or user.
@@ -169,6 +215,40 @@ pub struct SendMessageRequest {
     /// Monotonic sequence to dedupe replies within a msg_id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub msg_seq: Option<u32>,
+    /// Media file info (required for msg_type=7, the URL returned by upload API).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media: Option<MediaFileInfo>,
+}
+
+/// Request body for uploading a file to QQ.
+#[derive(Debug, Clone, Serialize)]
+pub struct UploadMediaRequest {
+    /// File type: 1 = image, 2 = video, 3 = voice, 4 = file
+    pub file_type: u32,
+    /// URL of the file (must already be accessible to QQ servers)
+    /// For local files, we upload via multipart form.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// When using multipart upload, the srv_send_msg field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub srv_send_msg: Option<bool>,
+}
+
+/// Response body for the upload media API.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UploadMediaResponse {
+    /// The file_info string to use when sending a msg_type=7 message.
+    #[serde(default, rename = "file_info")]
+    pub file_info: Option<String>,
+    /// UUID of the uploaded file.
+    #[serde(default, rename = "file_uuid")]
+    pub file_uuid: Option<String>,
+    /// TTL in seconds for the uploaded file.
+    #[serde(default)]
+    pub ttl: Option<u64>,
+    /// File ID.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// Response body for the send-message HTTP API.
@@ -263,6 +343,7 @@ mod tests {
         assert_eq!(ev.id, "msg-1");
         assert_eq!(ev.group_openid.as_deref(), Some("grp-1"));
         assert_eq!(ev.user_id(), Some("mem-1"));
+        assert!(ev.attachments.is_empty());
     }
 
     #[test]
@@ -278,12 +359,41 @@ mod tests {
     }
 
     #[test]
+    fn parses_message_with_attachments() {
+        let json = r#"{
+            "id": "msg-3",
+            "content": "look at this",
+            "author": {"user_openid": "user-2"},
+            "attachments": [
+                {
+                    "url": "https://cdn.qq.com/img/abc123.png",
+                    "content_type": "image/png",
+                    "filename": "screenshot.png",
+                    "size": 102400,
+                    "width": 1920,
+                    "height": 1080
+                }
+            ]
+        }"#;
+        let ev: MessageEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.attachments.len(), 1);
+        let att = &ev.attachments[0];
+        assert_eq!(att.url, "https://cdn.qq.com/img/abc123.png");
+        assert_eq!(att.content_type.as_deref(), Some("image/png"));
+        assert_eq!(att.filename.as_deref(), Some("screenshot.png"));
+        assert_eq!(att.size, Some(102400));
+        assert_eq!(att.width, Some(1920));
+        assert_eq!(att.height, Some(1080));
+    }
+
+    #[test]
     fn serializes_send_message_request() {
         let req = SendMessageRequest {
             content: "hello".into(),
             msg_type: msg_type::TEXT,
             msg_id: Some("msg-1".into()),
             msg_seq: Some(1),
+            media: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"content\":\"hello\""));
@@ -298,9 +408,27 @@ mod tests {
             msg_type: msg_type::TEXT,
             msg_id: None,
             msg_seq: None,
+            media: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("msg_id"));
         assert!(!json.contains("msg_seq"));
+        assert!(!json.contains("media"));
+    }
+
+    #[test]
+    fn serializes_media_message_request() {
+        let req = SendMessageRequest {
+            content: "image".into(),
+            msg_type: msg_type::MEDIA,
+            msg_id: Some("msg-4".into()),
+            msg_seq: Some(2),
+            media: Some(MediaFileInfo {
+                file_info: "/abc123.png".to_string(),
+            }),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"msg_type\":7"));
+        assert!(json.contains("\"file_info\":\"/abc123.png\""));
     }
 }

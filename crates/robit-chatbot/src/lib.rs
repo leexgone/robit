@@ -13,8 +13,8 @@ pub mod manager;
 pub mod markdown;
 
 pub use adapter::{
-    ChatMessage, ChatType, MarkdownFeatures, PlatformAdapter, PlatformCaps, PlatformEvent,
-    SendResult, SenderInfo,
+    ChatMessage, ChatType, MarkdownFeatures, MediaAttachment, PlatformAdapter, PlatformCaps,
+    PlatformEvent, SendResult, SenderInfo, UploadResult,
 };
 pub use confirmer::{ConfirmKeywords, Confirmer};
 pub use frontend::{ChatbotFrontend, PlatformSender};
