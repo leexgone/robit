@@ -208,7 +208,7 @@ impl App {
                 .push(ConversationEntry::UserMessage(text.clone()));
             let tx = message_tx.clone();
             tokio::spawn(async move {
-                let _ = tx.send(FrontendMessage::UserInput(text)).await;
+                let _ = tx.send(FrontendMessage::UserInput { text, attachments: vec![] }).await;
             });
             self.auto_scroll = true;
         }
@@ -229,7 +229,7 @@ impl App {
                 self.current_assistant_text.clear();
                 let tx = message_tx.clone();
                 tokio::spawn(async move {
-                    let _ = tx.send(FrontendMessage::UserInput("/clear".to_string())).await;
+                    let _ = tx.send(FrontendMessage::UserInput { text: "/clear".to_string(), attachments: vec![] }).await;
                 });
                 self.conversation
                     .push(ConversationEntry::SystemNotice("Conversation history cleared".to_string()));
@@ -293,7 +293,7 @@ impl App {
                     let tx = message_tx.clone();
                     let cmd = cmd.to_string();
                     tokio::spawn(async move {
-                        let _ = tx.send(FrontendMessage::UserInput(cmd)).await;
+                        let _ = tx.send(FrontendMessage::UserInput { text: cmd, attachments: vec![] }).await;
                     });
                 } else {
                     self.conversation.push(ConversationEntry::Error(format!(

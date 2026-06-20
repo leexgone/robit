@@ -174,7 +174,7 @@ fn main() -> anyhow::Result<()> {
                                 continue;
                             }
 
-                            if message_tx.send(FrontendMessage::UserInput(trimmed)).await.is_err() {
+                            if message_tx.send(trimmed.into()).await.is_err() {
                                 break;
                             }
                             // Agent will now emit events via event_rx

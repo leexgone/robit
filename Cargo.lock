@@ -3913,11 +3913,13 @@ version = "0.1.1"
 dependencies = [
  "async-openai",
  "async-trait",
+ "base64 0.22.1",
  "dirs",
  "encoding_rs",
  "futures",
  "globset",
  "regex",
+ "reqwest 0.12.28",
  "robit-ai",
  "rusqlite",
  "serde",

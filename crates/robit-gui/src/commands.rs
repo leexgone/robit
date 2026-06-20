@@ -161,7 +161,7 @@ pub async fn send_message(
 
     handle
         .message_tx
-        .send(FrontendMessage::UserInput(content))
+        .send(FrontendMessage::UserInput { text: content, attachments: vec![] })
         .await
         .map_err(|e| format!("Failed to send message: {}", e))?;
 

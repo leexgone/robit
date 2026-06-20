@@ -91,4 +91,14 @@ impl LlmClient {
     pub fn resolved(&self) -> &ResolvedModel {
         &self.resolved
     }
+
+    /// Whether the current model supports image inputs.
+    pub fn supports_images(&self) -> bool {
+        self.resolved.supports_images
+    }
+
+    /// Whether the current model supports tool calling.
+    pub fn supports_tools(&self) -> bool {
+        self.resolved.supports_tools
+    }
 }

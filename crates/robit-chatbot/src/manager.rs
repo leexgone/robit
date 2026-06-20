@@ -229,10 +229,34 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             return;
         }
 
+        // Download and save media files locally
+        let media_dir = self.working_dir.join("media");
+        for attachment in &msg.attachments {
+            if let Err(e) = robit_agent::media::download_media(
+                &attachment.url,
+                attachment.filename.as_deref(),
+                &media_dir,
+            )
+            .await
+            {
+                tracing::warn!("Failed to download media: {}", e);
+            }
+        }
+
+        // Convert attachments to agent's type
+        let attachments: Vec<robit_agent::event::MediaAttachment> =
+            msg.attachments.into_iter().map(|a| a.into()).collect();
+
         // Normal message → route to (or create) the chat's Agent session.
         match self.get_or_create_session(&chat_id, &msg.text).await {
             Ok(tx) => {
-                if let Err(e) = tx.send(FrontendMessage::UserInput(msg.text)).await {
+                if let Err(e) = tx
+                    .send(robit_agent::event::FrontendMessage::UserInput {
+                        text: msg.text,
+                        attachments,
+                    })
+                    .await
+                {
                     tracing::warn!("Failed to send user message to agent for {}: {}", chat_id, e);
                 }
             }

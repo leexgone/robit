@@ -12,7 +12,11 @@ pub mod error;
 pub use async_openai::types::chat::{
     ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessage,
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestUserMessage, ChatCompletionResponseStream, ChatCompletionTools,
+    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+    ChatCompletionRequestUserMessageContentPart,
+    ChatCompletionRequestMessageContentPartText,
+    ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionResponseStream, ChatCompletionTools,
     CompletionUsage, CreateChatCompletionResponse, CreateChatCompletionStreamResponse, Role,
 };
 

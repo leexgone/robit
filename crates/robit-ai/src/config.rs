@@ -173,6 +173,10 @@ pub struct ResolvedModel {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub context_window: Option<u64>,
+    /// Whether this model supports image inputs.
+    pub supports_images: bool,
+    /// Whether this model supports tool calling.
+    pub supports_tools: bool,
 }
 
 // ============================================================================
@@ -340,6 +344,8 @@ pub fn resolve_profile(
         max_tokens: model.max_tokens,
         temperature: model.temperature,
         context_window: model.context_window,
+        supports_images: model.supports_images.unwrap_or(false),
+        supports_tools: model.supports_tools.unwrap_or(false),
     })
 }
 

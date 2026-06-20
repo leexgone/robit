@@ -169,6 +169,20 @@ impl MediaAttachment {
     }
 }
 
+// Convert to agent's MediaAttachment
+impl From<MediaAttachment> for robit_agent::event::MediaAttachment {
+    fn from(att: MediaAttachment) -> Self {
+        Self {
+            content_type: att.content_type,
+            url: att.url,
+            filename: att.filename,
+            size: att.size,
+            width: att.width,
+            height: att.height,
+        }
+    }
+}
+
 /// Sender information extracted from a platform event.
 #[derive(Debug, Clone)]
 pub struct SenderInfo {

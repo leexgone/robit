@@ -4,8 +4,15 @@ use async_openai::types::chat::{
     ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
     ChatCompletionRequestAssistantMessage, ChatCompletionRequestMessage,
     ChatCompletionRequestSystemMessage, ChatCompletionRequestToolMessage,
-    ChatCompletionRequestUserMessage, FunctionCall,
+    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+    ChatCompletionRequestUserMessageContentPart,
+    ChatCompletionRequestMessageContentPartText,
+    ChatCompletionRequestMessageContentPartImage,
+    FunctionCall,
 };
+
+// Import ImageUrl from wherever it is in async-openai 0.41
+use async_openai::types::chat::ImageUrl;
 use futures::StreamExt;
 use robit_ai::config::ContextConfig;
 use robit_ai::LlmClient;
@@ -17,8 +24,9 @@ use tokio::sync::mpsc;
 
 use crate::context::ContextManager;
 use crate::error::{AgentError, Result};
-use crate::event::{new_session_id, AgentEvent, FrontendMessage, SessionId};
+use crate::event::{new_session_id, AgentEvent, FrontendMessage, MediaAttachment, SessionId};
 use crate::frontend::Frontend;
+use crate::media;
 use crate::prompt::PromptBuilder;
 use crate::skill::SkillRegistry;
 use crate::tool::{ToolCallInfo, ToolContext, ToolRegistry, ToolResult};
@@ -118,11 +126,11 @@ impl Agent {
 
         while let Some(msg) = message_rx.recv().await {
             match msg {
-                FrontendMessage::UserInput(input) => {
-                    if input == "/exit" || input == "/quit" {
+                FrontendMessage::UserInput { text, attachments } => {
+                    if text == "/exit" || text == "/quit" {
                         break;
                     }
-                    if input == "/clear" {
+                    if text == "/clear" {
                         self.clear_session();
                         let _ = self
                             .frontend
@@ -135,13 +143,13 @@ impl Agent {
                     }
 
                     // Check for skill trigger
-                    if let Some((skill, args)) = self.skills.match_trigger(&input) {
+                    if let Some((skill, args)) = self.skills.match_trigger(&text) {
                         let skill = skill.clone();
                         self.run_skill_turn(&skill, &args).await;
                         continue;
                     }
 
-                    self.run_turn(&input).await;
+                    self.run_turn(&text, attachments).await;
                 }
                 FrontendMessage::Cancel => {
                     tracing::info!("Cancel requested (MVP: no-op)");
@@ -158,18 +166,15 @@ impl Agent {
     }
 
     /// Execute a single turn: user input -> LLM call(s) -> tool execution(s) -> response.
-    async fn run_turn(&mut self, user_input: &str) {
+    async fn run_turn(&mut self, user_input: &str, attachments: Vec<MediaAttachment>) {
         let session_id = self.default_session_id.clone();
+
+        // Build user message first (to avoid borrow conflict)
+        let user_message = self.build_user_message(user_input, &attachments).await;
 
         // Add user message to history
         if let Some(session) = self.sessions.get_mut(&session_id) {
-            session.history.push(ChatCompletionRequestMessage::User(
-                ChatCompletionRequestUserMessage {
-                    content: user_input.to_string().into(),
-                    name: None,
-                }
-                .into(),
-            ));
+            session.history.push(user_message);
         }
 
         // Run the agentic loop (may iterate if LLM calls tools)
@@ -427,6 +432,92 @@ impl Agent {
         if let Some(session) = self.sessions.get_mut(&self.default_session_id) {
             session.history.truncate(1);
         }
+    }
+
+    /// Build a user message, potentially with images if model supports them.
+    async fn build_user_message(
+        &self,
+        text: &str,
+        attachments: &[MediaAttachment],
+    ) -> ChatCompletionRequestMessage {
+        // If model supports images and we have image attachments, build multimodal message
+        if self.llm_client.supports_images()
+            && !attachments.is_empty()
+            && attachments.iter().any(|a| a.is_image())
+        {
+            self.build_multimodal_message(text, attachments)
+                .await
+        } else {
+            // Fallback: add attachment descriptions to text
+            let mut full_text = text.to_string();
+            for attachment in attachments {
+                full_text = format!("{}\n{}", full_text, attachment.describe());
+            }
+            ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                content: full_text.into(),
+                name: None,
+            })
+        }
+    }
+
+    /// Build a multimodal message with text + images.
+    async fn build_multimodal_message(
+        &self,
+        text: &str,
+        attachments: &[MediaAttachment],
+    ) -> ChatCompletionRequestMessage {
+        let mut parts = vec![ChatCompletionRequestUserMessageContentPart::Text(
+            ChatCompletionRequestMessageContentPartText {
+                text: text.to_string(),
+            },
+        )];
+
+        // Add images
+        for attachment in attachments {
+            if attachment.is_image() {
+                // Download and encode as base64
+                match media::download_and_encode_base64(
+                    &attachment.url,
+                    &attachment.content_type,
+                )
+                .await
+                {
+                    Ok(base64_url) => {
+                        parts.push(ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                            ChatCompletionRequestMessageContentPartImage {
+                                image_url: ImageUrl {
+                                    url: base64_url,
+                                    detail: None,
+                                },
+                            },
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to encode image: {}", e);
+                        // Fallback to description
+                        let desc = attachment.describe();
+                        let current_text = match &mut parts[0] {
+                            ChatCompletionRequestUserMessageContentPart::Text(t) => &mut t.text,
+                            _ => unreachable!(),
+                        };
+                        *current_text = format!("{}\n{}", current_text, desc);
+                    }
+                }
+            } else {
+                // Non-image: add description
+                let desc = attachment.describe();
+                let current_text = match &mut parts[0] {
+                    ChatCompletionRequestUserMessageContentPart::Text(t) => &mut t.text,
+                    _ => unreachable!(),
+                };
+                *current_text = format!("{}\n{}", current_text, desc);
+            }
+        }
+
+        ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+            content: ChatCompletionRequestUserMessageContent::Array(parts),
+            name: None,
+        })
     }
 
     /// Execute a skill-triggered turn: inject skill content, then run the agent loop.

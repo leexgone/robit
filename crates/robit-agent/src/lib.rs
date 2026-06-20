@@ -10,6 +10,7 @@ pub mod datetime;
 pub mod error;
 pub mod event;
 pub mod frontend;
+pub mod media;
 pub mod prompt;
 pub mod skill;
 pub mod storage;
@@ -21,7 +22,8 @@ pub use bootstrap::{
     log_skill_errors, BootstrapResult,
 };
 pub use error::AgentError;
-pub use event::{AgentEvent, FrontendMessage, SessionId};
+pub use event::{AgentEvent, FrontendMessage, MediaAttachment, SessionId};
+pub use media::{download_and_encode_base64, download_media, MediaError};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
 pub use skill::{Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
 pub use tool::load_skill::LoadSkillTool;
