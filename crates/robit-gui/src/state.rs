@@ -252,6 +252,7 @@ impl AppState {
             context_window,
             working_dir,
             auto_approve,
+            std::collections::HashMap::new(),
         );
 
         let cancel_token = CancellationToken::new();

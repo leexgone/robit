@@ -100,6 +100,7 @@ fn main() -> anyhow::Result<()> {
         context_window,
         working_dir,
         auto_approve,
+        std::collections::HashMap::new(),
     );
 
     let rt = tokio::runtime::Runtime::new()?;

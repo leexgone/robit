@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use robit_agent::event::FrontendMessage;
+use robit_agent::frontend::Frontend;
 use robit_agent::storage::{self, resolve_db_path};
 use robit_agent::tool::ToolCallInfo;
 use robit_agent::{Agent, AgentError, SkillRegistry, ToolRegistry};
@@ -26,7 +27,8 @@ use uuid::Uuid;
 
 use crate::adapter::{ChatMessage, PlatformAdapter, PlatformCaps, PlatformEvent, SendResult, UploadResult};
 use crate::confirmer::{ConfirmKeywords, Confirmer};
-use crate::frontend::{ChatbotFrontend, PlatformSender};
+use crate::extensions::PlatformExtWrapper;
+use crate::frontend::{ChatbotFrontend, PlatformSender, PlatformExt};
 
 /// How often the cleanup loop scans for idle sessions.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
@@ -316,11 +318,20 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             Arc::clone(&self.llm_client),
             Arc::clone(&self.tool_registry),
             Arc::clone(&self.skill_registry),
-            frontend,
+            Arc::clone(&frontend) as Arc<dyn Frontend>,
             self.config.app.as_ref().and_then(|a| a.context.as_ref()),
             self.context_window,
             self.working_dir.clone(),
             self.auto_approve,
+            {
+                let mut exts = HashMap::new();
+                let platform_ext: Arc<dyn PlatformExt> = frontend.clone();
+                exts.insert(
+                    crate::extensions::keys::PLATFORM_EXT.to_string(),
+                    PlatformExtWrapper::new(platform_ext),
+                );
+                exts
+            },
         );
 
         let sid = session_id.to_string();

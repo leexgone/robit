@@ -41,6 +41,19 @@ pub trait PlatformSender: Send + Sync {
     fn capabilities(&self) -> PlatformCaps;
 }
 
+/// Platform extension for file/media operations.
+///
+/// Exposed to tools via `ToolContext.extensions` under key `"chatbot.platform_ext"`.
+/// `ChatbotFrontend` implements this by delegating to its `PlatformSender`,
+/// using the frontend's own `chat_id` internally.
+#[async_trait]
+pub trait PlatformExt: Send + Sync {
+    /// Upload a local file to the platform. Returns the platform identifier.
+    async fn upload_file(&self, file_path: &str, media_type: &str) -> Result<UploadResult>;
+    /// Send an already-uploaded media file to the chat.
+    async fn send_media_message(&self, file_url: &str, file_name: &str, media_type: &str) -> Result<SendResult>;
+}
+
 /// Per-session Frontend trait implementation for Bot platforms.
 ///
 /// Each chat (group or private) gets its own `ChatbotFrontend` instance.
@@ -93,10 +106,6 @@ impl ChatbotFrontend {
 
     /// Flush the buffer: take all accumulated text, sanitize it, and send it.
     /// This ensures Markdown is parsed as a whole and we only send once per turn.
-    ///
-    /// Also detects local file paths in the text. If a mentioned file exists and
-    /// the platform supports images/files, the file is automatically uploaded and
-    /// sent as a media message alongside (or instead of) the text.
     async fn flush_buffer(&self) {
         let mut buffer = self.buffer.lock().await;
         if buffer.is_empty() {
@@ -106,11 +115,6 @@ impl ChatbotFrontend {
         drop(buffer);
 
         let caps = self.platform_sender.capabilities();
-
-        // Detect and upload local file paths mentioned in the text.
-        if caps.supports_images || caps.supports_files {
-            self.detect_and_send_files(&text, &caps).await;
-        }
 
         let prepared = if caps.supports_markdown {
             prepare_markdown_for_platform(&text, &caps.markdown_features)
@@ -134,72 +138,6 @@ impl ChatbotFrontend {
             // No previous message this turn, just send
             if let Ok(res) = self.platform_sender.send(&self.chat_id, &prepared).await {
                 *last_msg_id = Some(res.msg_id);
-            }
-        }
-    }
-
-    /// Scan the text for local file paths, upload matching files, and send them
-    /// as media messages.
-    async fn detect_and_send_files(&self, text: &str, caps: &PlatformCaps) {
-        let paths = extract_file_paths(text);
-        if paths.is_empty() {
-            return;
-        }
-
-        for path in &paths {
-            // Check file exists and is within size limit
-            let metadata = match tokio::fs::metadata(&path).await {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-
-            if !metadata.is_file() {
-                continue;
-            }
-
-            if caps.max_upload_size > 0 && metadata.len() > caps.max_upload_size {
-                tracing::warn!(
-                    "File {} exceeds max upload size ({} > {})",
-                    path,
-                    metadata.len(),
-                    caps.max_upload_size
-                );
-                continue;
-            }
-
-            // Determine media type from extension
-            let media_type = classify_media_type(path);
-
-            // Upload and send
-            match self
-                .platform_sender
-                .upload_file(&self.chat_id, path, media_type)
-                .await
-            {
-                Ok(upload_result) => {
-                    let file_name = std::path::Path::new(path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("file");
-
-                    tracing::debug!("Uploaded file {} -> {}", path, upload_result.url);
-
-                    if let Err(e) = self
-                        .platform_sender
-                        .send_media_message(
-                            &self.chat_id,
-                            &upload_result.url,
-                            file_name,
-                            media_type,
-                        )
-                        .await
-                    {
-                        tracing::error!("Failed to send media message for {}: {}", path, e);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to upload file {}: {}", path, e);
-                }
             }
         }
     }
@@ -276,6 +214,26 @@ impl Frontend for ChatbotFrontend {
     }
 }
 
+#[async_trait]
+impl PlatformExt for ChatbotFrontend {
+    async fn upload_file(&self, file_path: &str, media_type: &str) -> Result<UploadResult> {
+        self.platform_sender
+            .upload_file(&self.chat_id, file_path, media_type)
+            .await
+    }
+
+    async fn send_media_message(
+        &self,
+        file_url: &str,
+        file_name: &str,
+        media_type: &str,
+    ) -> Result<SendResult> {
+        self.platform_sender
+            .send_media_message(&self.chat_id, file_url, file_name, media_type)
+            .await
+    }
+}
+
 /// Truncate `text` to `max` characters, appending an ellipsis if cut.
 fn truncate_to_max(text: &str, max: usize) -> String {
     if max == 0 {
@@ -287,59 +245,6 @@ fn truncate_to_max(text: &str, max: usize) -> String {
     let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
-}
-
-/// Extract absolute file paths from text.
-///
-/// Matches patterns like:
-/// - `E:\Test\image.jpg` (Windows absolute)
-/// - `/home/user/file.pdf` (Unix absolute)
-/// - `C:\Users\...\file.png` (Windows with spaces)
-fn extract_file_paths(text: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-
-    // Match Windows absolute paths: drive letter + colon + backslash
-    let win_re = regex::Regex::new(r"[A-Za-z]:[\\/][^\s\n\r]*").unwrap();
-    // Match Unix absolute paths: starts with /
-    let unix_re = regex::Regex::new(r"(?m)(?:^|\s)(/[^\s\n\r]+)").unwrap();
-
-    for cap in win_re.find_iter(text) {
-        let p = cap.as_str().trim();
-        // Filter: must have a file extension
-        if std::path::Path::new(p).extension().is_some() {
-            paths.push(p.to_string());
-        }
-    }
-
-    for cap in unix_re.captures_iter(text) {
-        if let Some(m) = cap.get(1) {
-            let p = m.as_str().trim();
-            if std::path::Path::new(p).extension().is_some() {
-                paths.push(p.to_string());
-            }
-        }
-    }
-
-    // Deduplicate
-    paths.sort();
-    paths.dedup();
-    paths
-}
-
-/// Classify a file path as "image" or "file" based on its extension.
-fn classify_media_type(path: &str) -> &str {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff" | "tif" => {
-            "image"
-        }
-        _ => "file",
-    }
 }
 
 #[cfg(test)]
@@ -519,52 +424,6 @@ mod tests {
             .await
             .unwrap();
         assert!(sender.sent_texts().iter().any(|t| t.contains("Error") && t.contains("boom")));
-    }
-
-    #[test]
-    fn extract_windows_file_paths() {
-        let text = r#"图片路径是 E:\Test\robit-test\0492e33eaf20e40272ac4c581c8a3a846ac3d8c92ae9d60098ce451906c8ff5a.jpg 你可以查看"#;
-        let paths = extract_file_paths(text);
-        assert_eq!(paths.len(), 1);
-        assert!(paths[0].contains("0492e33eaf20e40272ac4c581c8a3a846ac3d8c92ae9d60098ce451906c8ff5a.jpg"));
-    }
-
-    #[test]
-    fn extract_unix_file_paths() {
-        let text = "Here is the file: /home/user/document.pdf for your reference";
-        let paths = extract_file_paths(text);
-        assert_eq!(paths.len(), 1);
-        assert!(paths[0].contains("document.pdf"));
-    }
-
-    #[test]
-    fn extract_multiple_paths() {
-        let text = r#"Images: E:\img1.png and E:\img2.jpg"#;
-        let paths = extract_file_paths(text);
-        assert_eq!(paths.len(), 2);
-    }
-
-    #[test]
-    fn classify_image_types() {
-        assert_eq!(classify_media_type("/path/to/photo.jpg"), "image");
-        assert_eq!(classify_media_type("C:\\img.PNG"), "image");
-        assert_eq!(classify_media_type("/tmp/anim.gif"), "image");
-    }
-
-    #[test]
-    fn classify_file_types() {
-        assert_eq!(classify_media_type("/path/to/doc.pdf"), "file");
-        assert_eq!(classify_media_type("C:\\data.zip"), "file");
-        assert_eq!(classify_media_type("/tmp/notes.txt"), "file");
-    }
-
-    #[test]
-    fn ignores_paths_without_extension() {
-        let text = r#"The directory is E:\Test\robit-test and file is at E:\Test\file.txt"#;
-        let paths = extract_file_paths(text);
-        // Should only match file.txt, not the directory path
-        assert_eq!(paths.len(), 1);
-        assert!(paths[0].ends_with("file.txt"));
     }
 
 }

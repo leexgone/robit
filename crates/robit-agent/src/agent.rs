@@ -9,6 +9,7 @@ use async_openai::types::chat::{
 use futures::StreamExt;
 use robit_ai::config::ContextConfig;
 use robit_ai::LlmClient;
+use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,6 +66,8 @@ pub struct Agent {
     context_manager: ContextManager,
     frontend: Arc<dyn Frontend>,
     auto_approve: bool,
+    /// Platform-specific extensions passed to ToolContext during tool execution.
+    extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
 }
 
 impl Agent {
@@ -78,6 +81,7 @@ impl Agent {
         context_window: Option<u64>,
         working_dir: PathBuf,
         auto_approve: bool,
+        extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
     ) -> Self {
         let prompt_builder = PromptBuilder::with_working_dir(Some(&working_dir));
         let context_manager = ContextManager::new(context_window, context_config);
@@ -103,6 +107,7 @@ impl Agent {
             context_manager,
             frontend,
             auto_approve,
+            extensions,
         }
     }
 
@@ -375,6 +380,7 @@ impl Agent {
                     working_dir: working_dir.clone(),
                     session_id: session_id.clone(),
                     frontend: self.frontend.clone(),
+                    extensions: self.extensions.clone(),
                 };
 
                 self.tools.execute(&tc.function.name, args, &ctx).await

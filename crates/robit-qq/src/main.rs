@@ -7,8 +7,10 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use robit_agent::{bootstrap, log_skill_errors};
+use robit_agent::{create_tools_from_config, filter_skills_by_config, load_all_skills, log_skill_errors};
+use robit_agent::skill::SkillRegistry;
 use robit_ai::{load_config, LlmClient};
+use robit_chatbot::tool::SendFileTool;
 use robit_chatbot::ChatbotManager;
 use robit_qq::{QqConfig, QqPlatformAdapter};
 
@@ -55,10 +57,19 @@ async fn main() {
         LlmClient::from_config(&config, None).expect("Failed to initialize LLM client"),
     );
 
-    // 3. Bootstrap tools and skills.
+    // 3. Bootstrap tools and skills (with custom tool registration).
     let base_tool_names = ["read", "bash", "write", "edit"];
-    let bootstrap_result = bootstrap(&config, &working_dir, &base_tool_names);
-    log_skill_errors(&bootstrap_result.skill_load_errors);
+    let (skills, skill_load_errors) = load_all_skills(&working_dir);
+    let total_skills_loaded = skills.len();
+    let filtered_skills = filter_skills_by_config(skills, &config);
+    let skill_registry = Arc::new(SkillRegistry::new(filtered_skills, &base_tool_names));
+    let mut tool_registry = create_tools_from_config(&config, Arc::clone(&skill_registry));
+
+    // Register chatbot-specific tools.
+    tool_registry.register(SendFileTool);
+
+    let tool_registry = Arc::new(tool_registry);
+    log_skill_errors(&skill_load_errors);
 
     // 4. Connect to the QQ platform.
     let qq_config = QqConfig::from_config(&config).expect("QQ Bot config not found");
@@ -72,8 +83,8 @@ async fn main() {
         config,
         working_dir,
         llm_client,
-        bootstrap_result.tool_registry,
-        bootstrap_result.skill_registry,
+        tool_registry,
+        skill_registry,
     )
     .expect("Failed to create ChatbotManager");
 

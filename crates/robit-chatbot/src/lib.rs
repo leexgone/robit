@@ -8,14 +8,17 @@
 
 pub mod adapter;
 pub mod confirmer;
+pub mod extensions;
 pub mod frontend;
 pub mod manager;
 pub mod markdown;
+pub mod tool;
 
 pub use adapter::{
     ChatMessage, ChatType, MarkdownFeatures, MediaAttachment, PlatformAdapter, PlatformCaps,
     PlatformEvent, SendResult, SenderInfo, UploadResult,
 };
 pub use confirmer::{ConfirmKeywords, Confirmer};
-pub use frontend::{ChatbotFrontend, PlatformSender};
+pub use extensions::PlatformExtWrapper;
+pub use frontend::{ChatbotFrontend, PlatformExt, PlatformSender};
 pub use manager::{AgentHandle, ChatbotManager, ManagerError};
