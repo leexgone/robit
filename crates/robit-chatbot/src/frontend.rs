@@ -182,7 +182,7 @@ impl ChatbotFrontend {
                         .and_then(|n| n.to_str())
                         .unwrap_or("file");
 
-                    tracing::info!("Uploaded file {} -> {}", path, upload_result.url);
+                    tracing::debug!("Uploaded file {} -> {}", path, upload_result.url);
 
                     if let Err(e) = self
                         .platform_sender
