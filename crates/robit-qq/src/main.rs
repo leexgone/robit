@@ -32,7 +32,12 @@ async fn main() {
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("robit_qq=info".parse().unwrap())
-                .add_directive("robit_chatbot=info".parse().unwrap()),
+                .add_directive("robit_chatbot=info".parse().unwrap())
+                .add_directive("reqwest=warn".parse().unwrap())
+                .add_directive("hyper=warn".parse().unwrap())
+                .add_directive("hyper_util=warn".parse().unwrap())
+                .add_directive("tungstenite=warn".parse().unwrap())
+                .add_directive("tokio_tungstenite=warn".parse().unwrap()),
         )
         .init();
 
