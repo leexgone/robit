@@ -221,17 +221,21 @@ pub struct SendMessageRequest {
 }
 
 /// Request body for uploading a file to QQ.
+/// Uses JSON body (not multipart). Either `url` (public URL for QQ to download)
+/// or `file_data` (base64-encoded binary) must be provided.
 #[derive(Debug, Clone, Serialize)]
 pub struct UploadMediaRequest {
     /// File type: 1 = image, 2 = video, 3 = voice, 4 = file
     pub file_type: u32,
-    /// URL of the file (must already be accessible to QQ servers)
-    /// For local files, we upload via multipart form.
+    /// Public URL for QQ servers to download from (alternative to file_data).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// When using multipart upload, the srv_send_msg field.
+    /// Base64-encoded file binary data (alternative to url).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub srv_send_msg: Option<bool>,
+    pub file_data: Option<String>,
+    /// true = send directly (counts against rate limit),
+    /// false = return file_info for later use (recommended).
+    pub srv_send_msg: bool,
 }
 
 /// Response body for the upload media API.

@@ -367,56 +367,55 @@ impl PlatformAdapter for QqPlatformAdapter {
             _ => crate::protocol::file_type::FILE,
         };
 
-        // Read file from disk.
+        // Read file from disk and encode as base64.
         let file_data = tokio::fs::read(file_path)
             .await
             .map_err(|e| AgentError::InternalError(format!("Failed to read file {}: {}", file_path, e)))?;
 
-        let file_name = std::path::Path::new(file_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file");
+        use base64::Engine;
+        let file_data_b64 = base64::engine::general_purpose::STANDARD.encode(&file_data);
 
-        // Build multipart form: QQ expects `file` part with the file content,
-        // plus `file_type` as a form field.
-        let part = reqwest::multipart::Part::bytes(file_data)
-            .file_name(file_name.to_string());
-        let form = reqwest::multipart::Form::new()
-            .text("file_type", file_type.to_string())
-            .part("file", part);
+        // QQ upload API uses JSON body with base64-encoded file_data.
+        // srv_send_msg = false → returns file_info for later use (recommended).
+        let body = crate::protocol::UploadMediaRequest {
+            file_type,
+            url: None,
+            file_data: Some(file_data_b64),
+            srv_send_msg: false,
+        };
 
         let resp = self
             .http
             .post(&endpoint)
             .header("Authorization", &auth)
-            .multipart(form)
+            .json(&body)
             .send()
             .await
             .map_err(|e| AgentError::InternalError(format!("QQ upload failed: {}", e)))?;
 
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let resp_body = resp.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            warn!("QQ upload {} failed ({}): {}", endpoint, status, body);
+            warn!("QQ upload {} failed ({}): {}", endpoint, status, resp_body);
             return Err(AgentError::InternalError(format!(
                 "QQ upload failed ({}): {}",
-                status, body
+                status, resp_body
             )));
         }
 
-        let parsed: crate::protocol::UploadMediaResponse = serde_json::from_str(&body)
+        let parsed: crate::protocol::UploadMediaResponse = serde_json::from_str(&resp_body)
             .map_err(|e| {
                 AgentError::InternalError(format!(
                     "QQ upload response parse failed: {} (body: {})",
-                    e, body
+                    e, resp_body
                 ))
             })?;
 
         let file_info = parsed.file_info.ok_or_else(|| {
             AgentError::InternalError(format!(
                 "QQ upload response missing file_info: {}",
-                body
+                resp_body
             ))
         })?;
 
