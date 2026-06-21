@@ -64,6 +64,61 @@ jobs:
         with:
           files: ${{ matrix.archive }}
 
+  build-qq-bot:
+    name: Build QQ Bot (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            binary: robit-qq
+            archive: robit-qq-linux-x86_64.tar.gz
+          - name: windows-x86_64
+            os: windows-latest
+            binary: robit-qq.exe
+            archive: robit-qq-windows-x86_64.zip
+          - name: macos-aarch64
+            os: macos-latest
+            binary: robit-qq
+            archive: robit-qq-macos-aarch64.tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build robit-qq
+        run: cargo build -p robit-qq --release
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/release/${{ matrix.binary }}" dist/
+          tar -czf "${{ matrix.archive }}" -C dist "${{ matrix.binary }}"
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/release/${{ matrix.binary }}" dist/
+          Compress-Archive -Path "dist/${{ matrix.binary }}" -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload QQ Bot asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.archive }}
+
   build-gui:
     name: Build GUI (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
