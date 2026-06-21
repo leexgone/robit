@@ -35,10 +35,11 @@ pub struct ToolCall {
 | 事件 | 说明 |
 |------|------|
 | `TextDelta(String)` | 流式文本片段，前端逐段渲染 |
-| `ToolCallRequested(ToolCall)` | LLM 请求调用工具，等待前端确认 |
-| `ToolCallResult(id, Result)` | 工具执行结果，回填到对话历史 |
+| `ToolCallRequested { tool_call_id, name, arguments }` | LLM 请求调用工具，等待前端确认 |
+| `ToolCallResult { tool_call_id, result }` | 工具执行结果，回填到对话历史 |
 | `TurnComplete` | 本轮对话结束，Agent 等待新输入 |
 | `Error(AgentError)` | Agent 运行错误 |
+| `SkillTriggered { name, description }` | 技能被触发（前端可选展示） |
 
 ### 前端 → Agent（`FrontendMessage`）
 

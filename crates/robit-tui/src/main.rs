@@ -111,6 +111,7 @@ fn main() -> Result<()> {
         context_window,
         working_dir,
         auto_approve,
+        std::collections::HashMap::new(),
     );
 
     // Setup terminal

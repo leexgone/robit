@@ -39,6 +39,9 @@ pub struct RobitConfig {
     pub providers: HashMap<String, ProviderConfig>,
     /// Application settings.
     pub app: Option<AppConfig>,
+    /// Communication channel configurations (QQ Bot, Feishu, etc.).
+    #[serde(default)]
+    pub channels: Option<ChannelsConfig>,
 }
 
 /// A single LLM provider (one API endpoint with multiple models).
@@ -89,6 +92,8 @@ pub struct AppConfig {
     pub retry: Option<RetryConfig>,
     pub auto_approve: Option<bool>,
     pub global_storage: Option<bool>,
+    /// Bot platform settings (shared across Bot frontends).
+    pub bot: Option<BotConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +116,47 @@ pub struct RetryConfig {
 }
 
 // ============================================================================
+// Communication channels config (QQ Bot, Feishu, etc.)
+// ============================================================================
+
+/// Communication channel configurations, separate from LLM `providers`.
+#[derive(Debug, Deserialize, Default)]
+pub struct ChannelsConfig {
+    /// QQ Official Bot channel.
+    pub qq_bot: Option<QqBotConfig>,
+}
+
+/// QQ Official Bot credentials (from `[channels.qq_bot]`).
+#[derive(Debug, Deserialize, Clone)]
+pub struct QqBotConfig {
+    pub app_id: String,
+    pub app_secret: String,
+    pub bot_token: String,
+}
+
+// ============================================================================
+// Bot platform app config
+// ============================================================================
+
+/// Shared Bot platform settings under `[app.bot]`.
+#[derive(Debug, Deserialize, Default)]
+pub struct BotConfig {
+    /// Timeout (seconds) for waiting on a tool confirmation reply.
+    pub confirm_timeout_secs: Option<u64>,
+    /// Idle session expiry (minutes) before cleanup.
+    pub session_timeout_minutes: Option<u64>,
+    /// Custom confirm/reject keywords.
+    pub confirm_keywords: Option<ConfirmKeywordsConfig>,
+}
+
+/// Confirm/reject keyword lists for inline tool confirmation.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ConfirmKeywordsConfig {
+    pub approve: Option<Vec<String>>,
+    pub reject: Option<Vec<String>>,
+}
+
+// ============================================================================
 // Resolved model reference
 // ============================================================================
 
@@ -127,6 +173,10 @@ pub struct ResolvedModel {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub context_window: Option<u64>,
+    /// Whether this model supports image inputs.
+    pub supports_images: bool,
+    /// Whether this model supports tool calling.
+    pub supports_tools: bool,
 }
 
 // ============================================================================
@@ -294,6 +344,8 @@ pub fn resolve_profile(
         max_tokens: model.max_tokens,
         temperature: model.temperature,
         context_window: model.context_window,
+        supports_images: model.supports_images.unwrap_or(false),
+        supports_tools: model.supports_tools.unwrap_or(false),
     })
 }
 
@@ -667,5 +719,68 @@ mod tests {
         "#;
 
         toml::from_str(toml_str).unwrap()
+    }
+
+    #[test]
+    fn test_parse_channels_and_bot_sections() {
+        let toml_str = r#"
+            default_model = "deepseek/deepseek-chat"
+
+            [providers.deepseek]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.deepseek.models]]
+            id = "deepseek-chat"
+
+            [channels.qq_bot]
+            app_id = "123456789"
+            app_secret = "secret-value"
+            bot_token = "token-value"
+
+            [app.bot]
+            confirm_timeout_secs = 60
+            session_timeout_minutes = 30
+
+            [app.bot.confirm_keywords]
+            approve = ["确认", "yes"]
+            reject = ["取消", "no"]
+        "#;
+
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+
+        // channels.qq_bot
+        let qq = config
+            .channels
+            .as_ref()
+            .and_then(|c| c.qq_bot.as_ref())
+            .expect("qq_bot config missing");
+        assert_eq!(qq.app_id, "123456789");
+        assert_eq!(qq.app_secret, "secret-value");
+        assert_eq!(qq.bot_token, "token-value");
+
+        // app.bot
+        let bot = config.app.as_ref().unwrap().bot.as_ref().unwrap();
+        assert_eq!(bot.confirm_timeout_secs, Some(60));
+        assert_eq!(bot.session_timeout_minutes, Some(30));
+        let kw = bot.confirm_keywords.as_ref().unwrap();
+        assert_eq!(kw.approve.as_ref().unwrap(), &vec!["确认".to_string(), "yes".to_string()]);
+        assert_eq!(kw.reject.as_ref().unwrap(), &vec!["取消".to_string(), "no".to_string()]);
+    }
+
+    #[test]
+    fn test_config_without_channels_still_parses() {
+        let toml_str = r#"
+            [providers.deepseek]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.deepseek.models]]
+            id = "deepseek-chat"
+        "#;
+
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.channels.is_none());
+        assert!(config.app.is_none() || config.app.as_ref().unwrap().bot.is_none());
     }
 }

@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use robit_ai::ChatCompletionTools;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -98,6 +99,10 @@ pub struct ToolContext {
     pub session_id: SessionId,
     /// Frontend for user interaction (e.g., asking for input during tool execution).
     pub frontend: Arc<dyn Frontend>,
+    /// Platform-specific extensions, keyed by extension ID.
+    /// Chatbot platforms populate this; GUI/TUI leave it empty.
+    /// Keys like "chatbot.platform_ext" map to Arc<dyn PlatformExt>.
+    pub extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
 }
 
 // ============================================================================

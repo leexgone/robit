@@ -12,6 +12,8 @@ This repository is a Rust monorepo focused on personal automation, programming a
 - **Agent runtime**: Event-driven loop with streaming output, tool calls, user confirmation, and context management.
 - **Terminal frontend**: The `robit` TUI is built with `ratatui` and `crossterm`, and supports Windows, Linux, and macOS.
 - **Desktop GUI**: `robit-gui` is built with Tauri v2 and React for a native desktop experience.
+- **Multi-session Bot framework**: `robit-chatbot` provides platform-agnostic Bot infrastructure with independent Agent sessions per chat.
+- **QQ Bot frontend**: `robit-qq` implements QQ Official Bot integration (WebSocket gateway + HTTP messaging), supporting both group and private chats.
 - **Tool system**: Built-in tools include `read`, `bash`, `write`, `edit`, `grep`, `find`, and `ls`; tools can be enabled or disabled through configuration.
 - **Skill system**: Load predefined prompt templates from Markdown/YAML files and trigger them with slash commands.
 - **Project/global configuration**: Project-local `.robit/config.toml` can override the global `~/.robit/config.toml`.
@@ -24,6 +26,8 @@ crates/
   robit-agent    # Agent runtime, tool system, skill system, Frontend trait
   robit-tui      # Terminal frontend; crate/package name and binary command are robit
   robit-gui      # Desktop GUI frontend (Tauri v2 + React)
+  robit-chatbot  # Multi-session Bot infrastructure (PlatformAdapter trait, ChatbotManager)
+  robit-qq       # QQ Official Bot frontend (WebSocket + HTTP API), binary command robit-qq
 examples/
   robit-chat     # REPL for validating the LLM API layer
   robit-agent    # stdin/stdout frontend for validating the agent runtime
@@ -89,6 +93,26 @@ With global storage enabled, the GUI uses `~/.robit/memory/robit.db`.
 
 The GUI frontend builds and loads the React app according to [crates/robit-gui/tauri.conf.json](crates/robit-gui/tauri.conf.json).
 
+### Run the QQ Bot
+
+```bash
+cargo run -p robit-qq
+```
+
+Specify a working directory:
+
+```bash
+cargo run -p robit-qq -- --workdir /path/to/project
+```
+
+Enable global storage:
+
+```bash
+cargo run -p robit-qq -- --global-storage
+```
+
+`robit-qq` creates an independent Agent session for each QQ group or private chat, and supports inline tool confirmation (reply "确认"/"同意"/"y"/"yes" or "取消"/"拒绝"/"n"/"no").
+
 ## Configuration
 
 robit uses a unified `config.toml` file. The lookup order is:
@@ -127,6 +151,22 @@ global_storage = false  # true stores GUI sessions in ~/.robit/memory/robit.db
 max_output_lines = 500
 max_output_bytes = 51200
 reserve_ratio = 0.2
+
+# QQ Bot configuration (required when using robit-qq)
+[channels.qq_bot]
+app_id = "your-app-id"
+app_secret = "${QQ_BOT_SECRET}"
+bot_token = "${QQ_BOT_TOKEN}"
+
+# Bot platform shared configuration (optional)
+[app.bot]
+auto_approve = false
+confirm_timeout_secs = 60
+session_timeout_minutes = 30
+
+[app.bot.confirm_keywords]
+approve = ["确认", "同意", "yes", "y", "approve", "ok", "允许"]
+reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
 ```
 
 Store secrets in `~/.robit/.env`:
@@ -221,6 +261,7 @@ Pre-built binaries are available on [GitHub Releases](https://github.com/leexgon
 - [docs/protocol.md](docs/protocol.md): message structures and agent events
 - [docs/roadmap.md](docs/roadmap.md): project roadmap
 - [docs/plans/phase2-implementation.md](docs/plans/phase2-implementation.md): agent runtime implementation plan
+- [docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md](docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md): robit-chatbot & robit-qq design specification
 - [docs/superpowers/2026-06-11-robit-gui-progress.md](docs/superpowers/2026-06-11-robit-gui-progress.md): GUI development progress
 
 ## Project Status

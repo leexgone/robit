@@ -23,3 +23,9 @@ config.toml
 .robit/
 
 .superpowers
+
+.claude
+
+.vscode
+
+data

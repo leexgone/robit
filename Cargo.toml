@@ -4,6 +4,8 @@ members = [
     "crates/robit-agent",
     "crates/robit-tui",
     "crates/robit-gui",
+    "crates/robit-chatbot",
+    "crates/robit-qq",
     "examples/robit-chat",
     "examples/robit-agent",
 ]
@@ -14,6 +16,13 @@ resolver = "2"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
+futures-util = "0.3"
+tokio-util = "0.7"
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+
+# 编码
+base64 = "0.22"
 
 # 序列化
 serde = { version = "1", features = ["derive"] }

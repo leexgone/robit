@@ -181,7 +181,8 @@ impl PromptBuilder {
 4. 环境信息（OS、cwd、日期，运行时注入）
 5. 技能注入（MVP 不实现，留空）
 
-支持 `~/.robit/prompts/system.txt` 自定义覆盖。
+支持项目本地 `{cwd}/.robit/prompts/agent.md` 和全局 `~/.robit/prompts/agent.md` 自定义 Agent 提示词。
+系统提示词（Tools/Skills/Environment 部分）内置固定，自动追加。
 
 ### Step 6: 上下文管理 — `context.rs`
 
