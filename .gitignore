@@ -26,4 +26,6 @@ config.toml
 
 .claude
 
+.vscode
+
 data

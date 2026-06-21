@@ -429,11 +429,13 @@ mod tests {
     use std::collections::VecDeque;
 
     /// A mock platform that queues events and records sent messages.
+    #[allow(dead_code)]
     struct MockPlatform {
         events: Mutex<VecDeque<PlatformEvent>>,
         sent: std::sync::Mutex<Vec<(String, String)>>,
     }
 
+    #[allow(dead_code)]
     impl MockPlatform {
         fn new() -> Arc<Self> {
             Arc::new(Self {
