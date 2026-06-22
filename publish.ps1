@@ -3,16 +3,31 @@
 
 Write-Host "🚀 开始发布 Robit crates..." -ForegroundColor Green
 
-# 需要发布的 crates（按依赖顺序）
+# 从 workspace Cargo.toml 读取统一版本号
+$workspaceToml = Get-Content "Cargo.toml" -Raw
+if ($workspaceToml -match 'version\s*=\s*"([^"]+)"') {
+    $workspaceVersion = $matches[1]
+}
+else {
+    Write-Host "❌ 无法从 workspace Cargo.toml 读取版本号" -ForegroundColor Red
+    exit 1
+}
+
+# 需要发布的 crates（按依赖顺序），格式："路径:包名"
 $crates = @(
-    "crates/robit-ai",
-    "crates/robit-agent",
-    "crates/robit-chatbot",
-    "crates/robit-tui",
-    "crates/robit-qq"
+    "crates/robit-ai:robit-ai",
+    "crates/robit-agent:robit-agent",
+    "crates/robit-chatbot:robit-chatbot",
+    "crates/robit-tui:robit",
+    "crates/robit-qq:robit-qq"
 )
 
-foreach ($crate in $crates) {
+foreach ($crateEntry in $crates) {
+    $parts = $crateEntry -split ":"
+    $crate = $parts[0]
+    $crateName = $parts[1]
+    $crateVersion = $workspaceVersion
+
     Write-Host "`n📦 检查 $crate ..." -ForegroundColor Yellow
 
     # 检查是否有 publish = false
@@ -20,14 +35,6 @@ foreach ($crate in $crates) {
     if ($tomlContent -match "publish\s*=\s*false") {
         Write-Host "⏭️  跳过 $crate (publish = false)" -ForegroundColor Gray
         continue
-    }
-
-    # 提取 crate 名称和版本
-    if ($tomlContent -match 'name\s*=\s*"([^"]+)"') {
-        $crateName = $matches[1]
-    }
-    if ($tomlContent -match 'version\s*=\s*"([^"]+)"') {
-        $crateVersion = $matches[1]
     }
 
     Write-Host "   检查 $crateName v$crateVersion 是否已发布..." -ForegroundColor Cyan

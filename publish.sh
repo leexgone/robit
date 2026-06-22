@@ -6,16 +6,26 @@ set -e
 
 echo "🚀 开始发布 Robit crates..."
 
-# 需要发布的 crates（按依赖顺序）
+# 从 workspace Cargo.toml 读取统一版本号
+workspaceVersion=$(grep '^version\s*=' Cargo.toml | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+if [ -z "$workspaceVersion" ]; then
+    echo "❌ 无法从 workspace Cargo.toml 读取版本号"
+    exit 1
+fi
+
+# 需要发布的 crates（按依赖顺序），格式："路径:包名"
 crates=(
-    "crates/robit-ai"
-    "crates/robit-agent"
-    "crates/robit-chatbot"
-    "crates/robit-tui"
-    "crates/robit-qq"
+    "crates/robit-ai:robit-ai"
+    "crates/robit-agent:robit-agent"
+    "crates/robit-chatbot:robit-chatbot"
+    "crates/robit-tui:robit"
+    "crates/robit-qq:robit-qq"
 )
 
-for crate in "${crates[@]}"; do
+for crateEntry in "${crates[@]}"; do
+    IFS=":" read -r crate crateName <<< "$crateEntry"
+    crateVersion="$workspaceVersion"
+
     echo -e "\n📦 检查 $crate ..."
 
     # 检查是否有 publish = false
@@ -23,10 +33,6 @@ for crate in "${crates[@]}"; do
         echo "⏭️  跳过 $crate (publish = false)"
         continue
     fi
-
-    # 提取 crate 名称和版本
-    crateName=$(grep '^name\s*=' "$crate/Cargo.toml" | sed -E 's/name\s*=\s*"([^"]+)"/\1/')
-    crateVersion=$(grep '^version\s*=' "$crate/Cargo.toml" | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
 
     echo "   检查 $crateName v$crateVersion 是否已发布..."
 
