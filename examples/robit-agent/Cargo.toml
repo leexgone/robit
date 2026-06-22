@@ -1,12 +1,12 @@
 [package]
 name = "robit-agent-cli"
-version = "0.1.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 publish = false
 
 [dependencies]
-robit-ai = { path = "../../crates/robit-ai" }
-robit-agent = { path = "../../crates/robit-agent" }
+robit-ai = { workspace = true }
+robit-agent = { workspace = true }
 tokio.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true

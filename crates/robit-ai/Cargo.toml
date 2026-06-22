@@ -1,12 +1,12 @@
 [package]
 name = "robit-ai"
-version = "0.1.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Multi-provider LLM API and configuration layer for robit."
-license = "Apache-2.0"
-repository = "https://github.com/leexgone/robit"
-homepage = "https://github.com/leexgone/robit"
-readme = "../../README.md"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 keywords = ["llm", "ai", "agent", "openai"]
 categories = ["api-bindings", "config"]
 

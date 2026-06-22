@@ -1,18 +1,18 @@
 [package]
 name = "robit-chatbot"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Multi-session Bot infrastructure for robit (platform-agnostic base)."
-license = "Apache-2.0"
-repository = "https://github.com/leexgone/robit"
-homepage = "https://github.com/leexgone/robit"
-readme = "../../README.md"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 keywords = ["llm", "agent", "chatbot", "bot"]
 categories = ["development-tools"]
 
 [dependencies]
-robit-agent = { version = "0.1.1", path = "../robit-agent" }
-robit-ai = { version = "0.1.1", path = "../robit-ai" }
+robit-agent = { workspace = true }
+robit-ai = { workspace = true }
 tokio.workspace = true
 async-trait.workspace = true
 serde.workspace = true

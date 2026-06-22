@@ -166,7 +166,7 @@ impl QqPlatformAdapter {
 
         let (mut write, mut read) = ws_stream.split();
         write
-            .send(Message::Ping(Vec::new()))
+            .send(Message::Ping(bytes::Bytes::new()))
             .await
             .map_err(|e| AgentError::InternalError(format!("WS ping failed: {}", e)))?;
 
@@ -199,7 +199,7 @@ impl QqPlatformAdapter {
         let identify =
             GatewayPayload::identify(&access_token, INTENT_C2C | INTENT_GROUP_AT_MESSAGE);
         write
-            .send(Message::Text(serde_json::to_string(&identify).unwrap()))
+            .send(Message::Text(serde_json::to_string(&identify).unwrap().into()))
             .await
             .map_err(|e| AgentError::InternalError(format!("Identify send failed: {}", e)))?;
 
@@ -569,7 +569,7 @@ fn spawn_heartbeat(adapter: Arc<QqPlatformAdapter>) {
             };
             let mut ws_tx = adapter.ws_tx.lock().await;
             if let Some(write) = ws_tx.as_mut() {
-                if let Err(e) = write.send(Message::Text(payload)).await {
+                if let Err(e) = write.send(Message::Text(payload.into())).await {
                     warn!("Heartbeat send failed: {}", e);
                     let _ = adapter
                         .event_tx
@@ -600,7 +600,7 @@ fn spawn_dispatch(adapter: Arc<QqPlatformAdapter>, mut read: impl futures_util::
                 }
             };
             let text = match msg {
-                Message::Text(t) => t,
+                Message::Text(t) => t.to_string(),
                 Message::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
                 Message::Close(_) => {
                     info!("QQ WebSocket closed by server");

@@ -11,18 +11,32 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/leexgone/robit"
+homepage = "https://github.com/leexgone/robit"
+readme = "../../README.md"
+
 [workspace.dependencies]
+# 内部 crates
+robit-ai = { path = "crates/robit-ai" }
+robit-agent = { path = "crates/robit-agent" }
+robit-chatbot = { path = "crates/robit-chatbot" }
+
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
 futures-util = "0.3"
 tokio-util = "0.7"
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
-reqwest = { version = "0.12", features = ["json", "multipart"] }
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
+reqwest = { version = "0.13", features = ["json", "multipart"] }
 
 # 编码
 base64 = "0.22"
+bytes = "1.0"
 
 # 序列化
 serde = { version = "1", features = ["derive"] }

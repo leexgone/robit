@@ -1,11 +1,11 @@
 [package]
 name = "robit-chat"
-version = "0.1.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 publish = false
 
 [dependencies]
-robit-ai = { path = "../../crates/robit-ai" }
+robit-ai = { workspace = true }
 async-openai.workspace = true
 tokio.workspace = true
 futures.workspace = true
