@@ -6,7 +6,7 @@ description = "Terminal UI for the robit AI automation agent."
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "../../README.md"
 keywords = ["llm", "agent", "tui", "automation"]
 categories = ["command-line-utilities", "development-tools"]
 

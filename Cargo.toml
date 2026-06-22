@@ -17,7 +17,6 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/leexgone/robit"
 homepage = "https://github.com/leexgone/robit"
-readme = "../../README.md"
 
 [workspace.dependencies]
 # 内部 crates

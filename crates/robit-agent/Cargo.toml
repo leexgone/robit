@@ -6,7 +6,7 @@ description = "Agent runtime, tool system, skill system, and frontend trait for 
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "../../README.md"
 keywords = ["llm", "agent", "automation", "tools"]
 categories = ["command-line-utilities", "development-tools"]
 

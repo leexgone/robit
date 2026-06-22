@@ -6,7 +6,7 @@ description = "QQ Official Bot platform frontend for the robit agent."
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "../../README.md"
 keywords = ["llm", "agent", "qq", "bot"]
 categories = ["command-line-utilities"]
 

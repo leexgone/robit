@@ -6,7 +6,7 @@ description = "Multi-provider LLM API and configuration layer for robit."
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "../../README.md"
 keywords = ["llm", "ai", "agent", "openai"]
 categories = ["api-bindings", "config"]
 
