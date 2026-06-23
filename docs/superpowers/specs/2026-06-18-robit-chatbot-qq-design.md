@@ -1451,7 +1451,6 @@ impl PlatformAdapter for QqPlatformAdapter {
 [channels.qq_bot]
 app_id = "123456789"
 app_secret = "${QQ_BOT_SECRET}"
-bot_token = "${QQ_BOT_TOKEN}"
 
 # Bot-specific app config
 [app.qq]
@@ -1600,7 +1599,6 @@ Key differences from QQ:
 [channels.qq_bot]
 app_id = "123456789"
 app_secret = "${QQ_BOT_SECRET}"
-bot_token = "${QQ_BOT_TOKEN}"
 
 # Bot-specific app settings (optional, with defaults shown)
 [app.bot]
@@ -1617,7 +1615,6 @@ reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
 
 ```bash
 # ~/.robit/.env
-QQ_BOT_TOKEN=your_bot_token_here
 QQ_BOT_SECRET=your_app_secret_here
 ```
 

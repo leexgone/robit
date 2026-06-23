@@ -39,9 +39,6 @@ use crate::protocol::{
 pub struct QqConfig {
     pub app_id: String,
     pub app_secret: String,
-    /// Bot token (used as a fallback / for sandbox; the live API uses the
-    /// app-access-token flow derived from app_id + app_secret).
-    pub bot_token: String,
     pub sandbox: bool,
 }
 
@@ -58,7 +55,6 @@ impl QqConfig {
         Ok(Self {
             app_id: qq.app_id.clone(),
             app_secret: qq.app_secret.clone(),
-            bot_token: qq.bot_token.clone(),
             sandbox: false,
         })
     }
@@ -740,7 +736,6 @@ mod tests {
         QqConfig {
             app_id: "id".into(),
             app_secret: "secret".into(),
-            bot_token: "tok".into(),
             sandbox: false,
         }
     }
@@ -874,7 +869,6 @@ mod tests {
             [channels.qq_bot]
             app_id = "123"
             app_secret = "s"
-            bot_token = "t"
         "#;
         // RobitConfig requires a non-empty `providers` map, so add a minimal one.
         let toml_with_providers = format!(
@@ -885,7 +879,6 @@ mod tests {
         let qq = QqConfig::from_config(&config).unwrap();
         assert_eq!(qq.app_id, "123");
         assert_eq!(qq.app_secret, "s");
-        assert_eq!(qq.bot_token, "t");
     }
 
     #[test]

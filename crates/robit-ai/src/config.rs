@@ -131,7 +131,6 @@ pub struct ChannelsConfig {
 pub struct QqBotConfig {
     pub app_id: String,
     pub app_secret: String,
-    pub bot_token: String,
 }
 
 // ============================================================================
@@ -736,7 +735,6 @@ mod tests {
             [channels.qq_bot]
             app_id = "123456789"
             app_secret = "secret-value"
-            bot_token = "token-value"
 
             [app.bot]
             confirm_timeout_secs = 60
@@ -757,7 +755,6 @@ mod tests {
             .expect("qq_bot config missing");
         assert_eq!(qq.app_id, "123456789");
         assert_eq!(qq.app_secret, "secret-value");
-        assert_eq!(qq.bot_token, "token-value");
 
         // app.bot
         let bot = config.app.as_ref().unwrap().bot.as_ref().unwrap();

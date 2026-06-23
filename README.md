@@ -156,7 +156,6 @@ reserve_ratio = 0.2
 [channels.qq_bot]
 app_id = "your-app-id"
 app_secret = "${QQ_BOT_SECRET}"
-bot_token = "${QQ_BOT_TOKEN}"
 
 # Bot platform shared configuration (optional)
 [app.bot]

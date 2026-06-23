@@ -170,7 +170,6 @@ max_backoff_ms = 30000
 [channels.qq_bot]                      # QQ 官方 Bot 渠道
 app_id = "123456789"
 app_secret = "${QQ_BOT_SECRET}"        # 支持 ${ENV_VAR} 替换
-bot_token = "${QQ_BOT_TOKEN}"
 
 [app.bot]                              # Bot 平台共享设置（可选，以下为默认值）
 auto_approve = false                   # 自动批准工具调用（覆盖 app.auto_approve）
