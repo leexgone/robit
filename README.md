@@ -1,7 +1,5 @@
 # robit
 
-[中文文档](README.cn.md)
-
 robit (robo it) is an LLM-powered AI automation agent framework. It provides an extensible agent runtime, terminal UI, desktop GUI, unified multi-provider LLM API, and configurable tool and skill systems.
 
 This repository is a Rust monorepo focused on personal automation, programming assistance, and multi-frontend agent experiments.
