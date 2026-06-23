@@ -23,8 +23,7 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use robit_agent::{Agent, AgentEvent, FrontendMessage, bootstrap, log_skill_errors};
-use robit_ai::config::load_config;
-use robit_ai::LlmClient;
+use robit_ai::{init_logging_silent, load_config, LlmClient};
 use tokio::sync::mpsc;
 
 use app::{App, InputMode};
@@ -48,18 +47,6 @@ fn main() -> Result<()> {
     // Parse CLI args first
     let cli = Cli::parse();
 
-    // Initialize tracing (logs go to file, not terminal)
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("robit_tui=info".parse()?),
-        )
-        .with_writer(|| {
-            // Discard log output in TUI mode (use RUST_LOG to enable file logging)
-            io::sink()
-        })
-        .init();
-
     // Resolve working directory
     let working_dir = if let Some(ref workdir) = cli.workdir {
         if !workdir.exists() {
@@ -74,6 +61,9 @@ fn main() -> Result<()> {
     };
 
     let config = load_config(cli.workdir.as_deref())?;
+
+    // Initialize tracing (logs go to sink, not terminal) with config log_level
+    init_logging_silent(config.app.as_ref(), "robit_tui", &[]);
 
     // Determine auto_approve: CLI flag takes priority, then config, then default false
     let auto_approve = cli.auto_approve || config.app.as_ref().and_then(|a| a.auto_approve).unwrap_or(false);

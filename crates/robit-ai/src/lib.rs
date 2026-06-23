@@ -7,6 +7,7 @@
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod logging;
 
 // Re-export async-openai core types so downstream crates don't need to depend on async-openai directly.
 pub use async_openai::types::chat::{
@@ -27,3 +28,4 @@ pub use config::{
     RobitConfig,
 };
 pub use error::LlmError;
+pub use logging::{init_logging, init_logging_silent};

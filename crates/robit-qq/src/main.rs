@@ -9,7 +9,7 @@ use std::sync::Arc;
 use clap::Parser;
 use robit_agent::{create_tools_from_config, filter_skills_by_config, load_all_skills, log_skill_errors};
 use robit_agent::skill::SkillRegistry;
-use robit_ai::{load_config, LlmClient};
+use robit_ai::{init_logging, load_config, LlmClient};
 use robit_chatbot::tool::SendFileTool;
 use robit_chatbot::ChatbotManager;
 use robit_qq::{QqConfig, QqPlatformAdapter};
@@ -30,27 +30,17 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("robit_qq=info".parse().unwrap())
-                .add_directive("robit_chatbot=info".parse().unwrap())
-                .add_directive("reqwest=warn".parse().unwrap())
-                .add_directive("hyper=warn".parse().unwrap())
-                .add_directive("hyper_util=warn".parse().unwrap())
-                .add_directive("tungstenite=warn".parse().unwrap())
-                .add_directive("tokio_tungstenite=warn".parse().unwrap()),
-        )
-        .init();
-
     let cli = Cli::parse();
 
+    // Load config first so we can use log_level from config
     let working_dir = cli
         .workdir
+        .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
-
-    // 1. Load configuration.
     let config = load_config(Some(&working_dir)).expect("Failed to load config.toml");
+
+    // Initialize logging with config
+    init_logging(config.app.as_ref(), "robit_qq", &[]);
 
     // 2. Initialize the LLM client.
     let llm_client = Arc::new(

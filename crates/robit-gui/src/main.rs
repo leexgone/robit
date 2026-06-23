@@ -13,8 +13,7 @@ mod state;
 use std::sync::Arc;
 
 use clap::Parser;
-use robit_ai::config::load_config;
-use robit_ai::LlmClient;
+use robit_ai::{init_logging, load_config, LlmClient};
 
 use state::AppState;
 
@@ -35,15 +34,12 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("robit_gui=info".parse().unwrap()),
-        )
-        .init();
-
     let config =
         load_config(cli.workdir.as_deref()).expect("Failed to load config.toml configuration");
+
+    // Initialize logging with config log_level
+    init_logging(config.app.as_ref(), "robit_gui", &[]);
+
     let client =
         Arc::new(LlmClient::from_config(&config, None).expect("Failed to initialize LLM client"));
 

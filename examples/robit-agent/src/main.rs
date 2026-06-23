@@ -9,8 +9,7 @@
 use async_trait::async_trait;
 use clap::Parser;
 use robit_agent::{Agent, AgentEvent, Frontend, FrontendMessage, ToolCallInfo, bootstrap, log_skill_errors};
-use robit_ai::config::load_config;
-use robit_ai::LlmClient;
+use robit_ai::{init_logging, load_config, LlmClient};
 use std::io::Write;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -33,13 +32,6 @@ fn main() -> anyhow::Result<()> {
     // Parse CLI args first
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("robit_agent=info".parse()?),
-        )
-        .init();
-
     // Resolve working directory
     let working_dir = if let Some(ref workdir) = cli.workdir {
         if !workdir.exists() {
@@ -54,6 +46,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     let config = load_config(cli.workdir.as_deref())?;
+
+    // Initialize logging with config log_level
+    init_logging(config.app.as_ref(), "robit_agent", &[]);
 
     // Determine auto_approve: CLI flag takes priority, then config, then default false
     let auto_approve = cli.auto_approve || config.app.as_ref().and_then(|a| a.auto_approve).unwrap_or(false);
