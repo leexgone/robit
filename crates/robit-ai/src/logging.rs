@@ -9,7 +9,7 @@
 use crate::config::AppConfig;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
-use tracing_subscriber::Layer;
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::{filter::Directive, EnvFilter};
 
 /// Get the log file path: {cwd}/.robit/logs/robit-YYYY-MM-DD.log
