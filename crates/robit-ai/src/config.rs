@@ -85,6 +85,8 @@ pub struct ModelConfig {
 #[derive(Debug, Deserialize, Default)]
 pub struct AppConfig {
     pub log_level: Option<String>,
+    /// Whether to log to file (default: false).
+    pub log_file: Option<bool>,
     pub max_steps: Option<usize>,
     pub enabled_tools: Option<Vec<String>>,
     pub enabled_skills: Option<Vec<String>>,
