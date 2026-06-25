@@ -178,13 +178,20 @@ impl ToolRegistry {
         args: Value,
         ctx: &ToolContext,
     ) -> ToolResult {
+        tracing::info!("ToolRegistry.execute called: name='{}', args={:?}", name, args);
+        tracing::debug!("Available tools: {:?}", self.tool_names());
+
         match self.tools.get(name) {
-            Some(tool) => match tool.execute(args, ctx).await {
-                Ok(result) => result,
-                Err(e) => ToolResult::error(format!("Tool execution error: {}", e)),
+            Some(tool) => {
+                tracing::debug!("Found tool '{}', executing...", name);
+                match tool.execute(args, ctx).await {
+                    Ok(result) => result,
+                    Err(e) => ToolResult::error(format!("Tool execution error: {}", e)),
+                }
             },
             None => {
                 let available: Vec<&str> = self.tools.keys().map(|s| s.as_str()).collect();
+                tracing::error!("Tool '{}' not found! Available tools: {:?}", name, available);
                 ToolResult::error(format!(
                     "Tool '{}' not found. Available tools: {:?}",
                     name, available

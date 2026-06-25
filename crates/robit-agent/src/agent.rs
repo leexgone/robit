@@ -281,6 +281,13 @@ impl Agent {
                 // Tool call deltas
                 if let Some(tool_calls) = &choice.delta.tool_calls {
                     for tc in tool_calls {
+                        tracing::debug!(
+                            "Received tool call chunk: index={}, id={:?}, function={:?}",
+                            tc.index,
+                            tc.id,
+                            tc.function
+                        );
+
                         let acc = tool_call_chunks
                             .entry(tc.index as usize)
                             .or_insert_with(ToolCallAccumulator::new);
@@ -290,12 +297,16 @@ impl Agent {
                         }
                         if let Some(function) = &tc.function {
                             if let Some(name) = &function.name {
+                                tracing::debug!("Tool name chunk: '{}'", name);
                                 acc.name = Some(name.clone());
                             }
                             if let Some(args) = &function.arguments {
+                                tracing::debug!("Tool args chunk: '{}'", args);
                                 acc.arguments.push_str(args);
                             }
                         }
+
+                        tracing::debug!("Accumulator state after chunk: {:?}", acc);
                     }
                 }
             }
@@ -310,6 +321,17 @@ impl Agent {
                 .filter_map(|idx| tool_call_chunks.remove(&idx)?.into_tool_call())
                 .collect()
         };
+
+        tracing::debug!("Assembled {} tool call(s)", assembled_tool_calls.len());
+        for (i, tc) in assembled_tool_calls.iter().enumerate() {
+            tracing::debug!(
+                "Tool call [{}]: id='{}', name='{}', arguments='{}'",
+                i,
+                tc.id,
+                tc.function.name,
+                tc.function.arguments
+            );
+        }
 
         // Add assistant message to history
         let assistant_msg = ChatCompletionRequestMessage::Assistant(
@@ -353,6 +375,12 @@ impl Agent {
 
         // Execute each tool call
         for tc in &assembled_tool_calls {
+            tracing::info!(
+                "About to execute tool: id='{}', name='{}'",
+                tc.id,
+                tc.function.name
+            );
+
             let tc_info = ToolCallInfo {
                 id: tc.id.clone(),
                 name: tc.function.name.clone(),
@@ -625,6 +653,7 @@ impl Agent {
 // ============================================================================
 
 /// Accumulates streaming tool call chunks.
+#[derive(Debug)]
 struct ToolCallAccumulator {
     id: Option<String>,
     name: Option<String>,
@@ -642,8 +671,13 @@ impl ToolCallAccumulator {
 
     /// Convert accumulated chunks into a complete tool call.
     fn into_tool_call(self) -> Option<ChatCompletionMessageToolCall> {
+        tracing::debug!("Converting accumulator to tool call: {:?}", self);
+
         let id = self.id?;
         let name = self.name?;
+
+        tracing::debug!("Tool call assembled: id='{}', name='{}', args='{}'", id, name, self.arguments);
+
         Some(ChatCompletionMessageToolCall {
             id,
             function: FunctionCall {
