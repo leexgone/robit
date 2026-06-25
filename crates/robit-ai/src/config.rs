@@ -202,15 +202,17 @@ fn resolve_env_var(value: &str) -> String {
 
 /// Load and parse the config.toml config file.
 ///
-/// Automatically loads `~/.robit/.env` before resolving `${ENV_VAR}` patterns.
+/// Automatically loads .env files before resolving `${ENV_VAR}` patterns:
+///   1. `~/.robit/.env` (global, lower priority)
+///   2. `workdir/.robit/.env` (project-local, higher priority)
 ///
-/// Search order:
+/// Search order for config.toml:
 ///   1. `workdir/.robit/config.toml` (project-local, if workdir provided)
 ///   2. `cwd/.robit/config.toml` (project-local, if workdir not provided)
 ///   3. `~/.robit/config.toml`   (global fallback)
 pub fn load_config(workdir: Option<&std::path::Path>) -> Result<RobitConfig, LlmError> {
     // Load .env first so ${ENV_VAR} substitutions work
-    load_env();
+    load_env_from(workdir);
 
     let path = find_config_path(workdir)?;
 
@@ -225,10 +227,58 @@ pub fn load_config(workdir: Option<&std::path::Path>) -> Result<RobitConfig, Llm
         provider.api_key = resolve_env_var(&provider.api_key);
     }
 
+    // Also resolve env vars in channel configs
+    if let Some(ref mut channels) = config.channels {
+        if let Some(ref mut qq_bot) = channels.qq_bot {
+            qq_bot.app_id = resolve_env_var(&qq_bot.app_id);
+            qq_bot.app_secret = resolve_env_var(&qq_bot.app_secret);
+        }
+    }
+
     Ok(config)
 }
 
-/// Load .env from ~/.robit/.env if it exists.
+/// Load .env files in order: workdir first (higher priority), then global (lower priority).
+/// Workdir vars will override global vars.
+pub fn load_env_from(workdir: Option<&std::path::Path>) {
+    // Collect all env paths, workdir first (higher priority)
+    let mut env_paths = Vec::new();
+
+    // Workdir-specific .env (highest priority)
+    if let Some(workdir) = workdir {
+        let local_env = workdir.join(".robit").join(".env");
+        if local_env.exists() {
+            env_paths.push(local_env);
+        }
+    } else if let Ok(cwd) = std::env::current_dir() {
+        let local_env = cwd.join(".robit").join(".env");
+        if local_env.exists() {
+            env_paths.push(local_env);
+        }
+    }
+
+    // Global .env (lowest priority)
+    if let Ok(robit_dir) = robit_home() {
+        let env_path = robit_dir.join(".env");
+        if env_path.exists() {
+            env_paths.push(env_path);
+        }
+    }
+
+    // Load in reverse order (global first, then workdir) so workdir overrides global
+    // Use dotenvy::from_path_iter to load and manually set vars to enable overriding
+    for path in env_paths.iter().rev() {
+        if let Ok(iter) = dotenvy::from_path_iter(path) {
+            for item in iter {
+                if let Ok((key, value)) = item {
+                    std::env::set_var(key, value);
+                }
+            }
+        }
+    }
+}
+
+/// Load .env from ~/.robit/.env if it exists (deprecated, use load_env_from).
 pub fn load_env() {
     if let Ok(robit_dir) = robit_home() {
         let env_path = robit_dir.join(".env");
