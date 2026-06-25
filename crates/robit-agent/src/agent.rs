@@ -293,12 +293,19 @@ impl Agent {
                             .or_insert_with(ToolCallAccumulator::new);
 
                         if let Some(id) = &tc.id {
-                            acc.id = Some(id.clone());
+                            // 只有当id非空时才更新
+                            if !id.is_empty() {
+                                tracing::debug!("Updating tool id: '{}'", id);
+                                acc.id = Some(id.clone());
+                            }
                         }
                         if let Some(function) = &tc.function {
                             if let Some(name) = &function.name {
-                                tracing::debug!("Tool name chunk: '{}'", name);
-                                acc.name = Some(name.clone());
+                                // 只有当name非空时才更新
+                                if !name.is_empty() {
+                                    tracing::debug!("Tool name chunk: '{}'", name);
+                                    acc.name = Some(name.clone());
+                                }
                             }
                             if let Some(args) = &function.arguments {
                                 tracing::debug!("Tool args chunk: '{}'", args);
