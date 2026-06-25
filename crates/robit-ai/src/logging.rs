@@ -12,12 +12,11 @@ use std::path::PathBuf;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{filter::Directive, EnvFilter};
 
-/// Get the log file path: {cwd}/.robit/logs/robit-YYYY-MM-DD.log
+/// Get the log file path: {working_dir}/.robit/logs/robit-YYYY-MM-DD.log
 ///
 /// Creates the directory if it doesn't exist.
-fn get_log_file_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let cwd = std::env::current_dir()?;
-    let logs_dir = cwd.join(".robit").join("logs");
+fn get_log_file_path(working_dir: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let logs_dir = working_dir.join(".robit").join("logs");
 
     // Create logs directory if it doesn't exist
     std::fs::create_dir_all(&logs_dir)?;
@@ -92,15 +91,17 @@ fn build_filter(
 /// 3. Defaults to `info` for the target crate and `warn` for third-party crates
 ///
 /// If `app.log_file = true`, logs are also written to:
-///   {cwd}/.robit/logs/robit-YYYY-MM-DD.log (daily rotation)
+///   {working_dir}/.robit/logs/robit-YYYY-MM-DD.log (daily rotation)
 ///
 /// # Arguments
 /// - `app_config`: Optional `AppConfig` from config.toml
 /// - `target_crate`: Name of the target crate (e.g. "robit_tui", "robit_qq")
+/// - `working_dir`: Working directory for the agent (where .robit/logs is created)
 /// - `additional_directives`: Optional additional `Directive`s for specific crates
 pub fn init_logging(
     app_config: Option<&AppConfig>,
     target_crate: &str,
+    working_dir: &PathBuf,
     additional_directives: &[&str],
 ) {
     let filter = build_filter(app_config, target_crate, additional_directives);
@@ -110,7 +111,7 @@ pub fn init_logging(
 
     if log_file_enabled {
         // Log to both console and file
-        match get_log_file_path() {
+        match get_log_file_path(working_dir) {
             Ok(log_path) => {
                 match OpenOptions::new()
                     .create(true)
@@ -164,6 +165,7 @@ pub fn init_logging(
 pub fn init_logging_silent(
     app_config: Option<&AppConfig>,
     target_crate: &str,
+    _working_dir: &PathBuf,
     additional_directives: &[&str],
 ) {
     let filter = build_filter(app_config, target_crate, additional_directives);

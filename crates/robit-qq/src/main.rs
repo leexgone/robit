@@ -40,7 +40,7 @@ async fn main() {
     let config = load_config(Some(&working_dir)).expect("Failed to load config.toml");
 
     // Initialize logging with config
-    init_logging(config.app.as_ref(), "robit_qq", &[]);
+    init_logging(config.app.as_ref(), "robit_qq", &working_dir, &[]);
 
     // 2. Initialize the LLM client.
     let llm_client = Arc::new(

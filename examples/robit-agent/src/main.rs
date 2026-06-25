@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
     let config = load_config(cli.workdir.as_deref())?;
 
     // Initialize logging with config log_level
-    init_logging(config.app.as_ref(), "robit_agent", &[]);
+    init_logging(config.app.as_ref(), "robit_agent", &working_dir, &[]);
 
     // Determine auto_approve: CLI flag takes priority, then config, then default false
     let auto_approve = cli.auto_approve || config.app.as_ref().and_then(|a| a.auto_approve).unwrap_or(false);

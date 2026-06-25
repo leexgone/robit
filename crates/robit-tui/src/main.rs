@@ -63,7 +63,7 @@ fn main() -> Result<()> {
     let config = load_config(cli.workdir.as_deref())?;
 
     // Initialize tracing (logs go to sink, not terminal) with config log_level
-    init_logging_silent(config.app.as_ref(), "robit_tui", &[]);
+    init_logging_silent(config.app.as_ref(), "robit_tui", &working_dir, &[]);
 
     // Determine auto_approve: CLI flag takes priority, then config, then default false
     let auto_approve = cli.auto_approve || config.app.as_ref().and_then(|a| a.auto_approve).unwrap_or(false);

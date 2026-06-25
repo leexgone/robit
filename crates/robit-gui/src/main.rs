@@ -34,11 +34,17 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
+    // Resolve working directory first
+    let working_dir = cli
+        .workdir
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+
     let config =
         load_config(cli.workdir.as_deref()).expect("Failed to load config.toml configuration");
 
     // Initialize logging with config log_level
-    init_logging(config.app.as_ref(), "robit_gui", &[]);
+    init_logging(config.app.as_ref(), "robit_gui", &working_dir, &[]);
 
     let client =
         Arc::new(LlmClient::from_config(&config, None).expect("Failed to initialize LLM client"));
