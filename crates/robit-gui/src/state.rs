@@ -282,6 +282,22 @@ impl AppState {
         tokio::spawn(async move {
             let mut buffer = String::new();
 
+            // Helper: save accumulated buffer as assistant message
+            let save_buffer = |db: &tokio::sync::MutexGuard<'_, rusqlite::Connection>, buffer: &str, sid: &str| {
+                if !buffer.is_empty() {
+                    let _ = crate::db::insert_message(
+                        db,
+                        sid,
+                        "assistant",
+                        buffer,
+                        None,
+                        None,
+                        None,
+                    );
+                    let _ = crate::db::touch_session(db, sid);
+                }
+            };
+
             // TextDelta batching: accumulate deltas and send in batches
             let mut delta_buffer = String::new();
             let mut last_delta_send = tokio::time::Instant::now();
@@ -313,6 +329,13 @@ impl AppState {
                                             };
                                             let _ = app_handle_clone.emit("agent-event", &flush_event);
                                             last_delta_send = tokio::time::Instant::now();
+                                        }
+
+                                        // Save accumulated text as assistant message BEFORE tool call
+                                        if !buffer.is_empty() {
+                                            let db = db_clone.lock().await;
+                                            save_buffer(&db, &buffer, &sid_clone);
+                                            buffer.clear();
                                         }
 
                                         // Save tool call request to database
@@ -401,16 +424,7 @@ impl AppState {
                                         // Save assistant message to database
                                         if !buffer.is_empty() {
                                             let db = db_clone.lock().await;
-                                            let _ = crate::db::insert_message(
-                                                &db,
-                                                &sid_clone,
-                                                "assistant",
-                                                &buffer,
-                                                None,
-                                                None,
-                                                None,
-                                            );
-                                            let _ = crate::db::touch_session(&db, &sid_clone);
+                                            save_buffer(&db, &buffer, &sid_clone);
                                             buffer.clear();
                                         }
                                         let _ = app_handle_clone.emit("agent-event", &event);
@@ -437,6 +451,11 @@ impl AppState {
                                         delta: std::mem::take(&mut delta_buffer),
                                     };
                                     let _ = app_handle_clone.emit("agent-event", &flush_event);
+                                }
+                                // Save any remaining buffer
+                                if !buffer.is_empty() {
+                                    let db = db_clone.lock().await;
+                                    save_buffer(&db, &buffer, &sid_clone);
                                 }
                                 break;
                             }
