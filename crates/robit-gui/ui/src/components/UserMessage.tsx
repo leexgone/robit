@@ -1,10 +1,11 @@
 import { User } from "lucide-react";
+import { memo } from "react";
 
 interface UserMessageProps {
   content: string;
 }
 
-export function UserMessage({ content }: UserMessageProps) {
+function UserMessageComponent({ content }: UserMessageProps) {
   return (
     <div className="flex justify-end py-3 min-w-0">
       <div className="flex items-end gap-3 max-w-[min(80%,720px)] min-w-0">
@@ -21,3 +22,7 @@ export function UserMessage({ content }: UserMessageProps) {
     </div>
   );
 }
+
+export const UserMessage = memo(UserMessageComponent, (prev, next) => {
+  return prev.content === next.content;
+});

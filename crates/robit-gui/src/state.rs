@@ -8,7 +8,7 @@ use robit_agent::event::{FrontendMessage, SessionId};
 use robit_agent::skill::SkillRegistry;
 use robit_agent::storage::{resolve_db_path, load_chat_messages};
 use robit_agent::tool::ToolRegistry;
-use robit_agent::{bootstrap, log_skill_errors, AgentError};
+use robit_agent::{bootstrap, log_skill_errors};
 use robit_ai::config::RobitConfig;
 use robit_ai::LlmClient;
 use rusqlite::Connection;
@@ -281,81 +281,178 @@ impl AppState {
         let db_clone = Arc::clone(&self.db);
         tokio::spawn(async move {
             let mut buffer = String::new();
-            while let Some(event) = event_rx.recv().await {
-                match &event {
-                    crate::events::UiEvent::TextDelta { delta, .. } => {
-                        buffer.push_str(delta);
-                    }
-                    crate::events::UiEvent::ToolCallRequested {
-                        tool_call_id,
-                        name,
-                        arguments,
-                        requires_confirm,
-                        ..
-                    } => {
-                        // Save tool call request to database
-                        let tool_info = serde_json::json!({
-                            "tool_call_id": tool_call_id,
-                            "name": name,
-                            "arguments": arguments,
-                            "status": if *requires_confirm { "awaiting_confirmation" } else { "running" },
-                            "requires_confirm": requires_confirm,
-                        });
-                        let tool_info_str = serde_json::to_string(&tool_info).unwrap_or_default();
-                        let db = db_clone.lock().await;
-                        let _ = crate::db::insert_message(
-                            &db,
-                            &sid_clone,
-                            "tool",
-                            arguments,
-                            Some(name),
-                            Some(tool_call_id),
-                            Some(&tool_info_str),
-                        );
-                        let _ = crate::db::touch_session(&db, &sid_clone);
-                    }
-                    crate::events::UiEvent::ToolCallResult {
-                        tool_call_id,
-                        content,
-                        is_error,
-                        ..
-                    } => {
-                        // Update tool message with result
-                        // First, get the current tool_info if it exists
-                        let db = db_clone.lock().await;
-                        let tool_info = serde_json::json!({
-                            "tool_call_id": tool_call_id,
-                            "status": if *is_error { "error" } else { "success" },
-                            "output": content,
-                        });
-                        let tool_info_str = serde_json::to_string(&tool_info).unwrap_or_default();
-                        let _ = crate::db::update_tool_message(
-                            &db,
-                            &sid_clone,
-                            tool_call_id,
-                            &tool_info_str,
-                        );
-                    }
-                    crate::events::UiEvent::TurnComplete { .. } => {
-                        // Save assistant message to database
-                        if !buffer.is_empty() {
-                            let db = db_clone.lock().await;
-                            let _ = crate::db::insert_message(
-                                &db,
-                                &sid_clone,
-                                "assistant",
-                                &buffer,
-                                None,
-                                None,
-                                None,
-                            );
-                            let _ = crate::db::touch_session(&db, &sid_clone);
-                            buffer.clear();
+
+            // TextDelta batching: accumulate deltas and send in batches
+            let mut delta_buffer = String::new();
+            let mut last_delta_send = tokio::time::Instant::now();
+            const DELTA_BATCH_MS: u64 = 50; // Batch deltas every 50ms
+
+            loop {
+                tokio::select! {
+                    // Receive next event
+                    event = event_rx.recv() => {
+                        match event {
+                            Some(event) => {
+                                match &event {
+                                    crate::events::UiEvent::TextDelta { delta, .. } => {
+                                        delta_buffer.push_str(delta);
+                                        buffer.push_str(delta);
+                                    }
+                                    crate::events::UiEvent::ToolCallRequested {
+                                        tool_call_id,
+                                        name,
+                                        arguments,
+                                        requires_confirm,
+                                        ..
+                                    } => {
+                                        // Flush any pending deltas first
+                                        if !delta_buffer.is_empty() {
+                                            let flush_event = crate::events::UiEvent::TextDelta {
+                                                session_id: sid_clone.clone(),
+                                                delta: std::mem::take(&mut delta_buffer),
+                                            };
+                                            let _ = app_handle_clone.emit("agent-event", &flush_event);
+                                            last_delta_send = tokio::time::Instant::now();
+                                        }
+
+                                        // Save tool call request to database
+                                        let tool_info = serde_json::json!({
+                                            "tool_call_id": tool_call_id,
+                                            "name": name,
+                                            "arguments": arguments,
+                                            "status": if *requires_confirm { "awaiting_confirmation" } else { "running" },
+                                            "requires_confirm": requires_confirm,
+                                        });
+                                        let tool_info_str = serde_json::to_string(&tool_info).unwrap_or_default();
+                                        let db = db_clone.lock().await;
+                                        let _ = crate::db::insert_message(
+                                            &db,
+                                            &sid_clone,
+                                            "tool",
+                                            arguments,
+                                            Some(name),
+                                            Some(tool_call_id),
+                                            Some(&tool_info_str),
+                                        );
+                                        let _ = crate::db::touch_session(&db, &sid_clone);
+                                        let _ = app_handle_clone.emit("agent-event", &event);
+                                    }
+                                    crate::events::UiEvent::ToolCallResult {
+                                        tool_call_id,
+                                        content,
+                                        is_error,
+                                        ..
+                                    } => {
+                                        // Flush any pending deltas first
+                                        if !delta_buffer.is_empty() {
+                                            let flush_event = crate::events::UiEvent::TextDelta {
+                                                session_id: sid_clone.clone(),
+                                                delta: std::mem::take(&mut delta_buffer),
+                                            };
+                                            let _ = app_handle_clone.emit("agent-event", &flush_event);
+                                            last_delta_send = tokio::time::Instant::now();
+                                        }
+
+                                        // Update tool message with result - merge with existing data
+                                        let db = db_clone.lock().await;
+                                        // First try to get the existing message to preserve tool_name and arguments
+                                        let messages = crate::db::get_messages(&db, &sid_clone).unwrap_or_default();
+                                        let existing_tool_info = messages.iter()
+                                            .find(|m| m.tool_call_id.as_deref() == Some(tool_call_id))
+                                            .and_then(|m| m.tool_info.clone());
+
+                                        let tool_info = if let Some(mut info) = existing_tool_info {
+                                            // Merge with existing data
+                                            if let serde_json::Value::Object(ref mut map) = info {
+                                                map.insert("status".to_string(), if *is_error { "error".into() } else { "success".into() });
+                                                map.insert("output".to_string(), content.to_string().into());
+                                            }
+                                            info
+                                        } else {
+                                            // Fallback to minimal data if no existing info
+                                            serde_json::json!({
+                                                "tool_call_id": tool_call_id,
+                                                "status": if *is_error { "error" } else { "success" },
+                                                "output": content,
+                                                "name": "",
+                                                "arguments": "",
+                                                "requires_confirm": false,
+                                            })
+                                        };
+                                        let tool_info_str = serde_json::to_string(&tool_info).unwrap_or_default();
+                                        let _ = crate::db::update_tool_message(
+                                            &db,
+                                            &sid_clone,
+                                            tool_call_id,
+                                            &tool_info_str,
+                                        );
+                                        let _ = app_handle_clone.emit("agent-event", &event);
+                                    }
+                                    crate::events::UiEvent::TurnComplete { .. } => {
+                                        // Flush any pending deltas first
+                                        if !delta_buffer.is_empty() {
+                                            let flush_event = crate::events::UiEvent::TextDelta {
+                                                session_id: sid_clone.clone(),
+                                                delta: std::mem::take(&mut delta_buffer),
+                                            };
+                                            let _ = app_handle_clone.emit("agent-event", &flush_event);
+                                        }
+
+                                        // Save assistant message to database
+                                        if !buffer.is_empty() {
+                                            let db = db_clone.lock().await;
+                                            let _ = crate::db::insert_message(
+                                                &db,
+                                                &sid_clone,
+                                                "assistant",
+                                                &buffer,
+                                                None,
+                                                None,
+                                                None,
+                                            );
+                                            let _ = crate::db::touch_session(&db, &sid_clone);
+                                            buffer.clear();
+                                        }
+                                        let _ = app_handle_clone.emit("agent-event", &event);
+                                    }
+                                    _ => {
+                                        // Flush any pending deltas first
+                                        if !delta_buffer.is_empty() {
+                                            let flush_event = crate::events::UiEvent::TextDelta {
+                                                session_id: sid_clone.clone(),
+                                                delta: std::mem::take(&mut delta_buffer),
+                                            };
+                                            let _ = app_handle_clone.emit("agent-event", &flush_event);
+                                            last_delta_send = tokio::time::Instant::now();
+                                        }
+                                        let _ = app_handle_clone.emit("agent-event", &event);
+                                    }
+                                }
+                            }
+                            None => {
+                                // Channel closed, flush any remaining deltas
+                                if !delta_buffer.is_empty() {
+                                    let flush_event = crate::events::UiEvent::TextDelta {
+                                        session_id: sid_clone.clone(),
+                                        delta: std::mem::take(&mut delta_buffer),
+                                    };
+                                    let _ = app_handle_clone.emit("agent-event", &flush_event);
+                                }
+                                break;
+                            }
                         }
                     }
-                    _ => {}
+
+                    // Periodic flush of deltas
+                    _ = tokio::time::sleep_until(last_delta_send + tokio::time::Duration::from_millis(DELTA_BATCH_MS)), if !delta_buffer.is_empty() => {
+                        let flush_event = crate::events::UiEvent::TextDelta {
+                            session_id: sid_clone.clone(),
+                            delta: std::mem::take(&mut delta_buffer),
+                        };
+                        let _ = app_handle_clone.emit("agent-event", &flush_event);
+                        last_delta_send = tokio::time::Instant::now();
+                    }
                 }
-                let _ = app_handle_clone.emit("agent-event", &event);
             }
             tracing::info!("Event bridge ended for session {}", sid_clone);
         });

@@ -428,7 +428,6 @@ pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionReque
                     if let Some(serde_json::Value::Array(arr)) = obj.get("tool_calls") {
                         use async_openai::types::chat::{
                             ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
-                            FunctionCall,
                         };
                         let mut calls = Vec::new();
                         for call_val in arr {
@@ -455,6 +454,7 @@ pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionReque
                 None
             };
 
+            #[allow(deprecated)]
             Ok(ChatCompletionRequestMessage::Assistant(
                 ChatCompletionRequestAssistantMessage {
                     content: if data.content.is_empty() {

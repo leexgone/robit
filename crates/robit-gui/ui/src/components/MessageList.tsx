@@ -1,13 +1,18 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, memo, useMemo } from "react";
 import { Bot, Loader2 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useStore } from "@/lib/store";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { ToolCard } from "./ToolCard";
-import type { ToolCallInfo } from "@/lib/types";
+import type { ToolCallInfo, MessageData } from "@/lib/types";
 
-function ThinkingIndicator() {
+// Memoized message components
+const MemoizedUserMessage = memo(UserMessage);
+const MemoizedAssistantMessage = memo(AssistantMessage);
+const MemoizedToolCard = memo(ToolCard);
+
+function ThinkingIndicatorComponent() {
   return (
     <div className="flex justify-start py-3 min-w-0">
       <div className="flex items-start gap-3 max-w-full min-w-0">
@@ -26,63 +31,166 @@ function ThinkingIndicator() {
   );
 }
 
-export function MessageList() {
-  // Select only top-level stable references
-  const activeSessionId = useStore((s) => s.activeSessionId);
-  const messagesStore = useStore((s) => s.messages);
-  const streamingBufferStore = useStore((s) => s.streamingBuffer);
-  const pendingConfirms = useStore((s) => s.pendingConfirms);
-  const agentStatusStore = useStore((s) => s.agentStatus);
+const ThinkingIndicator = memo(ThinkingIndicatorComponent);
 
-  const scrollAreaRef = useRef<HTMLDivElement>(null);
+// Individual message item component - memoized
+interface MessageItemProps {
+  msg: MessageData;
+  pendingConfirms: Record<string, ToolCallInfo>;
+}
 
-  // Derive values without creating new references in selectors
-  const messages = activeSessionId ? messagesStore[activeSessionId] || [] : [];
-  const streamingBuffer = activeSessionId ? streamingBufferStore[activeSessionId] || "" : "";
-  const agentStatus = activeSessionId ? agentStatusStore[activeSessionId] || "idle" : "idle";
-
-  // Helper to parse tool_info from message
-  const parseToolInfo = (msg: any): ToolCallInfo | undefined => {
-    if (!msg.tool_info) return undefined;
-    try {
-      const info: ToolCallInfo = typeof msg.tool_info === "string"
-        ? JSON.parse(msg.tool_info)
-        : msg.tool_info;
-      return info;
-    } catch (e) {
+const MessageItem = memo(function MessageItem({ msg, pendingConfirms }: MessageItemProps) {
+  // Helper to parse tool_info from message - memoized
+  const toolInfo = useMemo((): ToolCallInfo | undefined => {
+    if (!msg.tool_info) {
+      // Fallback: build minimal tool info from available fields
+      if (msg.tool_call_id) {
+        return {
+          tool_call_id: msg.tool_call_id,
+          name: msg.tool_name || "",
+          arguments: msg.content,
+          status: "success",
+          requires_confirm: false,
+        };
+      }
       return undefined;
     }
-  };
+    try {
+      let parsed = typeof msg.tool_info === "string"
+        ? JSON.parse(msg.tool_info)
+        : msg.tool_info;
 
-  const lastMessage = messages[messages.length - 1];
-  const lastToolInfo = lastMessage?.role === "tool" ? parseToolInfo(lastMessage) : undefined;
-  const showThinkingIndicator = agentStatus === "running" && !streamingBuffer && (
-    lastMessage?.role === "user" ||
-    (lastMessage?.role === "tool" &&
-      (lastToolInfo?.status === "success" || lastToolInfo?.status === "error"))
-  );
+      // Ensure required fields exist (backward compatibility)
+      if (parsed && typeof parsed === "object") {
+        if (!parsed.name && msg.tool_name) {
+          parsed.name = msg.tool_name;
+        }
+        if (!parsed.arguments && msg.content) {
+          parsed.arguments = msg.content;
+        }
+        if (!parsed.status) {
+          parsed.status = "success";
+        }
+        if (!parsed.requires_confirm) {
+          parsed.requires_confirm = false;
+        }
+      }
+      return parsed;
+    } catch (e) {
+      // Fallback if JSON parse fails
+      if (msg.tool_call_id) {
+        return {
+          tool_call_id: msg.tool_call_id,
+          name: msg.tool_name || "",
+          arguments: msg.content,
+          status: "success",
+          requires_confirm: false,
+        };
+      }
+      return undefined;
+    }
+  }, [msg.tool_info, msg.tool_call_id, msg.tool_name, msg.content]);
 
-  // Auto-scroll function
+  // Prefer latest state from pendingConfirms
+  const currentToolInfo = useMemo(() => {
+    if (msg.tool_call_id && pendingConfirms[msg.tool_call_id]) {
+      return pendingConfirms[msg.tool_call_id];
+    }
+    return toolInfo;
+  }, [msg.tool_call_id, pendingConfirms, toolInfo]);
+
+  if (msg.role === "user") {
+    return <MemoizedUserMessage content={msg.content} />;
+  }
+  if (msg.role === "assistant") {
+    return <MemoizedAssistantMessage content={msg.content} />;
+  }
+  if (msg.role === "tool" && currentToolInfo) {
+    return <MemoizedToolCard info={currentToolInfo} />;
+  }
+  return null;
+});
+
+function MessageListComponent() {
+  // Select only what we need with stable selectors
+  const activeSessionId = useStore((s) => s.activeSessionId);
+  const messages = useStore((s) => activeSessionId ? s.messages[activeSessionId] : null);
+  const streamingBuffer = useStore((s) => activeSessionId ? s.streamingBuffer[activeSessionId] : null);
+  const agentStatus = useStore((s) => activeSessionId ? s.agentStatus[activeSessionId] : null);
+  const pendingConfirms = useStore((s) => s.pendingConfirms);
+
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const lastScrollHeightRef = useRef<number>(0);
+
+  // Memoized values to avoid recalculation on every render
+  const messageList = useMemo(() => messages || [], [messages]);
+  const currentStreamingBuffer = useMemo(() => streamingBuffer || "", [streamingBuffer]);
+  const currentAgentStatus = useMemo(() => agentStatus || "idle", [agentStatus]);
+
+  // Determine if we should show the thinking indicator
+  const showThinkingIndicator = useMemo(() => {
+    if (currentAgentStatus !== "running") return false;
+    if (currentStreamingBuffer) return false;
+
+    const lastMsg = messageList[messageList.length - 1];
+    if (!lastMsg) return true;
+
+    if (lastMsg.role === "user") return true;
+
+    if (lastMsg.role === "tool") {
+      try {
+        const info = typeof lastMsg.tool_info === "string"
+          ? JSON.parse(lastMsg.tool_info)
+          : lastMsg.tool_info;
+        return info?.status === "success" || info?.status === "error";
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
+  }, [currentAgentStatus, currentStreamingBuffer, messageList]);
+
+  // Auto-scroll function - debounced and smarter
   const scrollToBottom = useCallback(() => {
-    // Find ScrollArea viewport - shadcn/ui's ScrollArea renders viewport with class "[data-radix-scroll-area-viewport]"
     const scrollAreaEl = scrollAreaRef.current;
     if (!scrollAreaEl) return;
 
     const viewport = scrollAreaEl.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
     if (viewport) {
-      viewport.scrollTop = viewport.scrollHeight;
+      const scrollHeight = viewport.scrollHeight;
+      const scrollTop = viewport.scrollTop;
+      const clientHeight = viewport.clientHeight;
+
+      // Only auto-scroll if user is already near the bottom
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+      // Or if content just grew (new message/streaming update)
+      const contentJustGrew = scrollHeight !== lastScrollHeightRef.current;
+
+      if (isNearBottom || contentJustGrew) {
+        viewport.scrollTop = scrollHeight;
+        lastScrollHeightRef.current = scrollHeight;
+      }
     }
   }, []);
 
-  // Scroll when active session changes (opening history)
+  // Scroll when active session changes
   useEffect(() => {
-    scrollToBottom();
+    if (activeSessionId) {
+      // Small delay to let content render first
+      const timer = setTimeout(() => {
+        scrollToBottom();
+        lastScrollHeightRef.current = 0;
+      }, 50);
+      return () => clearTimeout(timer);
+    }
   }, [activeSessionId, scrollToBottom]);
 
-  // Scroll when messages, streaming buffer, or thinking indicator change
+  // Scroll for new content - debounced
   useEffect(() => {
-    scrollToBottom();
-  }, [messages.length, streamingBuffer, showThinkingIndicator, scrollToBottom]);
+    const timer = setTimeout(scrollToBottom, 10);
+    return () => clearTimeout(timer);
+  }, [messageList.length, currentStreamingBuffer, showThinkingIndicator, scrollToBottom]);
 
   if (!activeSessionId) {
     return (
@@ -98,34 +206,20 @@ export function MessageList() {
   return (
     <ScrollArea className="flex-1 min-h-0 min-w-0" ref={scrollAreaRef}>
       <div className="mx-auto w-full max-w-6xl px-4 py-2 min-w-0">
-        {messages.map((msg) => {
-          if (msg.role === "user") {
-            return <UserMessage key={msg.id} content={msg.content} />;
-          }
-          if (msg.role === "assistant") {
-            return <AssistantMessage key={msg.id} content={msg.content} />;
-          }
-          if (msg.role === "tool") {
-            // Prefer latest state from pendingConfirms, fall back to stored tool_info
-            let info: ToolCallInfo | undefined;
-            if (msg.tool_call_id && pendingConfirms[msg.tool_call_id]) {
-              info = pendingConfirms[msg.tool_call_id];
-            } else {
-              info = parseToolInfo(msg);
-            }
-            if (info) {
-              return <ToolCard key={msg.id} info={info} />;
-            }
-          }
-          return null;
-        })}
+        {/* Render messages with memoized components */}
+        {messageList.map((msg) => (
+          <MessageItem key={msg.id} msg={msg} pendingConfirms={pendingConfirms} />
+        ))}
 
         {showThinkingIndicator && <ThinkingIndicator />}
 
-        {streamingBuffer && (
-          <AssistantMessage content={streamingBuffer} isStreaming />
+        {currentStreamingBuffer && (
+          <MemoizedAssistantMessage content={currentStreamingBuffer} isStreaming />
         )}
       </div>
     </ScrollArea>
   );
 }
+
+// Memoize the entire MessageList
+export const MessageList = memo(MessageListComponent);

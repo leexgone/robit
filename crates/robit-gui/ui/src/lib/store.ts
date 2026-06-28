@@ -57,6 +57,7 @@ interface AppStore {
   updateSessionTitle: (sessionId: string, title: string) => void;
 }
 
+// Create store with simplified implementation for zustand v5
 export const useStore = create<AppStore>((set, get) => ({
   sessions: [],
   activeSessionId: null,
@@ -73,27 +74,48 @@ export const useStore = create<AppStore>((set, get) => ({
   setActiveSession: (id) => set({ activeSessionId: id }),
 
   setMessages: (sessionId, messages) =>
-    set((state) => ({
-      messages: { ...state.messages, [sessionId]: messages },
-    })),
+    set((state) => {
+      // Check if messages actually changed to avoid unnecessary updates
+      const current = state.messages[sessionId];
+      if (current === messages) return {};
+      if (current && current.length === messages.length) {
+        let changed = false;
+        for (let i = 0; i < current.length; i++) {
+          if (current[i].id !== messages[i].id || current[i].content !== messages[i].content) {
+            changed = true;
+            break;
+          }
+        }
+        if (!changed) return {};
+      }
+      return {
+        messages: { ...state.messages, [sessionId]: messages },
+      };
+    }),
 
   appendStreaming: (sessionId, delta) =>
-    set((state) => ({
-      streamingBuffer: {
-        ...state.streamingBuffer,
-        [sessionId]: (state.streamingBuffer[sessionId] || "") + delta,
-      },
-    })),
+    set((state) => {
+      const current = state.streamingBuffer[sessionId] || "";
+      return {
+        streamingBuffer: {
+          ...state.streamingBuffer,
+          [sessionId]: current + delta,
+        },
+      };
+    }),
 
   commitStreaming: (sessionId) => {
-    const buffer = get().streamingBuffer[sessionId];
+    const state = get();
+    const buffer = state.streamingBuffer[sessionId];
     if (!buffer) return;
+
     const msg: MessageData = {
       id: Date.now(),
       role: "assistant",
       content: buffer,
       created_at: new Date().toISOString(),
     };
+
     set((state) => ({
       messages: {
         ...state.messages,
@@ -104,23 +126,36 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   clearStreaming: (sessionId) =>
-    set((state) => ({
-      streamingBuffer: { ...state.streamingBuffer, [sessionId]: "" },
-    })),
+    set((state) => {
+      if (!state.streamingBuffer[sessionId]) return {};
+      return {
+        streamingBuffer: { ...state.streamingBuffer, [sessionId]: "" },
+      };
+    }),
 
   setAgentStatus: (sessionId, status) =>
-    set((state) => ({
-      agentStatus: { ...state.agentStatus, [sessionId]: status },
-      sessions: state.sessions.map((s) =>
-        s.id === sessionId ? { ...s, status } : s
-      ),
-    })),
+    set((state) => {
+      const currentStatus = state.agentStatus[sessionId];
+      if (currentStatus === status) return {};
+
+      return {
+        agentStatus: { ...state.agentStatus, [sessionId]: status },
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, status } : s
+        ),
+      };
+    }),
 
   addToolCard: (sessionId, info) => {
     set((state) => {
       const currentToolCalls = state.toolCalls[sessionId] || [];
-      // Only add if not already in the list
       const hasToolCall = currentToolCalls.includes(info.tool_call_id);
+
+      if (hasToolCall && state.pendingConfirms[info.tool_call_id]) {
+        // Already exists and pending, no change needed
+        return {};
+      }
+
       return {
         pendingConfirms: {
           ...state.pendingConfirms,
@@ -135,19 +170,35 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   updateToolCard: (_sessionId, toolCallId, updates) => {
-    set((state) => ({
-      pendingConfirms: {
-        ...state.pendingConfirms,
-        [toolCallId]: {
-          ...state.pendingConfirms[toolCallId],
-          ...updates,
+    set((state) => {
+      const current = state.pendingConfirms[toolCallId];
+      if (!current) return {};
+
+      // Check if any updates actually changed
+      let hasChange = false;
+      for (const key in updates) {
+        if (current[key as keyof ToolCallInfo] !== updates[key as keyof ToolCallInfo]) {
+          hasChange = true;
+          break;
+        }
+      }
+      if (!hasChange) return {};
+
+      return {
+        pendingConfirms: {
+          ...state.pendingConfirms,
+          [toolCallId]: {
+            ...current,
+            ...updates,
+          },
         },
-      },
-    }));
+      };
+    });
   },
 
   removeToolCard: (_sessionId, toolCallId) => {
     set((state) => {
+      if (!state.pendingConfirms[toolCallId]) return {};
       const next = { ...state.pendingConfirms };
       delete next[toolCallId];
       return { pendingConfirms: next };
