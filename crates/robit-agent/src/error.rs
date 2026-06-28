@@ -8,6 +8,9 @@ pub enum AgentError {
     #[error(transparent)]
     LlmError(#[from] robit_ai::LlmError),
 
+    #[error(transparent)]
+    DbError(#[from] rusqlite::Error),
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
 

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use robit_agent::event::FrontendMessage;
+use robit_agent::event::{FrontendMessage, SessionId};
 use robit_agent::frontend::Frontend;
 use robit_agent::storage::{self, resolve_db_path};
 use robit_agent::tool::ToolCallInfo;
@@ -159,8 +159,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         let confirmer = Arc::new(confirmer);
 
         // Open and initialize the database.
-        let db_path = resolve_db_path(&working_dir, global_storage)
-            .map_err(ManagerError::DbPath)?;
+        let db_path = resolve_db_path(&working_dir, global_storage)?;
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -338,7 +337,16 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 
         let (message_tx, message_rx) = mpsc::channel::<FrontendMessage>(16);
 
-        let agent = Agent::new(
+        // Load historical messages from database
+        let db = self.db.lock().await;
+        let history_messages = robit_agent::storage::load_chat_messages(&db, session_id)
+            .unwrap_or_default();
+        drop(db);
+
+        // Parse session_id string to SessionId
+        let session_id_obj = SessionId::from(session_id.to_string());
+
+        let agent = Agent::with_history(
             Arc::clone(&self.llm_client),
             Arc::clone(&self.tool_registry),
             Arc::clone(&self.skill_registry),
@@ -356,6 +364,8 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                 );
                 exts
             },
+            session_id_obj,
+            history_messages,
         );
 
         let sid = session_id.to_string();
@@ -378,7 +388,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 #[derive(Debug, thiserror::Error)]
 pub enum ManagerError {
     #[error("Failed to resolve DB path: {0}")]
-    DbPath(String),
+    DbPath(#[from] robit_agent::AgentError),
     #[error("Failed to open database: {0}")]
     DbOpen(#[from] rusqlite::Error),
     #[error("Failed to initialize database: {0}")]

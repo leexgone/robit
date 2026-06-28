@@ -6,9 +6,9 @@ use tokio::sync::Mutex;
 use robit_agent::agent::Agent;
 use robit_agent::event::{FrontendMessage, SessionId};
 use robit_agent::skill::SkillRegistry;
-use robit_agent::storage::resolve_db_path;
+use robit_agent::storage::{resolve_db_path, load_chat_messages};
 use robit_agent::tool::ToolRegistry;
-use robit_agent::{bootstrap, log_skill_errors};
+use robit_agent::{bootstrap, log_skill_errors, AgentError};
 use robit_ai::config::RobitConfig;
 use robit_ai::LlmClient;
 use rusqlite::Connection;
@@ -122,7 +122,8 @@ impl AppState {
         // Resolve and validate working directory
         let working_dir = resolve_working_dir(working_dir)?;
         let global_storage = should_use_global_storage(&config, cli_global_storage);
-        let db_path = resolve_db_path(&working_dir, global_storage)?;
+        let db_path = resolve_db_path(&working_dir, global_storage)
+            .map_err(|e| e.to_string())?;
 
         // Ensure parent directory exists
         if let Some(parent) = db_path.parent() {
@@ -236,6 +237,11 @@ impl AppState {
             auto_approve,
         });
 
+        // Load history messages from database
+        let db = self.db.lock().await;
+        let history_messages = load_chat_messages(&db, session_id).unwrap_or_default();
+        drop(db);
+
         let working_dir = self.working_dir.clone();
         let auto_approve = self.auto_approve;
         let llm_client = Arc::clone(&self.llm_client);
@@ -243,7 +249,10 @@ impl AppState {
         let skills = Arc::clone(&self.skill_registry);
         let context_window = self.context_window;
 
-        let agent = Agent::new(
+        // Parse session_id string to SessionId
+        let session_id_obj = SessionId::from(session_id.to_string());
+
+        let agent = Agent::with_history(
             llm_client,
             tools,
             skills,
@@ -253,6 +262,8 @@ impl AppState {
             working_dir,
             auto_approve,
             std::collections::HashMap::new(),
+            session_id_obj,
+            history_messages,
         );
 
         let cancel_token = CancellationToken::new();

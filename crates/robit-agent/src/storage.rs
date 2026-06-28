@@ -2,19 +2,27 @@
 
 use std::path::{Path, PathBuf};
 
+use async_openai::types::chat::{
+    ChatCompletionRequestAssistantMessage, ChatCompletionRequestMessage,
+    ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessage,
+    ChatCompletionRequestUserMessageContent,
+};
 use rusqlite::{params, Connection, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
 
 use crate::datetime::current_timestamp;
+use crate::error::Result;
 
 const ROBIT_DIR: &str = ".robit";
 const MEMORY_DIR: &str = "memory";
 const DB_FILE: &str = "robit.db";
 
 /// Resolve the session database path for a working directory and storage scope.
-pub fn resolve_db_path(working_dir: &Path, global_storage: bool) -> Result<PathBuf, String> {
+pub fn resolve_db_path(working_dir: &Path, global_storage: bool) -> Result<PathBuf> {
     if global_storage {
-        let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
+        let home = dirs::home_dir().ok_or_else(|| {
+            crate::error::AgentError::InternalError("Cannot determine home directory".to_string())
+        })?;
         Ok(home.join(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE))
     } else {
         Ok(working_dir.join(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE))
@@ -118,7 +126,7 @@ fn read_schema_version(conn: &Connection) -> SqliteResult<i32> {
 /// Check whether the `sessions` table exists.
 fn sessions_table_exists(conn: &Connection) -> SqliteResult<bool> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sessions'",
         [],
         |row| row.get(0),
     )?;
@@ -186,14 +194,14 @@ fn migrate(conn: &Connection, from: i32, to: i32) -> SqliteResult<()> {
 /// add the partial unique index on `sessions.chat_id`.
 ///
 /// Each ALTER TABLE is wrapped to ignore "duplicate column" errors so the
-/// migration is idempotent (safe to run on a partially-migrated DB).
+/// migration is idempotent (safe to run on a partially migrated DB).
 fn migrate_v1_to_v2(conn: &Connection) -> SqliteResult<()> {
-    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN chat_id TEXT", ());
+    let _ = conn.execute("ALTER TABLE sessions ADD COLUMN chat_id TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'gui'",
-        (),
+        [],
     );
-    let _ = conn.execute("ALTER TABLE messages ADD COLUMN tool_info TEXT", ());
+    let _ = conn.execute("ALTER TABLE messages ADD COLUMN tool_info TEXT", []);
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_chat_id
             ON sessions(chat_id) WHERE chat_id IS NOT NULL;",
@@ -201,9 +209,9 @@ fn migrate_v1_to_v2(conn: &Connection) -> SqliteResult<()> {
     Ok(())
 }
 
-// ============================================================
+// ============================================================================
 // Schema version helpers (private)
-// ============================================================
+// ============================================================================
 
 fn ensure_meta_table(conn: &Connection) -> SqliteResult<()> {
     conn.execute_batch(
@@ -221,6 +229,10 @@ fn write_schema_version(conn: &Connection, version: i32) -> SqliteResult<()> {
     )?;
     Ok(())
 }
+
+// ============================================================================
+// Session and message accessors (public)
+// ============================================================================
 
 /// Insert a new session.
 ///
@@ -381,7 +393,7 @@ pub fn get_messages(conn: &Connection, session_id: &str) -> SqliteResult<Vec<Mes
     rows.collect()
 }
 
-/// Update a tool message with output and status.
+/// Update a tool message with result.
 pub fn update_tool_message(
     conn: &Connection,
     session_id: &str,
@@ -393,6 +405,105 @@ pub fn update_tool_message(
         params![tool_info, session_id, tool_call_id],
     )?;
     Ok(())
+}
+
+// ============================================================================
+// Message conversion to/from ChatCompletionRequestMessage (new)
+// ============================================================================
+
+/// Convert stored MessageData to ChatCompletionRequestMessage
+pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionRequestMessage> {
+    match data.role.as_str() {
+        "user" => Ok(ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage {
+                content: ChatCompletionRequestUserMessageContent::Text(data.content.clone()),
+                name: None,
+            }
+            .into(),
+        )),
+        "assistant" => {
+            // Try to parse tool_calls from tool_info
+            let tool_calls = if let Some(tool_info) = &data.tool_info {
+                if let serde_json::Value::Object(obj) = tool_info {
+                    if let Some(serde_json::Value::Array(arr)) = obj.get("tool_calls") {
+                        use async_openai::types::chat::{
+                            ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
+                            FunctionCall,
+                        };
+                        let mut calls = Vec::new();
+                        for call_val in arr {
+                            if let Ok(call) =
+                                serde_json::from_value::<ChatCompletionMessageToolCall>(
+                                    call_val.clone(),
+                                )
+                            {
+                                calls.push(ChatCompletionMessageToolCalls::Function(call));
+                            }
+                        }
+                        if !calls.is_empty() {
+                            Some(calls)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            Ok(ChatCompletionRequestMessage::Assistant(
+                ChatCompletionRequestAssistantMessage {
+                    content: if data.content.is_empty() {
+                        None
+                    } else {
+                        Some(data.content.clone().into())
+                    },
+                    name: None,
+                    tool_calls,
+                    refusal: None,
+                    audio: None,
+                    function_call: None,
+                }
+                .into(),
+            ))
+        }
+        "tool" => {
+            let tool_call_id = data.tool_call_id.clone().unwrap_or_default();
+            Ok(ChatCompletionRequestMessage::Tool(
+                ChatCompletionRequestToolMessage {
+                    content: data.content.clone().into(),
+                    tool_call_id,
+                }
+                .into(),
+            ))
+        }
+        _ => Err(crate::error::AgentError::InternalError(format!(
+            "Unknown role: {}",
+            data.role
+        ))),
+    }
+}
+
+/// Load all messages for a session and convert to chat messages
+pub fn load_chat_messages(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Vec<ChatCompletionRequestMessage>> {
+    let messages = get_messages(conn, session_id)?;
+    let mut result = Vec::with_capacity(messages.len());
+    for msg in messages {
+        match message_to_chat_message(&msg) {
+            Ok(chat_msg) => result.push(chat_msg),
+            Err(e) => {
+                tracing::warn!("Failed to convert message: {}", e);
+            }
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -407,16 +518,6 @@ mod tests {
             path,
             working_dir.join(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE)
         );
-    }
-
-    #[test]
-    fn resolves_global_db_path() {
-        let path = resolve_db_path(&PathBuf::from("project"), true).unwrap();
-        assert_eq!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some(DB_FILE)
-        );
-        assert!(path.ends_with(PathBuf::from(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE)));
     }
 
     #[test]

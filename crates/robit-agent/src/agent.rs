@@ -58,6 +58,33 @@ impl AgentSession {
             working_dir,
         }
     }
+
+    /// Create session with pre-loaded history
+    pub fn with_history(
+        session_id: SessionId,
+        working_dir: PathBuf,
+        system_prompt: String,
+        history: Vec<ChatCompletionRequestMessage>,
+    ) -> Self {
+        // Create system message (new one with latest config)
+        let system_msg = ChatCompletionRequestMessage::System(
+            ChatCompletionRequestSystemMessage {
+                content: system_prompt.into(),
+                name: None,
+            }
+            .into(),
+        );
+
+        // Prepend new system message to history
+        let mut full_history = vec![system_msg];
+        full_history.extend(history);
+
+        Self {
+            session_id,
+            history: full_history,
+            working_dir,
+        }
+    }
 }
 
 // ============================================================================
@@ -102,6 +129,55 @@ impl Agent {
         // Create default session
         let session_id = new_session_id();
         let session = AgentSession::new(session_id.clone(), working_dir, system_prompt);
+
+        let mut sessions = HashMap::new();
+        sessions.insert(session_id.clone(), session);
+
+        Self {
+            llm_client,
+            tools,
+            skills,
+            sessions,
+            default_session_id: session_id,
+            context_manager,
+            frontend,
+            auto_approve,
+            extensions,
+        }
+    }
+
+    /// Create Agent with pre-loaded history (for resuming sessions)
+    pub fn with_history(
+        llm_client: Arc<LlmClient>,
+        tools: Arc<ToolRegistry>,
+        skills: Arc<SkillRegistry>,
+        frontend: Arc<dyn Frontend>,
+        context_config: Option<&ContextConfig>,
+        context_window: Option<u64>,
+        working_dir: PathBuf,
+        auto_approve: bool,
+        extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
+        session_id: SessionId,
+        history: Vec<ChatCompletionRequestMessage>,
+    ) -> Self {
+        let prompt_builder = PromptBuilder::with_working_dir(Some(&working_dir));
+        let context_manager = ContextManager::new(context_window, context_config);
+
+        // Build system prompt with tools AND skills
+        let tool_refs: Vec<&dyn crate::tool::Tool> = tools.tools();
+        let skill_descs = skills.skill_descriptions();
+        let system_prompt = prompt_builder.build_system_prompt(&tool_refs, &skill_descs, &working_dir);
+
+        // Create session with history
+        let mut session = AgentSession::with_history(
+            session_id.clone(),
+            working_dir,
+            system_prompt,
+            history,
+        );
+
+        // Apply context truncation before starting
+        let _truncation_result = context_manager.maybe_truncate(&mut session.history);
 
         let mut sessions = HashMap::new();
         sessions.insert(session_id.clone(), session);

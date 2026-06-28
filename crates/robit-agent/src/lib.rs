@@ -26,5 +26,6 @@ pub use event::{AgentEvent, FrontendMessage, MediaAttachment, SessionId};
 pub use media::{download_and_encode_base64, download_media, MediaError};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
 pub use skill::{Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
+pub use storage::{load_chat_messages, message_to_chat_message};
 pub use tool::load_skill::LoadSkillTool;
 pub use tool::{Tool, ToolCallInfo, ToolContext, ToolRegistry, ToolResult};
