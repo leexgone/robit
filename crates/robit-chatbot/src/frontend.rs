@@ -381,7 +381,21 @@ mod tests {
 
     fn make_frontend(sender: Arc<dyn PlatformSender>, auto_approve: bool) -> ChatbotFrontend {
         let confirmer = Arc::new(Confirmer::new(sender.clone(), std::time::Duration::from_secs(60)));
-        ChatbotFrontend::new("group:1".to_string(), sender, confirmer, auto_approve)
+        // 创建一个内存中的 SQLite 连接用于测试
+        let db = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+        // 初始化数据库 schema
+        {
+            let db = db.blocking_lock();
+            robit_agent::storage::init_db(&db).unwrap();
+        }
+        ChatbotFrontend::new(
+            "group:1".to_string(),
+            "test-session-1".to_string(),
+            sender,
+            confirmer,
+            db,
+            auto_approve
+        )
     }
 
     #[tokio::test]
