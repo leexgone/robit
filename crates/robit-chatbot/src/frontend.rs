@@ -62,10 +62,14 @@ pub trait PlatformExt: Send + Sync {
 pub struct ChatbotFrontend {
     /// The chat this frontend belongs to (`group:{id}` or `private:{id}`).
     pub chat_id: String,
+    /// The session ID for database storage.
+    pub session_id: String,
     /// Platform message sender (shared across all frontends).
     pub platform_sender: Arc<dyn PlatformSender>,
     /// Tool confirmation coordinator (shared).
     pub confirmer: Arc<Confirmer>,
+    /// Database connection for persisting messages.
+    pub db: Arc<Mutex<rusqlite::Connection>>,
     /// Buffer to accumulate text until TurnComplete.
     pub buffer: Mutex<String>,
     /// ID of the last message sent (for edit-based updates, e.g., replacing a
@@ -81,18 +85,62 @@ impl ChatbotFrontend {
     /// Create a new `ChatbotFrontend` for `chat_id`.
     pub fn new(
         chat_id: String,
+        session_id: String,
         platform_sender: Arc<dyn PlatformSender>,
         confirmer: Arc<Confirmer>,
+        db: Arc<Mutex<rusqlite::Connection>>,
         auto_approve: bool,
     ) -> Self {
         Self {
             chat_id,
+            session_id,
             platform_sender,
             confirmer,
+            db,
             buffer: Mutex::new(String::new()),
             last_msg_id: Mutex::new(None),
             progress_hint_sent: Mutex::new(false),
             auto_approve,
+        }
+    }
+
+    /// Save an assistant message to the database.
+    async fn save_assistant_message(&self, content: &str) {
+        let db = self.db.lock().await;
+        match robit_agent::storage::insert_message(
+            &db,
+            &self.session_id,
+            "assistant",
+            content,
+            None,
+            None,
+            None,
+        ) {
+            Ok(_) => {
+                tracing::debug!("Saved assistant message to DB: session_id={}", self.session_id);
+                let _ = robit_agent::storage::touch_session(&db, &self.session_id);
+            }
+            Err(e) => tracing::warn!("Failed to save assistant message: {}", e),
+        }
+    }
+
+    /// Save a user message to the database (called from manager).
+    pub async fn save_user_message(&self, content: &str) {
+        let db = self.db.lock().await;
+        match robit_agent::storage::insert_message(
+            &db,
+            &self.session_id,
+            "user",
+            content,
+            None,
+            None,
+            None,
+        ) {
+            Ok(_) => {
+                tracing::debug!("Saved user message to DB: session_id={}", self.session_id);
+                let _ = robit_agent::storage::touch_session(&db, &self.session_id);
+            }
+            Err(e) => tracing::warn!("Failed to save user message: {}", e),
         }
     }
 
@@ -104,7 +152,7 @@ impl ChatbotFrontend {
         buffer.push_str(delta);
     }
 
-    /// Flush the buffer: take all accumulated text, sanitize it, and send it.
+    /// Flush the buffer: take all accumulated text, sanitize it, send it, and save to DB.
     /// This ensures Markdown is parsed as a whole and we only send once per turn.
     async fn flush_buffer(&self) {
         let mut buffer = self.buffer.lock().await;
@@ -119,7 +167,7 @@ impl ChatbotFrontend {
         let prepared = if caps.supports_markdown {
             prepare_markdown_for_platform(&text, &caps.markdown_features)
         } else {
-            text
+            text.clone()
         };
         let prepared = truncate_to_max(&prepared, caps.max_message_length);
 
@@ -139,6 +187,11 @@ impl ChatbotFrontend {
             if let Ok(res) = self.platform_sender.send(&self.chat_id, &prepared).await {
                 *last_msg_id = Some(res.msg_id);
             }
+        }
+
+        // Save the original (un-truncated) message to database
+        if !text.is_empty() {
+            self.save_assistant_message(&text).await;
         }
     }
 

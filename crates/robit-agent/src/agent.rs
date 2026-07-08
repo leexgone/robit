@@ -160,6 +160,23 @@ impl Agent {
         session_id: SessionId,
         history: Vec<ChatCompletionRequestMessage>,
     ) -> Self {
+        tracing::info!(
+            "Agent::with_history: session_id={}, received {} history messages",
+            session_id,
+            history.len()
+        );
+        for (idx, msg) in history.iter().enumerate() {
+            let role = match msg {
+                ChatCompletionRequestMessage::System(_) => "system",
+                ChatCompletionRequestMessage::User(_) => "user",
+                ChatCompletionRequestMessage::Assistant(_) => "assistant",
+                ChatCompletionRequestMessage::Tool(_) => "tool",
+                ChatCompletionRequestMessage::Developer(_) => "developer",
+                ChatCompletionRequestMessage::Function(_) => "function",
+            };
+            tracing::debug!("  History message {}: role={}", idx, role);
+        }
+
         let prompt_builder = PromptBuilder::with_working_dir(Some(&working_dir));
         let context_manager = ContextManager::new(context_window, context_config);
 
@@ -176,8 +193,36 @@ impl Agent {
             history,
         );
 
+        tracing::info!(
+            "Agent::with_history: after adding system prompt, session history length = {}",
+            session.history.len()
+        );
+        for (idx, msg) in session.history.iter().enumerate() {
+            let role = match msg {
+                ChatCompletionRequestMessage::System(_) => "system",
+                ChatCompletionRequestMessage::User(_) => "user",
+                ChatCompletionRequestMessage::Assistant(_) => "assistant",
+                ChatCompletionRequestMessage::Tool(_) => "tool",
+                ChatCompletionRequestMessage::Developer(_) => "developer",
+                ChatCompletionRequestMessage::Function(_) => "function",
+            };
+            tracing::debug!("  Session history {}: role={}", idx, role);
+        }
+
         // Apply context truncation before starting
-        let _truncation_result = context_manager.maybe_truncate(&mut session.history);
+        let truncation_result = context_manager.maybe_truncate(&mut session.history);
+        if truncation_result.rounds_removed > 0 {
+            tracing::info!(
+                "Agent::with_history: truncated {} rounds ({} messages), needs_compression={}",
+                truncation_result.rounds_removed,
+                truncation_result.messages_removed,
+                truncation_result.needs_compression
+            );
+        }
+        tracing::debug!(
+            "Agent::with_history: after truncation, session history length = {}",
+            session.history.len()
+        );
 
         let mut sessions = HashMap::new();
         sessions.insert(session_id.clone(), session);

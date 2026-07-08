@@ -481,6 +481,7 @@ pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionReque
                 .into(),
             ))
         }
+        // Ignore other roles for now (system is regenerated)
         _ => Err(crate::error::AgentError::InternalError(format!(
             "Unknown role: {}",
             data.role
@@ -494,15 +495,30 @@ pub fn load_chat_messages(
     session_id: &str,
 ) -> Result<Vec<ChatCompletionRequestMessage>> {
     let messages = get_messages(conn, session_id)?;
+    tracing::debug!(
+        "load_chat_messages: session_id={}, loaded {} messages from DB",
+        session_id,
+        messages.len()
+    );
+
     let mut result = Vec::with_capacity(messages.len());
-    for msg in messages {
+    for (idx, msg) in messages.iter().enumerate() {
         match message_to_chat_message(&msg) {
-            Ok(chat_msg) => result.push(chat_msg),
+            Ok(chat_msg) => {
+                tracing::debug!(
+                    "  Message {}: role={}, content_len={}",
+                    idx,
+                    msg.role,
+                    msg.content.len()
+                );
+                result.push(chat_msg);
+            }
             Err(e) => {
-                tracing::warn!("Failed to convert message: {}", e);
+                tracing::warn!("Failed to convert message {}: {}", idx, e);
             }
         }
     }
+    tracing::debug!("load_chat_messages: successfully converted {} messages", result.len());
     Ok(result)
 }
 

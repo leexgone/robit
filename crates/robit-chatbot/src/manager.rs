@@ -39,6 +39,8 @@ pub struct AgentHandle {
     pub message_tx: mpsc::Sender<FrontendMessage>,
     pub session_id: String,
     pub last_active_at: Instant,
+    /// Frontend reference for saving user messages.
+    pub frontend: Arc<ChatbotFrontend>,
 }
 
 /// Bridge from a concrete `PlatformAdapter` to the platform-agnostic
@@ -248,7 +250,10 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 
         // Normal message → route to (or create) the chat's Agent session.
         match self.get_or_create_session(&chat_id, &msg.text).await {
-            Ok(tx) => {
+            Ok((tx, frontend)) => {
+                // Save user message to database
+                frontend.save_user_message(&msg.text).await;
+
                 if let Err(e) = tx
                     .send(robit_agent::event::FrontendMessage::UserInput {
                         text: msg.text,
@@ -274,22 +279,25 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         &self,
         chat_id: &str,
         first_message: &str,
-    ) -> Result<mpsc::Sender<FrontendMessage>, AgentError> {
+    ) -> Result<(mpsc::Sender<FrontendMessage>, Arc<ChatbotFrontend>), AgentError> {
         let mut agents = self.agents.lock().await;
         if let Some(handle) = agents.get_mut(chat_id) {
             handle.last_active_at = Instant::now();
-            return Ok(handle.message_tx.clone());
+            tracing::debug!("get_or_create_session: found active agent in memory for chat_id={}, session_id={}", chat_id, handle.session_id);
+            return Ok((handle.message_tx.clone(), handle.frontend.clone()));
         }
         drop(agents);
 
-        // No active Agent. Check the DB for a persisted session (we still spawn
-        // a fresh Agent — history restoration is a future enhancement).
+        // No active Agent. Check the DB for a persisted session.
         let session_id = {
             let db = self.db.lock().await;
             match storage::find_session_by_chat_id(&db, chat_id)
                 .map_err(|e| AgentError::InternalError(format!("DB lookup failed: {}", e)))?
             {
-                Some(info) => info.id,
+                Some(info) => {
+                    tracing::info!("get_or_create_session: found existing session in DB for chat_id={}, session_id={}, title={}", chat_id, info.id, info.title);
+                    info.id
+                }
                 None => {
                     // Create a new DB session record.
                     let id = Uuid::new_v4().to_string();
@@ -299,6 +307,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                         .default_model
                         .clone()
                         .unwrap_or_else(|| self.llm_client.model().to_string());
+                    tracing::info!("get_or_create_session: creating new session in DB for chat_id={}, session_id={}, title={}", chat_id, id, title);
                     storage::insert_session(&db, &id, Some(chat_id), &title, &model, "qq")
                         .map_err(|e| {
                             AgentError::InternalError(format!("DB insert failed: {}", e))
@@ -308,7 +317,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             }
         };
 
-        let tx = self.spawn_session_agent(chat_id, &session_id).await?;
+        let (tx, frontend) = self.spawn_session_agent(chat_id, &session_id).await?;
 
         let mut agents = self.agents.lock().await;
         agents.insert(
@@ -317,9 +326,10 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                 message_tx: tx.clone(),
                 session_id,
                 last_active_at: Instant::now(),
+                frontend: frontend.clone(),
             },
         );
-        Ok(tx)
+        Ok((tx, frontend))
     }
 
     /// Create a `ChatbotFrontend` + `Agent` for a chat and spawn its loop.
@@ -327,25 +337,33 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         &self,
         chat_id: &str,
         session_id: &str,
-    ) -> Result<mpsc::Sender<FrontendMessage>, AgentError> {
+    ) -> Result<(mpsc::Sender<FrontendMessage>, Arc<ChatbotFrontend>), AgentError> {
+        tracing::info!("spawn_session_agent: chat_id={}, session_id={}", chat_id, session_id);
+
         let frontend = Arc::new(ChatbotFrontend::new(
             chat_id.to_string(),
+            session_id.to_string(),
             Arc::clone(&self.platform_sender),
             Arc::clone(&self.confirmer),
+            Arc::clone(&self.db),
             self.auto_approve,
         ));
 
         let (message_tx, message_rx) = mpsc::channel::<FrontendMessage>(16);
 
         // Load historical messages from database
+        tracing::debug!("spawn_session_agent: loading history messages from DB...");
         let db = self.db.lock().await;
         let history_messages = robit_agent::storage::load_chat_messages(&db, session_id)
             .unwrap_or_default();
         drop(db);
 
+        tracing::info!("spawn_session_agent: loaded {} history messages", history_messages.len());
+
         // Parse session_id string to SessionId
         let session_id_obj = SessionId::from(session_id.to_string());
 
+        tracing::debug!("spawn_session_agent: creating Agent with history...");
         let agent = Agent::with_history(
             Arc::clone(&self.llm_client),
             Arc::clone(&self.tool_registry),
@@ -375,7 +393,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             tracing::info!("Agent task ended for chat {} (session {})", cid, sid);
         });
 
-        Ok(message_tx)
+        Ok((message_tx, frontend))
     }
 
     /// Number of currently active Agent sessions (for diagnostics / tests).
