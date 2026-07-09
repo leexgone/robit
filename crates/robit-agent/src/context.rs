@@ -83,28 +83,61 @@ pub fn truncate_output(content: &str, max_lines: usize, max_bytes: usize) -> Str
 // ============================================================================
 
 /// Estimate token count for a string.
-/// Uses a simple heuristic: ~4 chars per English token, ~2 chars per Chinese token.
-/// For mixed content, we use ~3 chars per token as a rough estimate.
+///
+/// Uses a more nuanced heuristic based on character type:
+/// - ASCII letters/digits: ~3.5 chars/token (BPE tokenizer average)
+/// - CJK characters: ~1.5 chars/token (most CJK chars are 1-2 tokens each)
+/// - Whitespace: minimal token cost (usually merged with adjacent tokens)
+/// - Punctuation/symbols: ~1 token per char (often individual tokens)
+/// - Code (braces, operators): ~1 token per char
+///
+/// This is still an estimate; apply `token_safety_margin` at the message level.
 pub fn estimate_tokens(text: &str) -> usize {
-    let char_count = text.chars().count();
-    // Count CJK characters (rough heuristic)
-    let cjk_count = text
-        .chars()
-        .filter(|c| {
-            let cp = *c as u32;
+    if text.is_empty() {
+        return 0;
+    }
+
+    let mut ascii_alnum = 0usize;
+    let mut cjk = 0usize;
+    let mut whitespace = 0usize;
+    let mut other = 0usize; // punctuation, symbols, code characters
+
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            whitespace += 1;
+        } else if ch.is_ascii_alphanumeric() {
+            ascii_alnum += 1;
+        } else {
+            let cp = ch as u32;
             // CJK Unified Ideographs + extensions + fullwidth forms
-            (0x4E00..=0x9FFF).contains(&cp)
+            // + Hiragana, Katakana, Hangul, CJK punctuation
+            if (0x4E00..=0x9FFF).contains(&cp)
                 || (0x3400..=0x4DBF).contains(&cp)
                 || (0xF900..=0xFAFF).contains(&cp)
                 || (0xFF00..=0xFFEF).contains(&cp)
-        })
-        .count();
+                || (0x3000..=0x303F).contains(&cp)
+                || (0x3040..=0x309F).contains(&cp)
+                || (0x30A0..=0x30FF).contains(&cp)
+                || (0xAC00..=0xD7AF).contains(&cp)
+            {
+                cjk += 1;
+            } else {
+                other += 1;
+            }
+        }
+    }
 
-    let non_cjk = char_count.saturating_sub(cjk_count);
-    let cjk_tokens = cjk_count / 2;
-    let non_cjk_tokens = non_cjk / 4;
+    // BPE tokenizer averages:
+    // - ASCII alphanumeric: ~3.5 chars per token
+    // - CJK: ~1.5 chars per token (most are 1 token each, some pairs)
+    // - Whitespace: negligible (merged with adjacent tokens)
+    // - Other (punctuation/code): ~1 char per token
+    let ascii_tokens = (ascii_alnum as f64 / 3.5).ceil() as usize;
+    let cjk_tokens = (cjk as f64 / 1.5).ceil() as usize;
+    let whitespace_tokens = (whitespace as f64 / 10.0).ceil() as usize;
+    let other_tokens = other; // ~1:1
 
-    cjk_tokens + non_cjk_tokens
+    ascii_tokens + cjk_tokens + whitespace_tokens + other_tokens
 }
 
 /// Estimate tokens for a list of messages.
@@ -118,11 +151,17 @@ pub fn estimate_messages_tokens(messages: &[ChatCompletionRequestMessage]) -> us
     total
 }
 
+/// Estimate tokens for messages, applying the configured safety margin.
+pub fn estimate_messages_tokens_with_margin(
+    messages: &[ChatCompletionRequestMessage],
+    safety_margin: f32,
+) -> usize {
+    let raw = estimate_messages_tokens(messages);
+    (raw as f32 * safety_margin).ceil() as usize
+}
+
 /// Estimate tokens for a single message's content.
 fn estimate_message_content_tokens(msg: &ChatCompletionRequestMessage) -> usize {
-    // We need to extract the text content from the message.
-    // Since ChatCompletionRequestMessage is an enum, we match on variants.
-    // For simplicity, serialize to JSON and estimate from the string.
     match serde_json::to_string(msg) {
         Ok(json) => estimate_tokens(&json),
         Err(_) => 0,
