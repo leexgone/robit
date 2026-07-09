@@ -7,7 +7,7 @@ This repository is a Rust monorepo focused on personal automation, programming a
 ## Features
 
 - **Unified LLM configuration**: Connect to OpenAI-compatible providers such as DeepSeek and QWen.
-- **Agent runtime**: Event-driven loop with streaming output, tool calls, user confirmation, and context management.
+- **Agent runtime**: Event-driven loop with streaming output, tool calls, user confirmation, and layered context management (output truncation → history truncation with early trigger + recent-round protection → LLM summary compression).
 - **Terminal frontend**: The `robit` TUI is built with `ratatui` and `crossterm`, and supports Windows, Linux, and macOS.
 - **Desktop GUI**: `robit-gui` is built with Tauri v2 and React for a native desktop experience.
 - **Multi-session Bot framework**: `robit-chatbot` provides platform-agnostic Bot infrastructure with independent Agent sessions per chat.
@@ -149,6 +149,12 @@ global_storage = false  # true stores GUI sessions in ~/.robit/memory/robit.db
 max_output_lines = 500
 max_output_bytes = 51200
 reserve_ratio = 0.2
+truncation_ratio = 0.7
+min_keep_rounds = 3
+token_safety_margin = 1.3
+compression_enabled = true
+compression_token_threshold = 5000
+max_tool_calls_per_turn = 30
 
 # QQ Bot configuration (required when using robit-qq)
 [channels.qq_bot]
