@@ -192,6 +192,8 @@ pub struct ContextManager {
     pub compression_token_threshold: usize,
     /// Whether compression is enabled.
     pub compression_enabled: bool,
+    /// Maximum tool calls per turn (default 30).
+    pub max_tool_calls_per_turn: usize,
 }
 
 impl ContextManager {
@@ -207,6 +209,7 @@ impl ContextManager {
             token_safety_margin,
             compression_token_threshold,
             compression_enabled,
+            max_tool_calls_per_turn,
         ) = match config {
             Some(c) => (
                 c.max_output_lines.unwrap_or(500),
@@ -217,8 +220,9 @@ impl ContextManager {
                 c.token_safety_margin.unwrap_or(1.3),
                 c.compression_token_threshold.unwrap_or(5000),
                 c.compression_enabled.unwrap_or(true),
+                c.max_tool_calls_per_turn.unwrap_or(30),
             ),
-            None => (500, 51200, 0.2, 0.7, 3, 1.3, 5000, true),
+            None => (500, 51200, 0.2, 0.7, 3, 1.3, 5000, true, 30),
         };
 
         Self {
@@ -231,6 +235,7 @@ impl ContextManager {
             max_output_bytes,
             compression_token_threshold,
             compression_enabled,
+            max_tool_calls_per_turn,
         }
     }
 
@@ -543,6 +548,7 @@ mod tests {
             token_safety_margin: Some(1.3),
             compression_token_threshold: Some(5000),
             compression_enabled: Some(true),
+            max_tool_calls_per_turn: Some(30),
         }
     }
 

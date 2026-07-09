@@ -117,6 +117,9 @@ pub struct ContextConfig {
     pub compression_token_threshold: Option<usize>,
     /// Enable/disable context compression (default true).
     pub compression_enabled: Option<bool>,
+    /// Maximum tool calls allowed per turn before forcing early termination (default 30).
+    /// Prevents a single user turn from exploding the context with excessive tool calls.
+    pub max_tool_calls_per_turn: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
