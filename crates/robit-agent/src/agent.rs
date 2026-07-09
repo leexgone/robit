@@ -342,13 +342,24 @@ impl Agent {
         // Truncate context if needed
         let truncation_result = self.context_manager.maybe_truncate(&mut session.history);
 
-        // Handle async compression if needed (logging only;
-        // maybe_truncate already inserted the appropriate notice).
+        // Handle compression: generate actual summary via LLM
         if truncation_result.needs_compression {
+            let summary = generate_summary(&self.llm_client, &truncation_result.removed_messages).await;
+
+            // Replace the placeholder notice with the actual summary
+            if let Some(msg) = session.history.get_mut(truncation_result.insert_position) {
+                let notice = format!("[Earlier conversation summary: {}]", summary);
+                *msg = ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessage {
+                        content: notice.into(),
+                        name: Some("system_notice".to_string()),
+                    }
+                );
+            }
+
             tracing::info!(
-                "Compression triggered: removed {} tokens (threshold: {}). Async summary generation not yet implemented.",
+                "Compression completed: removed {} tokens, summary inserted",
                 crate::context::estimate_messages_tokens(&truncation_result.removed_messages),
-                self.context_manager.compression_token_threshold
             );
         }
 
@@ -756,6 +767,58 @@ impl Agent {
                         if s.name.as_deref() == Some(&skill_name)
                 )
             });
+        }
+    }
+
+    }
+
+// ============================================================================
+// Summary generation (free function to avoid borrow conflicts)
+// ============================================================================
+
+/// Generate a summary of removed conversation messages using the LLM.
+/// Uses a non-streaming call to produce a 1-2 sentence summary.
+/// Falls back to a static message on failure.
+async fn generate_summary(
+    llm_client: &LlmClient,
+    removed_messages: &[ChatCompletionRequestMessage],
+) -> String {
+    let transcript = crate::context::format_removed_messages_as_transcript(removed_messages);
+
+    let system_prompt = "Summarize the following conversation transcript in 1-2 concise sentences. Focus on: what the user asked for, what actions were taken, and the outcomes. Be brief and factual.";
+
+    let messages = vec![
+        ChatCompletionRequestMessage::System(
+            ChatCompletionRequestSystemMessage {
+                content: system_prompt.into(),
+                name: None,
+            }
+        ),
+        ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage {
+                content: format!("Conversation transcript:\n\n{}", transcript).into(),
+                name: None,
+            }
+        ),
+    ];
+
+    match llm_client.chat(messages, None).await {
+        Ok(response) => {
+            if let Some(choice) = response.choices.first() {
+                if let Some(content) = &choice.message.content {
+                    let summary = content.trim().to_string();
+                    if !summary.is_empty() {
+                        tracing::info!("Generated summary: {}", summary);
+                        return summary;
+                    }
+                }
+            }
+            tracing::warn!("Summary generation returned empty response, using fallback");
+            "Conversation history compressed.".to_string()
+        }
+        Err(e) => {
+            tracing::warn!("Summary generation failed: {}, using fallback", e);
+            "Conversation history compressed.".to_string()
         }
     }
 }
