@@ -128,7 +128,8 @@ impl QqPlatformAdapter {
     ///
     /// This is the constructor used in place of `PlatformAdapter::connect` when
     /// we already own the config (avoids the `Self::Config` indirection).
-    pub async fn connect(config: QqConfig) -> Result<Arc<Self>> {
+    /// `shutdown` is notified on Ctrl+C to let background tasks exit gracefully.
+    pub async fn connect(config: QqConfig, shutdown: Arc<tokio::sync::Notify>) -> Result<Arc<Self>> {
         let http = reqwest::Client::new();
         let caps = PlatformCaps::qq();
         let (event_tx, event_rx) = mpsc::channel::<PlatformEvent>(256);
@@ -148,13 +149,17 @@ impl QqPlatformAdapter {
             msg_seq: Mutex::new(0),
         });
 
-        adapter.establish_connection().await?;
+        adapter.establish_connection(shutdown).await?;
         Ok(adapter)
     }
 
     /// Open the WebSocket, complete the Hello → Identify handshake, and spawn
-    /// the heartbeat + dispatch background tasks.
-    async fn establish_connection(self: &Arc<Self>) -> Result<()> {
+    /// the heartbeat + dispatch background tasks. The `shutdown` notify is
+    /// checked by both tasks so they exit gracefully on Ctrl+C.
+    async fn establish_connection(
+        self: &Arc<Self>,
+        shutdown: Arc<tokio::sync::Notify>,
+    ) -> Result<()> {
         info!("Connecting to QQ gateway: {}", self.config.gateway_url());
         let (ws_stream, _response) = tokio_tungstenite::connect_async(self.config.gateway_url())
             .await
@@ -202,8 +207,8 @@ impl QqPlatformAdapter {
         // 3. Store the write half and spawn the heartbeat + dispatch tasks.
         *self.ws_tx.lock().await = Some(write);
 
-        spawn_heartbeat(Arc::clone(self));
-        spawn_dispatch(Arc::clone(self), read);
+        spawn_heartbeat(Arc::clone(self), shutdown.clone());
+        spawn_dispatch(Arc::clone(self), read, shutdown);
 
         Ok(())
     }
@@ -547,12 +552,19 @@ fn resolve_upload_endpoint(base: &str, chat_id: &str) -> Result<(String, bool)> 
     )))
 }
 
-/// Spawn the periodic heartbeat task.
-fn spawn_heartbeat(adapter: Arc<QqPlatformAdapter>) {
+/// Spawn the periodic heartbeat task. Checks `shutdown` so it exits
+/// gracefully on Ctrl+C.
+fn spawn_heartbeat(adapter: Arc<QqPlatformAdapter>, shutdown: Arc<tokio::sync::Notify>) {
     tokio::spawn(async move {
         loop {
             let interval = *adapter.heartbeat_interval.read().await;
-            tokio::time::sleep(interval).await;
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {}
+                _ = shutdown.notified() => {
+                    debug!("Heartbeat task received shutdown signal");
+                    return;
+                }
+            }
 
             let last_seq = *adapter.last_seq.lock().await;
             let heartbeat = GatewayPayload::heartbeat(last_seq);
@@ -583,88 +595,105 @@ fn spawn_heartbeat(adapter: Arc<QqPlatformAdapter>) {
 }
 
 /// Spawn the dispatch task: reads WS frames, converts dispatch events to
-/// [`PlatformEvent`], and forwards them to the event channel.
-fn spawn_dispatch(adapter: Arc<QqPlatformAdapter>, mut read: impl futures_util::Stream<Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin + Send + 'static) {
+/// [`PlatformEvent`], and forwards them to the event channel. Checks
+/// `shutdown` so it exits gracefully on Ctrl+C.
+fn spawn_dispatch(
+    adapter: Arc<QqPlatformAdapter>,
+    mut read: impl futures_util::Stream<Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin + Send + 'static,
+    shutdown: Arc<tokio::sync::Notify>,
+) {
     tokio::spawn(async move {
-        while let Some(frame) = read.next().await {
-            let msg = match frame {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!("WS read error: {}", e);
-                    let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
-                    return;
-                }
-            };
-            let text = match msg {
-                Message::Text(t) => t.to_string(),
-                Message::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
-                Message::Close(_) => {
-                    info!("QQ WebSocket closed by server");
-                    let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
-                    return;
-                }
-                _ => continue,
-            };
-
-            let payload: GatewayPayload = match serde_json::from_str(&text) {
-                Ok(p) => p,
-                Err(e) => {
-                    debug!("Skipping non-JSON WS frame: {}", e);
-                    continue;
-                }
-            };
-
-            match payload.op {
-                op::HEARTBEAT_ACK => {
-                    debug!("Heartbeat ACK");
-                }
-                op::RECONNECT => {
-                    warn!("Server requested reconnect");
-                    let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
-                    return;
-                }
-                op::DISPATCH => {
-                    if let Some(seq) = payload.s {
-                        *adapter.last_seq.lock().await = Some(seq);
-                    }
-                    let event_name = payload.t.as_deref().unwrap_or("");
-                    match event_name {
-                        event_type::READY => {
-                            info!("QQ bot is ready");
-                            if let Some(d) = payload.d {
-                                if let Some(sid) = d.get("session_id").and_then(|v| v.as_str()) {
-                                    *adapter.session_id.lock().await = Some(sid.to_string());
-                                }
-                            }
+        loop {
+            tokio::select! {
+                frame = read.next() => {
+                    let msg = match frame {
+                        Some(Ok(m)) => m,
+                        Some(Err(e)) => {
+                            warn!("WS read error: {}", e);
+                            let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
+                            return;
                         }
-                        event_type::C2C_MESSAGE_CREATE
-                        | event_type::GROUP_AT_MESSAGE_CREATE => {
-                            if let Some(d) = payload.d {
-                                if let Ok(ev) = serde_json::from_value::<MessageEvent>(d) {
-                                    // Record the inbound msg_id for replies, then forward.
-                                    if let Some(chat_id) = chat_id_for_event(event_name, &ev) {
-                                        adapter.record_inbound(&chat_id, &ev.id);
+                        None => {
+                            info!("QQ dispatch stream ended");
+                            let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
+                            return;
+                        }
+                    };
+                    let text = match msg {
+                        Message::Text(t) => t.to_string(),
+                        Message::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
+                        Message::Close(_) => {
+                            info!("QQ WebSocket closed by server");
+                            let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
+                            return;
+                        }
+                        _ => continue,
+                    };
+
+                    let payload: GatewayPayload = match serde_json::from_str(&text) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            debug!("Skipping non-JSON WS frame: {}", e);
+                            continue;
+                        }
+                    };
+
+                    match payload.op {
+                        op::HEARTBEAT_ACK => {
+                            debug!("Heartbeat ACK");
+                        }
+                        op::RECONNECT => {
+                            warn!("Server requested reconnect");
+                            let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
+                            return;
+                        }
+                        op::DISPATCH => {
+                            if let Some(seq) = payload.s {
+                                *adapter.last_seq.lock().await = Some(seq);
+                            }
+                            let event_name = payload.t.as_deref().unwrap_or("");
+                            match event_name {
+                                event_type::READY => {
+                                    info!("QQ bot is ready");
+                                    if let Some(d) = payload.d {
+                                        if let Some(sid) = d.get("session_id").and_then(|v| v.as_str()) {
+                                            *adapter.session_id.lock().await = Some(sid.to_string());
+                                        }
                                     }
-                                    if let Some(platform_ev) =
-                                        build_platform_event(event_name, &ev)
-                                    {
-                                        let _ = adapter.event_tx.send(platform_ev).await;
+                                }
+                                event_type::C2C_MESSAGE_CREATE
+                                | event_type::GROUP_AT_MESSAGE_CREATE => {
+                                    if let Some(d) = payload.d {
+                                        if let Ok(ev) = serde_json::from_value::<MessageEvent>(d) {
+                                            // Record the inbound msg_id for replies, then forward.
+                                            if let Some(chat_id) = chat_id_for_event(event_name, &ev) {
+                                                adapter.record_inbound(&chat_id, &ev.id);
+                                            }
+                                            if let Some(platform_ev) =
+                                                build_platform_event(event_name, &ev)
+                                            {
+                                                let _ = adapter.event_tx.send(platform_ev).await;
+                                            }
+                                        }
                                     }
+                                }
+                                _ => {
+                                    debug!("Ignoring dispatch event: {}", event_name);
                                 }
                             }
                         }
                         _ => {
-                            debug!("Ignoring dispatch event: {}", event_name);
+                            debug!("Unhandled op {}: {:?}", payload.op, payload.t);
                         }
                     }
+                } // end of frame match
+                _ = shutdown.notified() => {
+                    debug!("Dispatch task received shutdown signal");
+                    return;
                 }
-                _ => {
-                    debug!("Unhandled op {}: {:?}", payload.op, payload.t);
-                }
-            }
-        }
-        info!("QQ dispatch stream ended");
-        let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
+            } // end of tokio::select!
+        } // end of loop
+        // Unreachable: loop exits via return in all branches above.
     });
 }
 

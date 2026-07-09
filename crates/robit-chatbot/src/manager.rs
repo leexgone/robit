@@ -187,30 +187,43 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
     }
 
     /// Main event loop. Connects to the platform, then processes events forever.
-    pub async fn run(&self) -> Result<(), AgentError> {
-        // Spawn the idle-session cleanup loop.
+    /// Returns when the platform disconnects, an error occurs, or `shutdown`
+    /// is notified (Ctrl+C in the main binary).
+    pub async fn run(
+        &self,
+        shutdown: Arc<tokio::sync::Notify>,
+    ) -> Result<(), AgentError> {
+        // Spawn the idle-session cleanup loop (checks shutdown).
         let cleanup_db = Arc::clone(&self.db);
         let session_timeout = self.session_timeout;
+        let cleanup_shutdown = shutdown.clone();
         tokio::spawn(async move {
-            cleanup_loop(cleanup_db, session_timeout).await;
+            cleanup_loop(cleanup_db, session_timeout, cleanup_shutdown).await;
         });
 
         loop {
-            match self.platform.recv_event().await {
-                Ok(PlatformEvent::Message(msg)) => {
-                    self.handle_message(msg).await;
+            tokio::select! {
+                event = self.platform.recv_event() => {
+                    match event {
+                        Ok(PlatformEvent::Message(msg)) => {
+                            self.handle_message(msg).await;
+                        }
+                        Ok(PlatformEvent::Disconnected) => {
+                            tracing::warn!("Platform disconnected");
+                            return Ok(());
+                        }
+                        Ok(PlatformEvent::Other(v)) => {
+                            tracing::debug!("Ignoring platform event: {}", v);
+                        }
+                        Err(e) => {
+                            tracing::error!("Platform recv error: {}", e);
+                            return Err(e);
+                        }
+                    }
                 }
-                Ok(PlatformEvent::Disconnected) => {
-                    tracing::warn!("Platform disconnected");
-                    // MVP: stop. Reconnect logic is a future enhancement.
+                _ = shutdown.notified() => {
+                    tracing::info!("Shutdown signal received, stopping event loop...");
                     return Ok(());
-                }
-                Ok(PlatformEvent::Other(v)) => {
-                    tracing::debug!("Ignoring platform event: {}", v);
-                }
-                Err(e) => {
-                    tracing::error!("Platform recv error: {}", e);
-                    return Err(e);
                 }
             }
         }
@@ -434,15 +447,21 @@ fn generate_title(message: &str) -> String {
 /// The DB session record is preserved (persistence); only the live Agent task
 /// is dropped. Dropping the `AgentHandle` drops its `message_tx`, causing the
 /// Agent's `run()` loop to exit when it next awaits on the closed channel.
-async fn cleanup_loop(_db: Arc<Mutex<Connection>>, _timeout: Duration) {
-    // The idle-session cleanup touches the in-memory `agents` map, which lives
-    // on the manager. This standalone loop is a placeholder; the manager's
-    // `run()` owns the map and could check idle expiry between events. For MVP,
-    // sessions live for the process lifetime — acceptable for a single Bot.
-    // TODO: wire idle expiry into the run loop or share the agents map here.
+async fn cleanup_loop(
+    _db: Arc<Mutex<Connection>>,
+    _timeout: Duration,
+    shutdown: Arc<tokio::sync::Notify>,
+) {
     loop {
-        tokio::time::sleep(CLEANUP_INTERVAL).await;
-        tracing::debug!("cleanup tick (no-op in MVP)");
+        tokio::select! {
+            _ = tokio::time::sleep(CLEANUP_INTERVAL) => {
+                tracing::debug!("cleanup tick (no-op in MVP)");
+            }
+            _ = shutdown.notified() => {
+                tracing::debug!("cleanup loop received shutdown signal");
+                return;
+            }
+        }
     }
 }
 

@@ -61,9 +61,10 @@ async fn main() {
     let tool_registry = Arc::new(tool_registry);
     log_skill_errors(&skill_load_errors);
 
-    // 4. Connect to the QQ platform.
+    // 4. Connect to the QQ platform (with shutdown signal for graceful exit).
     let qq_config = QqConfig::from_config(&config).expect("QQ Bot config not found");
-    let platform = QqPlatformAdapter::connect(qq_config)
+    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let platform = QqPlatformAdapter::connect(qq_config, shutdown.clone())
         .await
         .expect("Failed to connect to QQ gateway");
 
@@ -81,20 +82,26 @@ async fn main() {
     tracing::info!("robit-qq bot is running");
 
     // 6. Run with graceful shutdown on Ctrl+C.
-    // Note: spawned WebSocket tasks (heartbeat, dispatch) hold Arc references
-    // and block the tokio runtime from shutting down when main() returns.
-    // std::process::exit() ensures immediate exit regardless of leftover tasks.
+    // All spawned tasks (WebSocket heartbeat, dispatch, cleanup loop, agent
+    // tasks) share the same Notify. On Ctrl+C we notify them all, then wait
+    // for the manager to exit gracefully so SQLite WAL and other resources
+    // flush cleanly.
+    let shutdown_clone = shutdown.clone();
+
     tokio::select! {
-        result = manager.run() => {
+        result = manager.run(shutdown_clone) => {
             if let Err(e) = result {
                 tracing::error!("ChatbotManager error: {}", e);
             }
         }
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Received Ctrl+C, shutting down...");
-            std::process::exit(0);
+            tracing::info!("Received Ctrl+C, shutting down gracefully...");
+            shutdown.notify_waiters();
         }
     }
+
+    // Give background tasks a moment to flush (SQLite WAL, etc.)
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     tracing::info!("robit-qq bot has stopped");
 }
