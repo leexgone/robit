@@ -81,6 +81,9 @@ async fn main() {
     tracing::info!("robit-qq bot is running");
 
     // 6. Run with graceful shutdown on Ctrl+C.
+    // Note: spawned WebSocket tasks (heartbeat, dispatch) hold Arc references
+    // and block the tokio runtime from shutting down when main() returns.
+    // std::process::exit() ensures immediate exit regardless of leftover tasks.
     tokio::select! {
         result = manager.run() => {
             if let Err(e) = result {
@@ -89,6 +92,7 @@ async fn main() {
         }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received Ctrl+C, shutting down...");
+            std::process::exit(0);
         }
     }
 
