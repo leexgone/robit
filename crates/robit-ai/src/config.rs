@@ -103,6 +103,15 @@ pub struct ContextConfig {
     pub max_output_lines: Option<usize>,
     pub max_output_bytes: Option<usize>,
     pub reserve_ratio: Option<f32>,
+    /// Fraction of max_tokens at which truncation triggers (default 0.7).
+    /// Lower = earlier truncation, more headroom for estimation errors.
+    pub truncation_ratio: Option<f32>,
+    /// Minimum conversation rounds to keep after truncation (default 3).
+    /// Prevents losing all recent context when truncation is aggressive.
+    pub min_keep_rounds: Option<usize>,
+    /// Safety multiplier applied to token estimates (default 1.3).
+    /// Compensates for heuristic underestimation vs actual tokenizer counts.
+    pub token_safety_margin: Option<f32>,
     /// Token threshold for triggering compression (default 5000).
     /// Only compress when removed messages exceed this token count.
     pub compression_token_threshold: Option<usize>,
