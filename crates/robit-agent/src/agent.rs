@@ -289,6 +289,7 @@ impl Agent {
     /// Execute a single turn: user input -> LLM call(s) -> tool execution(s) -> response.
     async fn run_turn(&mut self, user_input: &str, attachments: Vec<MediaAttachment>) {
         let session_id = self.default_session_id.clone();
+        let max_tool_calls = self.context_manager.max_tool_calls_per_turn;
 
         // Build user message first (to avoid borrow conflict)
         let user_message = self.build_user_message(user_input, &attachments).await;
@@ -300,16 +301,42 @@ impl Agent {
 
         // Run the agentic loop (may iterate if LLM calls tools)
         let max_iterations = 20;
+        let mut total_tool_calls = 0usize;
         for iteration in 0..max_iterations {
             match self.run_one_step(&session_id).await {
-                Ok(has_tool_calls) => {
-                    if !has_tool_calls {
+                Ok(tool_call_count) => {
+                    if tool_call_count == 0 {
                         let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
                         return;
                     }
+                    total_tool_calls += tool_call_count;
+
+                    // Check against per-turn tool call limit
+                    if total_tool_calls >= max_tool_calls {
+                        tracing::warn!(
+                            "Tool call limit reached: {} >= {} (max_tool_calls_per_turn), forcing turn completion",
+                            total_tool_calls,
+                            max_tool_calls
+                        );
+                        let _ = self
+                            .frontend
+                            .on_event(AgentEvent::TextDelta(
+                                format!(
+                                    "\n\n[Tool call limit reached ({} calls). Please summarize progress and continue in the next message.]\n",
+                                    total_tool_calls
+                                ),
+                            ))
+                            .await;
+                        let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
+                        return;
+                    }
+
                     tracing::debug!(
-                        "Iteration {}: tool calls executed, continuing loop",
-                        iteration
+                        "Iteration {}: {} tool calls executed (total: {}/{}), continuing loop",
+                        iteration,
+                        tool_call_count,
+                        total_tool_calls,
+                        max_tool_calls
                     );
                 }
                 Err(e) => {
@@ -331,9 +358,8 @@ impl Agent {
     }
 
     /// Run one step: call LLM, process response, execute tools.
-    /// Returns Ok(true) if tool calls were made (loop should continue).
-    /// Returns Ok(false) if the LLM responded with text only (turn complete).
-    async fn run_one_step(&mut self, session_id: &SessionId) -> Result<bool> {
+    /// Returns the number of tool calls executed (0 = turn complete, no tools called).
+    async fn run_one_step(&mut self, session_id: &SessionId) -> Result<usize> {
         let session = self
             .sessions
             .get_mut(session_id)
@@ -493,7 +519,7 @@ impl Agent {
 
         // If no tool calls, turn is complete
         if assembled_tool_calls.is_empty() {
-            return Ok(false);
+            return Ok(0);
         }
 
         // Execute each tool call
@@ -575,7 +601,7 @@ impl Agent {
             session.history.push(tool_msg);
         }
 
-        Ok(true)
+        Ok(assembled_tool_calls.len())
     }
 
     /// Clear the current session's history (keep system prompt).
@@ -729,8 +755,8 @@ impl Agent {
         let mut completed = false;
         for iteration in 0..max_iterations {
             match self.run_one_step(&session_id).await {
-                Ok(has_tool_calls) => {
-                    if !has_tool_calls {
+                Ok(tool_call_count) => {
+                    if tool_call_count == 0 {
                         completed = true;
                         break;
                     }
