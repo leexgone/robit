@@ -342,27 +342,11 @@ impl Agent {
         // Truncate context if needed
         let truncation_result = self.context_manager.maybe_truncate(&mut session.history);
 
-        // Handle async compression if needed
+        // Handle async compression if needed (logging only;
+        // maybe_truncate already inserted the appropriate notice).
         if truncation_result.needs_compression {
-            // For now, replace placeholder with a notice
-            // In production, spawn async task to call LLM and replace with summary
-            if let Some(msg) = session.history.get_mut(truncation_result.insert_position) {
-                let notice = format!(
-                    "[Omitted {} rounds, {} messages. Context compressed to save space]",
-                    truncation_result.rounds_removed,
-                    truncation_result.messages_removed
-                );
-                *msg = ChatCompletionRequestMessage::User(
-                    ChatCompletionRequestUserMessage {
-                        content: notice.into(),
-                        name: Some("system_notice".to_string()),
-                    }
-                    .into(),
-                );
-            }
-
             tracing::info!(
-                "Compression triggered: removed {} tokens (threshold: {})",
+                "Compression triggered: removed {} tokens (threshold: {}). Async summary generation not yet implemented.",
                 crate::context::estimate_messages_tokens(&truncation_result.removed_messages),
                 self.context_manager.compression_token_threshold
             );

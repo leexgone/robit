@@ -256,16 +256,19 @@ impl ContextManager {
     /// Check if history needs truncation and perform it if necessary.
     /// Returns `TruncationResult` with removed messages for async compression.
     ///
-    /// Strategy: remove oldest non-system messages by "rounds"
-    /// (user + assistant + tool_calls + tool_results grouped together).
+    /// Strategy:
+    /// 1. Uses `truncation_threshold()` (default 70% of max_tokens) as trigger point
+    /// 2. Removes oldest non-system rounds first
+    /// 3. Always keeps at least `min_keep_rounds` recent rounds
+    /// 4. Applies `token_safety_margin` to estimates to avoid underestimation
     pub fn maybe_truncate(
         &self,
         messages: &mut Vec<ChatCompletionRequestMessage>,
     ) -> TruncationResult {
-        let estimated = estimate_messages_tokens(messages);
-        let available = self.available_tokens();
+        let estimated = estimate_messages_tokens_with_margin(messages, self.token_safety_margin);
+        let threshold = self.truncation_threshold();
 
-        if estimated <= available {
+        if estimated <= threshold {
             return TruncationResult {
                 rounds_removed: 0,
                 messages_removed: 0,
@@ -276,34 +279,45 @@ impl ContextManager {
         }
 
         tracing::info!(
-            "Context truncation needed: estimated {} tokens, available {} tokens",
+            "Context truncation needed: estimated {} tokens (with {:.1}x margin), threshold {} tokens, max {} tokens",
             estimated,
-            available
+            self.token_safety_margin,
+            threshold,
+            self.max_tokens
         );
 
-        // Find rounds to remove (skip system messages at the start)
-        let mut rounds_removed = 0;
-        let mut messages_removed = 0;
-
-        // Group messages into rounds: a round starts with a User message
-        // and includes all subsequent messages until the next User message
+        // Find round boundaries: a round starts with a User message
         let mut round_starts: Vec<usize> = Vec::new();
         for (i, msg) in messages.iter().enumerate() {
-            if is_user_message(msg) && i > 0 {
-                // Skip the first user message if there's a system message before it
-                round_starts.push(i);
-            } else if is_user_message(msg) && i == 0 {
+            if is_user_message(msg) {
                 round_starts.push(i);
             }
         }
 
-        // Collect removed messages for potential compression
-        let mut removed_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+        if round_starts.is_empty() {
+            return TruncationResult {
+                rounds_removed: 0,
+                messages_removed: 0,
+                removed_messages: Vec::new(),
+                insert_position: 0,
+                needs_compression: false,
+            };
+        }
 
-        // Remove rounds from the oldest first
-        // Keep at least the system message
-        while !round_starts.is_empty() && estimate_messages_tokens(messages) > available {
-            // Determine the range of the oldest round to remove
+        // Count how many rounds we must keep
+        let total_rounds = round_starts.len();
+        let must_keep = self.min_keep_rounds.min(total_rounds);
+
+        let mut removed_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+        let mut rounds_removed = 0;
+        let mut messages_removed = 0;
+
+        // Remove oldest rounds while:
+        // - estimated tokens still exceed threshold
+        // - we still have more rounds than must_keep
+        while round_starts.len() > must_keep
+            && estimate_messages_tokens_with_margin(messages, self.token_safety_margin) > threshold
+        {
             let start_idx = round_starts[0];
             let end_idx = if round_starts.len() > 1 {
                 round_starts[1]
@@ -311,17 +325,7 @@ impl ContextManager {
                 messages.len()
             };
 
-            // Don't remove if it would leave us with only system messages
-            // and no user messages
-            let remaining_user_msgs = messages[end_idx..]
-                .iter()
-                .filter(|m| is_user_message(m))
-                .count();
-            if remaining_user_msgs == 0 {
-                break;
-            }
-
-            // Collect messages before removing
+            // Collect removed messages for potential compression
             if self.compression_enabled {
                 removed_messages.extend(messages[start_idx..end_idx].to_vec());
             }
@@ -339,57 +343,69 @@ impl ContextManager {
             messages_removed += count;
         }
 
-        if rounds_removed > 0 {
-            // Calculate removed tokens for threshold check
-            let removed_tokens = estimate_messages_tokens(&removed_messages);
-            let needs_compression =
-                self.compression_enabled && removed_tokens >= self.compression_token_threshold;
-
-            // Insert placeholder or wait for summary
-            let notice = if needs_compression {
-                "[Generating conversation summary...]"
-            } else {
-                &format!("[Omitted {} rounds, {} messages]", rounds_removed, messages_removed)
-            };
-
-            let system_msg_count = messages
-                .iter()
-                .take_while(|m| is_system_message(m))
-                .count();
-
-            let notice_msg = ChatCompletionRequestMessage::User(
-                async_openai::types::chat::ChatCompletionRequestUserMessage {
-                    content: notice.into(),
-                    name: Some("system_notice".to_string()),
-                }
-                .into(),
-            );
-
-            messages.insert(system_msg_count, notice_msg);
-
-            tracing::info!(
-                "Removed {} rounds ({} messages), needs_compression={}, removed_tokens={}",
-                rounds_removed,
-                messages_removed,
-                needs_compression,
-                removed_tokens
-            );
-
+        if rounds_removed == 0 {
             return TruncationResult {
-                rounds_removed,
-                messages_removed,
-                removed_messages,
-                insert_position: system_msg_count,
-                needs_compression,
+                rounds_removed: 0,
+                messages_removed: 0,
+                removed_messages: Vec::new(),
+                insert_position: 0,
+                needs_compression: false,
             };
         }
 
+        // Calculate removed tokens for threshold check
+        let removed_tokens = estimate_messages_tokens(&removed_messages);
+        let needs_compression =
+            self.compression_enabled && removed_tokens >= self.compression_token_threshold;
+
+        // Insert informative notice after system messages
+        let system_msg_count = messages
+            .iter()
+            .take_while(|m| is_system_message(m))
+            .count();
+
+        let notice = if needs_compression {
+            format!(
+                "[Context compressed: {} earlier rounds ({} messages, ~{} tokens) have been summarized. {} most recent rounds preserved.]",
+                rounds_removed,
+                messages_removed,
+                removed_tokens,
+                round_starts.len()
+            )
+        } else {
+            format!(
+                "[Context truncated: {} earlier rounds ({} messages) removed to stay within token limit. {} most recent rounds preserved.]",
+                rounds_removed,
+                messages_removed,
+                round_starts.len()
+            )
+        };
+
+        let notice_msg = ChatCompletionRequestMessage::User(
+            async_openai::types::chat::ChatCompletionRequestUserMessage {
+                content: notice.into(),
+                name: Some("system_notice".to_string()),
+            }
+            .into(),
+        );
+
+        messages.insert(system_msg_count, notice_msg);
+
+        tracing::info!(
+            "Context truncation: removed {} rounds ({} messages, ~{} tokens), kept {} rounds, needs_compression={}",
+            rounds_removed,
+            messages_removed,
+            removed_tokens,
+            round_starts.len(),
+            needs_compression
+        );
+
         TruncationResult {
-            rounds_removed: 0,
-            messages_removed: 0,
-            removed_messages: Vec::new(),
-            insert_position: 0,
-            needs_compression: false,
+            rounds_removed,
+            messages_removed,
+            removed_messages,
+            insert_position: system_msg_count,
+            needs_compression,
         }
     }
 }
