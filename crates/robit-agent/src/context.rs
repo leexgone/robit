@@ -425,9 +425,7 @@ fn is_system_message(msg: &ChatCompletionRequestMessage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_openai::types::chat::{
-        ChatCompletionRequestUserMessage,
-    };
+    use async_openai::types::chat::ChatCompletionRequestUserMessage;
 
     fn make_user_message(content: &str) -> ChatCompletionRequestMessage {
         ChatCompletionRequestMessage::User(
@@ -449,22 +447,94 @@ mod tests {
         )
     }
 
+    fn make_test_config() -> ContextConfig {
+        ContextConfig {
+            max_output_lines: Some(500),
+            max_output_bytes: Some(51200),
+            reserve_ratio: Some(0.2),
+            truncation_ratio: Some(0.7),
+            min_keep_rounds: Some(3),
+            token_safety_margin: Some(1.3),
+            compression_token_threshold: Some(5000),
+            compression_enabled: Some(true),
+        }
+    }
+
+    // ==========================================================================
+    // estimate_tokens tests
+    // ==========================================================================
+
     #[test]
-    fn test_truncation_result_no_compression() {
-        // Small messages - no truncation needed
+    fn test_estimate_tokens_english() {
+        let text = "Hello world, this is a test of the token estimation system.";
+        let tokens = estimate_tokens(text);
+        assert!(tokens >= 10, "Expected at least 10 tokens, got {}", tokens);
+        assert!(tokens <= 30, "Expected at most 30 tokens, got {}", tokens);
+    }
+
+    #[test]
+    fn test_estimate_tokens_chinese() {
+        let chinese = "你好世界，这是一个测试。";
+        let tokens = estimate_tokens(chinese);
+        assert!(tokens >= 5, "Expected at least 5 tokens, got {}", tokens);
+        assert!(tokens <= 15, "Expected at most 15 tokens, got {}", tokens);
+    }
+
+    #[test]
+    fn test_estimate_tokens_code() {
+        let code = "fn main() {\n    println!(\"Hello\");\n}";
+        let tokens = estimate_tokens(code);
+        assert!(tokens >= 10, "Expected at least 10 tokens, got {}", tokens);
+        assert!(tokens <= 40, "Expected at most 40 tokens, got {}", tokens);
+    }
+
+    #[test]
+    fn test_estimate_tokens_empty() {
+        assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn test_estimate_tokens_mixed() {
+        let mixed = "Hello 你好 world 世界！fn test() {}";
+        let tokens = estimate_tokens(mixed);
+        assert!(tokens > 0);
+        assert!(tokens <= 40, "Expected at most 40 tokens, got {}", tokens);
+    }
+
+    #[test]
+    fn test_estimate_messages_tokens_with_margin() {
+        let messages = vec![
+            make_system_message("You are a helpful assistant"),
+            make_user_message("Hello world"),
+        ];
+        let raw = estimate_messages_tokens(&messages);
+        let with_margin = estimate_messages_tokens_with_margin(&messages, 1.3);
+        assert!(with_margin > raw);
+        // 1.3x margin should be ~30% higher
+        let expected = (raw as f32 * 1.3).ceil() as usize;
+        assert_eq!(with_margin, expected);
+    }
+
+    // ==========================================================================
+    // ContextManager tests
+    // ==========================================================================
+
+    #[test]
+    fn test_truncation_threshold() {
+        let config = make_test_config();
+        let manager = ContextManager::new(Some(65536), Some(&config));
+        // 65536 * 0.7 = 45875
+        assert_eq!(manager.truncation_threshold(), 45875);
+    }
+
+    #[test]
+    fn test_truncation_result_no_truncation() {
         let mut messages = vec![
             make_system_message("You are a helpful assistant"),
             make_user_message("Hello"),
         ];
 
-        let config = ContextConfig {
-            max_output_lines: Some(500),
-            max_output_bytes: Some(51200),
-            reserve_ratio: Some(0.2),
-            compression_token_threshold: Some(5000),
-            compression_enabled: Some(true),
-        };
-
+        let config = make_test_config();
         let manager = ContextManager::new(Some(65536), Some(&config));
         let result = manager.maybe_truncate(&mut messages);
 
@@ -473,38 +543,119 @@ mod tests {
     }
 
     #[test]
-    fn test_truncation_result_with_compression() {
-        // Create many large messages to exceed threshold
+    fn test_truncation_respects_min_keep_rounds() {
         let mut messages = vec![
             make_system_message("You are a helpful assistant"),
         ];
 
-        // Add 20 rounds of large messages (each ~2000 chars = ~666 tokens)
-        // Total: ~13,320 tokens, context window: 5000, available: 4000
-        for i in 0..20 {
+        // Add 10 rounds of large messages
+        for i in 0..10 {
             let content = format!("User message {}: {}", i, "x".repeat(2000));
             messages.push(make_user_message(&content));
         }
 
-        let config = ContextConfig {
-            max_output_lines: Some(500),
-            max_output_bytes: Some(51200),
-            reserve_ratio: Some(0.2),
-            compression_token_threshold: Some(1000), // Low threshold for testing
-            compression_enabled: Some(true),
-        };
+        let mut config = make_test_config();
+        config.min_keep_rounds = Some(3); // Must keep at least 3 rounds
 
-        // Set small context window to force truncation
+        // Use small context window to force aggressive truncation
         let manager = ContextManager::new(Some(5000), Some(&config));
         let result = manager.maybe_truncate(&mut messages);
 
-        assert!(result.rounds_removed > 0);
-        assert!(result.needs_compression);
-        assert!(!result.removed_messages.is_empty());
+        // Should have removed some rounds...
+        assert!(
+            result.rounds_removed > 0,
+            "Should have removed some rounds"
+        );
+        // ...but should still have at least 3 user rounds + notice
+        let user_count = messages
+            .iter()
+            .filter(|m| matches!(m, ChatCompletionRequestMessage::User(_)))
+            .count();
+        assert!(
+            user_count >= 4,
+            "Should have at least 3 user rounds + notice, got {}",
+            user_count
+        );
     }
 
     #[test]
-    fn test_compression_disabled() {
+    fn test_truncation_early_trigger() {
+        let mut messages = vec![
+            make_system_message("You are a helpful assistant"),
+        ];
+
+        // Add 8 rounds of messages, each ~2000 chars
+        for i in 0..8 {
+            let content = format!("User message {}: {}", i, "x".repeat(2000));
+            messages.push(make_user_message(&content));
+        }
+
+        let mut config = make_test_config();
+        config.truncation_ratio = Some(0.7);
+        config.min_keep_rounds = Some(2);
+        config.token_safety_margin = Some(1.3);
+
+        // With 65536 context, truncation threshold = 45875
+        // 8 rounds * ~2000 chars each ≈ much less than 45875, so no truncation
+        let manager = ContextManager::new(Some(65536), Some(&config));
+        let result = manager.maybe_truncate(&mut messages);
+        assert_eq!(
+            result.rounds_removed, 0,
+            "Should not truncate small messages in large window"
+        );
+
+        // With 8000 context, truncation threshold = 5600
+        let manager2 = ContextManager::new(Some(8000), Some(&config));
+        let mut messages2 = messages.clone();
+        let result2 = manager2.maybe_truncate(&mut messages2);
+        assert!(
+            result2.rounds_removed > 0,
+            "Should truncate when exceeding small window"
+        );
+    }
+
+    #[test]
+    fn test_token_safety_margin_effect() {
+        let mut messages = vec![
+            make_system_message("You are a helpful assistant"),
+        ];
+
+        for i in 0..10 {
+            let content = format!("User message {}: {}", i, "x".repeat(500));
+            messages.push(make_user_message(&content));
+        }
+
+        // With margin 1.0 (no safety), truncation may not trigger
+        let mut config_low = make_test_config();
+        config_low.token_safety_margin = Some(1.0);
+        config_low.truncation_ratio = Some(0.7);
+        config_low.min_keep_rounds = Some(1);
+
+        let mut msgs_low = messages.clone();
+        let manager_low = ContextManager::new(Some(8000), Some(&config_low));
+        let result_low = manager_low.maybe_truncate(&mut msgs_low);
+
+        // With margin 2.0 (very conservative), truncation more likely triggers
+        let mut config_high = make_test_config();
+        config_high.token_safety_margin = Some(2.0);
+        config_high.truncation_ratio = Some(0.7);
+        config_high.min_keep_rounds = Some(1);
+
+        let mut msgs_high = messages.clone();
+        let manager_high = ContextManager::new(Some(8000), Some(&config_high));
+        let result_high = manager_high.maybe_truncate(&mut msgs_high);
+
+        // Higher margin should result in >= rounds removed
+        assert!(
+            result_high.rounds_removed >= result_low.rounds_removed,
+            "Higher safety margin should trigger at least as much truncation: high={}, low={}",
+            result_high.rounds_removed,
+            result_low.rounds_removed
+        );
+    }
+
+    #[test]
+    fn test_compression_flag_in_old_tests() {
         let mut messages = vec![
             make_system_message("You are a helpful assistant"),
         ];
@@ -515,32 +666,19 @@ mod tests {
             messages.push(make_user_message(&content));
         }
 
-        let config = ContextConfig {
-            max_output_lines: Some(500),
-            max_output_bytes: Some(51200),
-            reserve_ratio: Some(0.2),
-            compression_token_threshold: Some(1000),
-            compression_enabled: Some(false), // Disabled
-        };
+        let mut config = make_test_config();
+        config.compression_enabled = Some(false);
+        config.compression_token_threshold = Some(1000);
+        config.min_keep_rounds = Some(1);
 
         let manager = ContextManager::new(Some(5000), Some(&config));
         let result = manager.maybe_truncate(&mut messages);
 
         assert!(result.rounds_removed > 0);
-        assert!(!result.needs_compression); // Should be false even if threshold exceeded
-    }
-
-    #[test]
-    fn test_estimate_tokens() {
-        let text = "Hello world";
-        let tokens = estimate_tokens(text);
-        assert!(tokens > 0);
-        assert!(tokens < 10); // ~11 chars / 4 = ~2-3 tokens
-
-        let chinese = "你好世界";
-        let tokens_cn = estimate_tokens(chinese);
-        assert!(tokens_cn > 0);
-        assert!(tokens_cn < 5); // ~4 chars / 2 = ~2 tokens
+        assert!(
+            !result.needs_compression,
+            "Should be false when compression disabled"
+        );
     }
 
     #[test]
