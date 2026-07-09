@@ -419,6 +419,92 @@ fn is_system_message(msg: &ChatCompletionRequestMessage) -> bool {
 }
 
 // ============================================================================
+// Transcript formatting for summary compression
+// ============================================================================
+
+/// Format removed messages into a compact transcript for summary generation.
+/// Extracts user messages, assistant text, and tool call names only.
+/// Truncates each message to keep the transcript concise.
+pub fn format_removed_messages_as_transcript(
+    messages: &[ChatCompletionRequestMessage],
+) -> String {
+    let mut transcript = String::new();
+
+    for msg in messages {
+        match msg {
+            ChatCompletionRequestMessage::User(user_msg) => {
+                let text = match &user_msg.content {
+                    async_openai::types::chat::ChatCompletionRequestUserMessageContent::Text(t) => {
+                        t.clone()
+                    }
+                    async_openai::types::chat::ChatCompletionRequestUserMessageContent::Array(parts) => {
+                        parts.iter()
+                            .filter_map(|p| match p {
+                                async_openai::types::chat::ChatCompletionRequestUserMessageContentPart::Text(t) => Some(t.text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    }
+                };
+                let truncated = truncate_str(&text, 200);
+                transcript.push_str(&format!("User: {}\n", truncated));
+            }
+            ChatCompletionRequestMessage::Assistant(assistant_msg) => {
+                let content_str = assistant_msg.content.as_ref().map(|c| {
+                    match serde_json::to_string(c) {
+                        Ok(json) => json.trim_matches('"').to_string(),
+                        Err(_) => format!("{:?}", c),
+                    }
+                }).unwrap_or_default();
+                let truncated = truncate_str(&content_str, 300);
+                transcript.push_str(&format!("Assistant: {}\n", truncated));
+                if let Some(tool_calls) = &assistant_msg.tool_calls {
+                    for tc in tool_calls {
+                        if let async_openai::types::chat::ChatCompletionMessageToolCalls::Function(f) = tc {
+                            transcript.push_str(&format!(
+                                "  [Tool: {}({})]\n",
+                                f.function.name,
+                                truncate_str(&f.function.arguments, 100)
+                            ));
+                        }
+                    }
+                }
+            }
+            ChatCompletionRequestMessage::Tool(tool_msg) => {
+                let content_str = match serde_json::to_string(&tool_msg.content) {
+                    Ok(json) => json.trim_matches('"').to_string(),
+                    Err(_) => format!("{:?}", tool_msg.content),
+                };
+                let truncated = truncate_str(&content_str, 150);
+                transcript.push_str(&format!("  [Result: {}]\n", truncated));
+            }
+            _ => {}
+        }
+    }
+
+    if transcript.is_empty() {
+        transcript.push_str("(no conversation content)");
+    }
+
+    transcript
+}
+
+/// Truncate a string to at most `max_chars` characters, adding "..." if truncated.
+/// Respects UTF-8 character boundaries.
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    if s.len() <= max_chars {
+        s.to_string()
+    } else {
+        let mut end = max_chars;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
