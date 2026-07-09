@@ -139,6 +139,12 @@ pub struct ContextManager {
     pub max_tokens: usize,
     /// Ratio of context window to reserve for LLM response (default 0.2 = 20%).
     pub reserve_ratio: f32,
+    /// Fraction of max_tokens at which truncation triggers (default 0.7).
+    pub truncation_ratio: f32,
+    /// Minimum conversation rounds to keep after truncation (default 3).
+    pub min_keep_rounds: usize,
+    /// Safety multiplier for token estimates (default 1.3).
+    pub token_safety_margin: f32,
     /// Max output lines for tool results.
     pub max_output_lines: usize,
     /// Max output bytes for tool results.
@@ -153,20 +159,35 @@ impl ContextManager {
     pub fn new(context_window: Option<u64>, config: Option<&ContextConfig>) -> Self {
         let max_tokens = context_window.unwrap_or(65536) as usize;
 
-        let (max_output_lines, max_output_bytes, reserve_ratio, compression_token_threshold, compression_enabled) = match config {
+        let (
+            max_output_lines,
+            max_output_bytes,
+            reserve_ratio,
+            truncation_ratio,
+            min_keep_rounds,
+            token_safety_margin,
+            compression_token_threshold,
+            compression_enabled,
+        ) = match config {
             Some(c) => (
                 c.max_output_lines.unwrap_or(500),
                 c.max_output_bytes.unwrap_or(51200),
                 c.reserve_ratio.unwrap_or(0.2),
+                c.truncation_ratio.unwrap_or(0.7),
+                c.min_keep_rounds.unwrap_or(3),
+                c.token_safety_margin.unwrap_or(1.3),
                 c.compression_token_threshold.unwrap_or(5000),
                 c.compression_enabled.unwrap_or(true),
             ),
-            None => (500, 51200, 0.2, 5000, true),
+            None => (500, 51200, 0.2, 0.7, 3, 1.3, 5000, true),
         };
 
         Self {
             max_tokens,
             reserve_ratio,
+            truncation_ratio,
+            min_keep_rounds,
+            token_safety_margin,
             max_output_lines,
             max_output_bytes,
             compression_token_threshold,
@@ -174,7 +195,16 @@ impl ContextManager {
         }
     }
 
+    /// Maximum tokens at which truncation is triggered.
+    /// Uses `truncation_ratio` (default 0.7) to trigger earlier than the
+    /// absolute limit, leaving headroom for estimation errors and LLM response.
+    pub fn truncation_threshold(&self) -> usize {
+        (self.max_tokens as f32 * self.truncation_ratio) as usize
+    }
+
     /// Maximum tokens available for input (total - reserved for response).
+    /// Note: this is the absolute upper bound; truncation actually triggers
+    /// earlier via `truncation_threshold()`.
     pub fn available_tokens(&self) -> usize {
         (self.max_tokens as f32 * (1.0 - self.reserve_ratio)) as usize
     }
