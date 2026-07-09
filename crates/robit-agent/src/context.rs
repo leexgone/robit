@@ -777,4 +777,52 @@ mod tests {
         assert!(!truncated.contains("line4"));
         assert!(truncated.contains("Output truncated"));
     }
+
+    // ==========================================================================
+    // Transcript formatting tests
+    // ==========================================================================
+
+    #[test]
+    fn test_truncate_str_no_truncation() {
+        let result = truncate_str("hello", 10);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_truncate_str_with_truncation() {
+        let result = truncate_str("hello world this is long", 10);
+        assert_eq!(result, "hello worl...");
+    }
+
+    #[test]
+    fn test_format_transcript_user_and_assistant() {
+        let messages = vec![
+            make_user_message("Fix the bug in auth.rs"),
+            make_system_message("System message should be skipped"),
+        ];
+
+        let transcript = format_removed_messages_as_transcript(&messages);
+        assert!(transcript.contains("User: Fix the bug in auth.rs"));
+        assert!(!transcript.contains("System message"), "System messages should be skipped");
+    }
+
+    #[test]
+    fn test_format_transcript_empty() {
+        let messages: Vec<ChatCompletionRequestMessage> = vec![];
+        let transcript = format_removed_messages_as_transcript(&messages);
+        assert!(transcript.contains("no conversation content"));
+    }
+
+    #[test]
+    fn test_format_transcript_truncates_long_messages() {
+        let long_text = "x".repeat(500);
+        let messages = vec![
+            make_user_message(&long_text),
+        ];
+
+        let transcript = format_removed_messages_as_transcript(&messages);
+        assert!(transcript.contains("..."));
+        // Should not contain the full 500 chars
+        assert!(transcript.len() < long_text.len() + 50);
+    }
 }
