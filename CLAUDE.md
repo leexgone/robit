@@ -160,6 +160,12 @@ global_storage = false                 # 可选，是否使用全局会话存储
 max_output_lines = 500                 # 单次工具输出最大行数
 max_output_bytes = 51200              # 单次工具输出最大字节数 (50KB)
 reserve_ratio = 0.2                    # 为 LLM 响应预留的上下文比例 (20%)
+truncation_ratio = 0.7                 # 截断触发阈值，占 max_tokens 的比例 (70%)
+min_keep_rounds = 3                    # 截断后最少保留的最近轮数
+token_safety_margin = 1.3              # Token 估算安全系数
+compression_enabled = true             # 是否启用摘要压缩
+compression_token_threshold = 5000     # 触发压缩的 token 阈值
+max_tool_calls_per_turn = 30           # 单轮最大工具调用数
 
 [app.retry]                            # 重试策略配置（可选，以下为默认值）
 max_retries = 3
