@@ -397,6 +397,19 @@ impl Agent {
             Some(tool_schemas)
         };
 
+        // Log estimated token usage before call
+        let estimated_prompt = crate::context::estimate_messages_tokens_with_margin(
+            &session.history,
+            self.context_manager.token_safety_margin,
+        );
+        tracing::info!(
+            "LLM call: ~{} prompt tokens (with {:.1}x margin), {} messages, threshold={} tokens",
+            estimated_prompt,
+            self.context_manager.token_safety_margin,
+            session.history.len(),
+            self.context_manager.truncation_threshold(),
+        );
+
         // Call LLM (streaming)
         let mut stream = self
             .llm_client
@@ -406,9 +419,15 @@ impl Agent {
         // Collect streaming response
         let mut full_text = String::new();
         let mut tool_call_chunks: HashMap<usize, ToolCallAccumulator> = HashMap::new();
+        let mut api_usage: Option<async_openai::types::chat::CompletionUsage> = None;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| AgentError::LlmError(e.into()))?;
+
+            // Capture usage info if present in this chunk (some providers include it in final chunk)
+            if let Some(ref usage) = chunk.usage {
+                api_usage = Some(usage.clone());
+            }
 
             if let Some(choice) = chunk.choices.first() {
                 // Text content
@@ -470,6 +489,27 @@ impl Agent {
                 .filter_map(|idx| tool_call_chunks.remove(&idx)?.into_tool_call())
                 .collect()
         };
+
+        // Log token usage summary
+        let estimated_response = crate::context::estimate_tokens(&full_text);
+        if let Some(ref usage) = api_usage {
+            tracing::info!(
+                "LLM response: API usage = {} prompt + {} completion = {} total tokens. Estimated: ~{} prompt + ~{} response = ~{} total",
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+                estimated_prompt,
+                estimated_response,
+                estimated_prompt + estimated_response,
+            );
+        } else {
+            tracing::info!(
+                "LLM response: {} chars, ~{} estimated tokens ({} tool calls). API usage not available from streaming.",
+                full_text.len(),
+                estimated_response,
+                assembled_tool_calls.len(),
+            );
+        }
 
         tracing::debug!("Assembled {} tool call(s)", assembled_tool_calls.len());
         for (i, tc) in assembled_tool_calls.iter().enumerate() {
