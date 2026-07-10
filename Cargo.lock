@@ -3843,7 +3843,7 @@ dependencies = [
 
 [[package]]
 name = "robit"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3864,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "robit-agent"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "async-openai",
  "async-trait",
@@ -3893,7 +3893,7 @@ dependencies = [
 
 [[package]]
 name = "robit-agent-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3909,7 +3909,7 @@ dependencies = [
 
 [[package]]
 name = "robit-ai"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "async-openai",
  "chrono",
@@ -3927,7 +3927,7 @@ dependencies = [
 
 [[package]]
 name = "robit-chat"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -3938,7 +3938,7 @@ dependencies = [
 
 [[package]]
 name = "robit-chatbot"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "pulldown-cmark",
@@ -3955,7 +3955,7 @@ dependencies = [
 
 [[package]]
 name = "robit-gui"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "alloc-no-stdlib",
  "anyhow",
@@ -3980,7 +3980,7 @@ dependencies = [
 
 [[package]]
 name = "robit-qq"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
