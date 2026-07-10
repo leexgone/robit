@@ -67,8 +67,11 @@ impl DirectoryLock {
         let robit_dir = workdir.join(".robit");
         let lock_path = robit_dir.join("LOCK");
 
+        tracing::debug!("Acquiring directory lock at: {}", lock_path.display());
+
         // 确保 .robit 目录存在
         if !robit_dir.exists() {
+            tracing::debug!("Creating .robit directory at: {}", robit_dir.display());
             std::fs::create_dir_all(&robit_dir)
                 .map_err(LockError::CreateDir)?;
         }
@@ -129,6 +132,9 @@ impl DirectoryLock {
                 file.flush()?;
                 file.sync_data()?;
 
+                tracing::info!("Acquired directory lock at: {}", lock_path.display());
+                tracing::debug!("Lock info: {:?}", info);
+
                 Ok(Self {
                     lock_path: lock_path.to_path_buf(),
                     file: Some(file),
@@ -179,11 +185,16 @@ impl DirectoryLock {
 
 impl Drop for DirectoryLock {
     fn drop(&mut self) {
+        tracing::debug!("Releasing directory lock at: {}", self.lock_path.display());
         if let Some(file) = self.file.take() {
             let _ = file.unlock();
         }
         // 删除锁文件
-        let _ = std::fs::remove_file(&self.lock_path);
+        let result = std::fs::remove_file(&self.lock_path);
+        match result {
+            Ok(_) => tracing::debug!("Deleted lock file: {}", self.lock_path.display()),
+            Err(e) => tracing::debug!("Failed to delete lock file: {}", e),
+        }
     }
 }
 
