@@ -60,6 +60,15 @@ fn main() -> Result<()> {
         std::env::current_dir()?
     };
 
+    // Acquire directory lock
+    let _lock = match robit_agent::DirectoryLock::acquire(&working_dir, "robit-tui") {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+
     let config = load_config(cli.workdir.as_deref())?;
 
     // Initialize tracing (logs go to sink, not terminal) with config log_level

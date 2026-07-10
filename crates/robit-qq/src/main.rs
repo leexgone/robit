@@ -37,6 +37,16 @@ async fn main() {
         .workdir
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+
+    // Acquire directory lock
+    let _lock = match robit_agent::DirectoryLock::acquire(&working_dir, "robit-qq") {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+
     let config = load_config(Some(&working_dir)).expect("Failed to load config.toml");
 
     // Initialize logging with config

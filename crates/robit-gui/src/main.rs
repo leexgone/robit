@@ -40,6 +40,15 @@ fn main() {
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
 
+    // Acquire directory lock
+    let _lock = match robit_agent::DirectoryLock::acquire(&working_dir, "robit-gui") {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+
     let config =
         load_config(cli.workdir.as_deref()).expect("Failed to load config.toml configuration");
 

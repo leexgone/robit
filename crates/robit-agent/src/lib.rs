@@ -10,6 +10,7 @@ pub mod datetime;
 pub mod error;
 pub mod event;
 pub mod frontend;
+pub mod lock;
 pub mod media;
 pub mod prompt;
 pub mod skill;
@@ -23,6 +24,7 @@ pub use bootstrap::{
 };
 pub use error::AgentError;
 pub use event::{AgentEvent, FrontendMessage, MediaAttachment, SessionId};
+pub use lock::{DirectoryLock, LockError, LockInfo};
 pub use media::{download_and_encode_base64, download_media, MediaError};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
 pub use skill::{Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
