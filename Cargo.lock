@@ -3874,7 +3874,6 @@ dependencies = [
  "fs2",
  "futures",
  "globset",
- "libc",
  "regex",
  "reqwest",
  "robit-ai",
@@ -3888,7 +3887,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
