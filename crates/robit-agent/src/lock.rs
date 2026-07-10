@@ -261,18 +261,16 @@ fn get_username() -> Option<String> {
         }
     }
 
-    // Unix 备选方案
+    // 环境变量都不可用时的备选方案
     #[cfg(unix)]
     {
-        use std::ffi::CStr;
-        use libc::{getpwuid, getuid};
-
-        unsafe {
-            let uid = getuid();
-            let passwd = getpwuid(uid);
-            if !passwd.is_null() {
-                let name = CStr::from_ptr((*passwd).pw_name);
-                return name.to_str().ok().map(|s| s.to_string());
+        use std::process::Command;
+        if let Ok(output) = Command::new("whoami").output() {
+            if output.status.success() {
+                let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !name.is_empty() {
+                    return Some(name);
+                }
             }
         }
     }
