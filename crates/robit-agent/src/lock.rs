@@ -198,35 +198,45 @@ impl Drop for DirectoryLock {
     }
 }
 
-/// 检测进程是否还在运行（跨平台）
+/// 检测进程是否还在运行（跨平台简化版）
 fn is_process_running(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        use std::ffi::CString;
-        use libc::{kill, c_int, EPERM, ESRCH};
-
-        unsafe {
-            let result = kill(pid as c_int, 0);
-            if result == 0 {
-                return true;
+        use std::process::Command;
+        // 使用 `kill -0` 命令检测
+        let output = Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output();
+        match output {
+            Ok(output) => {
+                // 成功返回 true，或者返回 EPERM（没有权限但进程存在）
+                output.status.success() || output.status.code() == Some(1)
             }
-            let errno = *libc::__errno_location();
-            errno == EPERM // 没有权限但进程存在
+            Err(_) => {
+                // 命令失败，保守假设进程存在
+                true
+            }
         }
     }
 
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, GetLastError};
-        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle != 0 {
-                CloseHandle(handle);
-                return true;
+        use std::process::Command;
+        // 使用 `tasklist` 命令检测
+        let output = Command::new("tasklist")
+            .arg("/FI")
+            .arg(format!("PID eq {}", pid))
+            .output();
+        match output {
+            Ok(output) => {
+                let output_str = String::from_utf8_lossy(&output.stdout);
+                output_str.contains(&pid.to_string())
             }
-            GetLastError() != ERROR_INVALID_PARAMETER
+            Err(_) => {
+                // 命令失败，保守假设进程存在
+                true
+            }
         }
     }
 
