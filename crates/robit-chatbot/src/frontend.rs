@@ -107,6 +107,11 @@ impl ChatbotFrontend {
     /// Save an assistant message to the database.
     async fn save_assistant_message(&self, content: &str) {
         let db = self.db.lock().await;
+        // Don't save empty messages - they cause problems with LLM API
+        if content.is_empty() {
+            tracing::debug!("Not saving empty assistant message to DB");
+            return;
+        }
         match robit_agent::storage::insert_message(
             &db,
             &self.session_id,

@@ -425,6 +425,7 @@ pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionReque
             // Try to parse tool_calls from tool_info
             let tool_calls = if let Some(tool_info) = &data.tool_info {
                 if let serde_json::Value::Object(obj) = tool_info {
+                    // First try the "tool_calls" field (for complete tool calls)
                     if let Some(serde_json::Value::Array(arr)) = obj.get("tool_calls") {
                         use async_openai::types::chat::{
                             ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
@@ -454,18 +455,27 @@ pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionReque
                 None
             };
 
-            #[allow(deprecated)]
+            let content = if data.content.is_empty() {
+                None
+            } else {
+                Some(data.content.clone().into())
+            };
+
+            // Ensure assistant message has either content or tool_calls
+            if content.is_none() && tool_calls.is_none() {
+                // Skip this invalid message - it will cause API error
+                tracing::warn!("Skipping invalid assistant message: both content and tool_calls are None (message id: {:?})", data.id);
+                return Err(crate::error::AgentError::InternalError("Invalid assistant message".to_string()));
+            }
+
             Ok(ChatCompletionRequestMessage::Assistant(
                 ChatCompletionRequestAssistantMessage {
-                    content: if data.content.is_empty() {
-                        None
-                    } else {
-                        Some(data.content.clone().into())
-                    },
+                    content,
                     name: None,
                     tool_calls,
                     refusal: None,
                     audio: None,
+                    #[allow(deprecated)]
                     function_call: None,
                 }
                 .into(),
@@ -505,16 +515,31 @@ pub fn load_chat_messages(
     for (idx, msg) in messages.iter().enumerate() {
         match message_to_chat_message(&msg) {
             Ok(chat_msg) => {
-                tracing::debug!(
-                    "  Message {}: role={}, content_len={}",
-                    idx,
-                    msg.role,
-                    msg.content.len()
-                );
-                result.push(chat_msg);
+                // Double-check that assistant messages are valid before adding
+                let is_valid = match &chat_msg {
+                    ChatCompletionRequestMessage::Assistant(assistant_msg) => {
+                        assistant_msg.content.is_some() || assistant_msg.tool_calls.is_some()
+                    }
+                    _ => true,
+                };
+
+                if is_valid {
+                    tracing::debug!(
+                        "  Message {}: role={}, content_len={}",
+                        idx,
+                        msg.role,
+                        msg.content.len()
+                    );
+                    result.push(chat_msg);
+                } else {
+                    tracing::warn!(
+                        "Skipping invalid assistant message {} (has neither content nor tool_calls)",
+                        idx
+                    );
+                }
             }
             Err(e) => {
-                tracing::warn!("Failed to convert message {}: {}", idx, e);
+                tracing::warn!("Skipping invalid message {}: {}", idx, e);
             }
         }
     }

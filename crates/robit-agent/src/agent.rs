@@ -103,6 +103,8 @@ pub struct Agent {
     auto_approve: bool,
     /// Platform-specific extensions passed to ToolContext during tool execution.
     extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
+    /// Pending truncation result that needs compression (handled at start of run loop).
+    pending_truncation: Option<(SessionId, crate::context::TruncationResult)>,
 }
 
 impl Agent {
@@ -143,6 +145,7 @@ impl Agent {
             frontend,
             auto_approve,
             extensions,
+            pending_truncation: None,
         }
     }
 
@@ -224,6 +227,12 @@ impl Agent {
             session.history.len()
         );
 
+        let pending_truncation = if truncation_result.needs_compression {
+            Some((session_id.clone(), truncation_result))
+        } else {
+            None
+        };
+
         let mut sessions = HashMap::new();
         sessions.insert(session_id.clone(), session);
 
@@ -237,6 +246,7 @@ impl Agent {
             frontend,
             auto_approve,
             extensions,
+            pending_truncation,
         }
     }
 
@@ -244,6 +254,52 @@ impl Agent {
     /// Returns when the channel is closed or user types /exit.
     pub async fn run(mut self, mut message_rx: mpsc::Receiver<FrontendMessage>) {
         tracing::info!("Agent started, session: {}", self.default_session_id);
+
+        // Handle pending compression from with_history initialization
+        if let Some((session_id, truncation_result)) = self.pending_truncation.take() {
+            tracing::info!("=== Starting pending compression processing ===");
+            tracing::info!("Session ID: {}", session_id);
+            tracing::info!("Removed rounds: {}", truncation_result.rounds_removed);
+            tracing::info!("Removed messages: {}", truncation_result.messages_removed);
+            tracing::info!("Insert position: {}", truncation_result.insert_position);
+
+            let removed_tokens = crate::context::estimate_messages_tokens(&truncation_result.removed_messages);
+            tracing::info!("Estimated removed tokens: {}", removed_tokens);
+
+            tracing::info!("Generating summary for {} removed messages...", truncation_result.removed_messages.len());
+            let summary = generate_summary(&self.llm_client, &truncation_result.removed_messages).await;
+            tracing::info!("Generated summary: \"{}\"", summary);
+
+            // Replace the placeholder notice with the actual summary
+            let mut replaced = false;
+            if let Some(session) = self.sessions.get_mut(&session_id) {
+                tracing::info!("Session found, current history length: {}", session.history.len());
+                if let Some(msg) = session.history.get_mut(truncation_result.insert_position) {
+                    let notice = format!("[Earlier conversation summary: {}]", summary);
+                    tracing::info!("Replacing message at position {} with summary...", truncation_result.insert_position);
+                    *msg = ChatCompletionRequestMessage::User(
+                        ChatCompletionRequestUserMessage {
+                            content: notice.into(),
+                            name: Some("system_notice".to_string()),
+                        }
+                    );
+                    replaced = true;
+                    tracing::info!("Compression complete! Summary successfully inserted at position {}", truncation_result.insert_position);
+                } else {
+                    tracing::warn!("Insert position {} not found in session history (length: {})",
+                        truncation_result.insert_position, session.history.len());
+                }
+            } else {
+                tracing::warn!("Session {} not found, cannot insert summary", session_id);
+            }
+
+            if !replaced {
+                tracing::warn!("Summary not inserted, using fallback behavior");
+            }
+            tracing::info!("=== Compression processing finished ===");
+        } else {
+            tracing::info!("No pending compression needed");
+        }
 
         while let Some(msg) = message_rx.recv().await {
             match msg {
@@ -360,6 +416,15 @@ impl Agent {
     /// Run one step: call LLM, process response, execute tools.
     /// Returns the number of tool calls executed (0 = turn complete, no tools called).
     async fn run_one_step(&mut self, session_id: &SessionId) -> Result<usize> {
+        // First get the working_dir before the first mutable borrow
+        let working_dir = {
+            let session = self
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
+            session.working_dir.clone()
+        };
+
         let session = self
             .sessions
             .get_mut(session_id)
@@ -523,39 +588,42 @@ impl Agent {
         }
 
         // Add assistant message to history
-        let assistant_msg = ChatCompletionRequestMessage::Assistant(
-            ChatCompletionRequestAssistantMessage {
-                content: if full_text.is_empty() {
-                    None
-                } else {
-                    Some(full_text.clone().into())
-                },
-                name: None,
-                tool_calls: if assembled_tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(
-                        assembled_tool_calls
-                            .clone()
-                            .into_iter()
-                            .map(ChatCompletionMessageToolCalls::Function)
-                            .collect(),
-                    )
-                },
-                refusal: None,
-                audio: None,
-                #[allow(deprecated)]
-                function_call: None,
-            }
-            .into(),
-        );
+        let content = if full_text.is_empty() {
+            None
+        } else {
+            Some(full_text.clone().into())
+        };
+        let tool_calls = if assembled_tool_calls.is_empty() {
+            None
+        } else {
+            Some(
+                assembled_tool_calls
+                    .clone()
+                    .into_iter()
+                    .map(ChatCompletionMessageToolCalls::Function)
+                    .collect(),
+            )
+        };
 
-        let session = self
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
-        session.history.push(assistant_msg);
-        let working_dir = session.working_dir.clone();
+        // Ensure we don't add an invalid assistant message to history
+        if content.is_some() || tool_calls.is_some() {
+            let assistant_msg = ChatCompletionRequestMessage::Assistant(
+                ChatCompletionRequestAssistantMessage {
+                    content,
+                    name: None,
+                    tool_calls,
+                    refusal: None,
+                    audio: None,
+                    #[allow(deprecated)]
+                    function_call: None,
+                }
+                .into(),
+            );
+
+            session.history.push(assistant_msg);
+        } else {
+            tracing::warn!("Not adding empty assistant message to history (no content and no tool calls)");
+        }
 
         // If no tool calls, turn is complete
         if assembled_tool_calls.is_empty() {
@@ -849,7 +917,10 @@ async fn generate_summary(
     llm_client: &LlmClient,
     removed_messages: &[ChatCompletionRequestMessage],
 ) -> String {
+    tracing::debug!("Generating summary: removed_messages count = {}", removed_messages.len());
     let transcript = crate::context::format_removed_messages_as_transcript(removed_messages);
+    tracing::debug!("Formatted transcript length: {} characters", transcript.len());
+    tracing::trace!("Transcript content:\n{}", transcript);
 
     let system_prompt = "Summarize the following conversation transcript in 1-2 concise sentences. Focus on: what the user asked for, what actions were taken, and the outcomes. Be brief and factual.";
 
@@ -868,13 +939,17 @@ async fn generate_summary(
         ),
     ];
 
+    tracing::info!("Calling LLM to generate summary...");
     match llm_client.chat(messages, None).await {
         Ok(response) => {
+            tracing::info!("LLM responded successfully for summary generation");
+            tracing::debug!("Number of choices in response: {}", response.choices.len());
             if let Some(choice) = response.choices.first() {
+                tracing::debug!("Choice index: 0, has content: {}", choice.message.content.is_some());
                 if let Some(content) = &choice.message.content {
                     let summary = content.trim().to_string();
                     if !summary.is_empty() {
-                        tracing::info!("Generated summary: {}", summary);
+                        tracing::info!("Successfully generated summary (length: {})", summary.len());
                         return summary;
                     }
                 }
@@ -883,7 +958,7 @@ async fn generate_summary(
             "Conversation history compressed.".to_string()
         }
         Err(e) => {
-            tracing::warn!("Summary generation failed: {}, using fallback", e);
+            tracing::error!("Summary generation failed with error: {}, using fallback", e);
             "Conversation history compressed.".to_string()
         }
     }

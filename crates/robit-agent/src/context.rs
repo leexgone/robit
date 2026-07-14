@@ -272,8 +272,13 @@ impl ContextManager {
     ) -> TruncationResult {
         let estimated = estimate_messages_tokens_with_margin(messages, self.token_safety_margin);
         let threshold = self.truncation_threshold();
+        let initial_count = messages.len();
+
+        tracing::debug!("maybe_truncate: initial message count = {}, estimated tokens = {}, threshold = {}",
+            initial_count, estimated, threshold);
 
         if estimated <= threshold {
+            tracing::debug!("maybe_truncate: No truncation needed ({} <= {})", estimated, threshold);
             return TruncationResult {
                 rounds_removed: 0,
                 messages_removed: 0,
@@ -284,12 +289,17 @@ impl ContextManager {
         }
 
         tracing::info!(
-            "Context truncation needed: estimated {} tokens (with {:.1}x margin), threshold {} tokens, max {} tokens",
+            "=== Context truncation triggered ==="
+        );
+        tracing::info!(
+            "Estimated: {} tokens (with {:.1}x margin), Threshold: {} tokens, Max: {} tokens",
             estimated,
             self.token_safety_margin,
             threshold,
             self.max_tokens
         );
+        tracing::info!("Compression enabled: {}, Compression threshold: {} tokens",
+            self.compression_enabled, self.compression_token_threshold);
 
         // Find round boundaries: a round starts with a User message
         let mut round_starts: Vec<usize> = Vec::new();
@@ -298,8 +308,10 @@ impl ContextManager {
                 round_starts.push(i);
             }
         }
+        tracing::debug!("Found {} user message round boundaries", round_starts.len());
 
         if round_starts.is_empty() {
+            tracing::debug!("No user messages found, no truncation performed");
             return TruncationResult {
                 rounds_removed: 0,
                 messages_removed: 0,
@@ -312,6 +324,7 @@ impl ContextManager {
         // Count how many rounds we must keep
         let total_rounds = round_starts.len();
         let must_keep = self.min_keep_rounds.min(total_rounds);
+        tracing::debug!("Total rounds: {}, Must keep at least: {} rounds", total_rounds, must_keep);
 
         let mut removed_messages: Vec<ChatCompletionRequestMessage> = Vec::new();
         let mut rounds_removed = 0;
@@ -330,6 +343,8 @@ impl ContextManager {
                 messages.len()
             };
 
+            tracing::debug!("Removing round starting at index {} (rounds removed so far: {})", start_idx, rounds_removed);
+
             // Collect removed messages for potential compression
             if self.compression_enabled {
                 removed_messages.extend(messages[start_idx..end_idx].to_vec());
@@ -346,9 +361,11 @@ impl ContextManager {
 
             rounds_removed += 1;
             messages_removed += count;
+            tracing::debug!("Removed {} messages in this round", count);
         }
 
         if rounds_removed == 0 {
+            tracing::debug!("No rounds removed after checks");
             return TruncationResult {
                 rounds_removed: 0,
                 messages_removed: 0,
@@ -363,11 +380,18 @@ impl ContextManager {
         let needs_compression =
             self.compression_enabled && removed_tokens >= self.compression_token_threshold;
 
+        tracing::info!(
+            "Removed tokens estimate: {}, Compression threshold: {}, Needs compression: {}",
+            removed_tokens, self.compression_token_threshold, needs_compression
+        );
+
         // Insert informative notice after system messages
         let system_msg_count = messages
             .iter()
             .take_while(|m| is_system_message(m))
             .count();
+
+        tracing::debug!("System message count: {}, inserting notice at position: {}", system_msg_count, system_msg_count);
 
         let notice = if needs_compression {
             format!(
@@ -386,6 +410,8 @@ impl ContextManager {
             )
         };
 
+        tracing::debug!("Inserting notice message: {}", notice);
+
         let notice_msg = ChatCompletionRequestMessage::User(
             async_openai::types::chat::ChatCompletionRequestUserMessage {
                 content: notice.into(),
@@ -397,12 +423,18 @@ impl ContextManager {
         messages.insert(system_msg_count, notice_msg);
 
         tracing::info!(
-            "Context truncation: removed {} rounds ({} messages, ~{} tokens), kept {} rounds, needs_compression={}",
+            "=== Context truncation complete ==="
+        );
+        tracing::info!(
+            "Removed: {} rounds ({} messages, ~{} tokens), Kept: {} rounds",
             rounds_removed,
             messages_removed,
             removed_tokens,
-            round_starts.len(),
-            needs_compression
+            round_starts.len()
+        );
+        tracing::info!(
+            "Final message count: {}, Insert position: {}, Needs compression: {}",
+            messages.len(), system_msg_count, needs_compression
         );
 
         TruncationResult {

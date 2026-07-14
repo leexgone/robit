@@ -9,6 +9,33 @@ use async_openai::types::chat::{
 use crate::config::{resolve_profile, ResolvedModel, RobitConfig};
 use crate::error::LlmError;
 
+/// Validate that all messages are valid before sending to LLM.
+/// Returns a filtered list of messages with invalid messages removed.
+fn validate_and_filter_messages(mut messages: Vec<ChatCompletionRequestMessage>) -> Vec<ChatCompletionRequestMessage> {
+    let original_len = messages.len();
+    messages.retain(|msg| {
+        match msg {
+            ChatCompletionRequestMessage::Assistant(assistant_msg) => {
+                // Assistant message must have either content or tool_calls
+                let has_content = assistant_msg.content.is_some();
+                let has_tool_calls = assistant_msg.tool_calls.is_some();
+                if !has_content && !has_tool_calls {
+                    tracing::warn!("Filtering out invalid assistant message (has neither content nor tool_calls)");
+                    false
+                } else {
+                    true
+                }
+            }
+            _ => true
+        }
+    });
+    let filtered_len = messages.len();
+    if filtered_len < original_len {
+        tracing::info!("Filtered {} invalid messages from history", original_len - filtered_len);
+    }
+    messages
+}
+
 pub struct LlmClient {
     client: async_openai::Client<OpenAIConfig>,
     model: String,
@@ -44,6 +71,9 @@ impl LlmClient {
         messages: Vec<ChatCompletionRequestMessage>,
         tools: Option<Vec<ChatCompletionTools>>,
     ) -> Result<ChatCompletionResponseStream, LlmError> {
+        // Validate and filter messages before sending to LLM
+        let messages = validate_and_filter_messages(messages);
+
         let request = CreateChatCompletionRequest {
             model: self.model.clone(),
             messages,
@@ -64,6 +94,9 @@ impl LlmClient {
         messages: Vec<ChatCompletionRequestMessage>,
         tools: Option<Vec<ChatCompletionTools>>,
     ) -> Result<CreateChatCompletionResponse, LlmError> {
+        // Validate and filter messages before sending to LLM
+        let messages = validate_and_filter_messages(messages);
+
         let request = CreateChatCompletionRequest {
             model: self.model.clone(),
             messages,
