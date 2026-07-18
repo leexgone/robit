@@ -29,9 +29,11 @@ pub use media::{download_and_encode_base64, download_media, MediaError};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
 pub use skill::{Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
 pub use storage::{
-    activate_session, delete_session, find_session_by_chat_id, get_session,
-    insert_message, insert_session, list_all_sessions_by_chat_id, list_sessions,
-    load_chat_messages, message_to_chat_message, touch_session, update_session_title,
+    activate_session, delete_session, delete_memory_permanently, deactivate_memory,
+    find_memories_by_title, find_session_by_chat_id, get_memory, get_session,
+    insert_memory, insert_message, insert_session, list_all_sessions_by_chat_id, list_sessions,
+    list_memories, load_chat_messages, message_to_chat_message, recall_memories,
+    touch_session, update_memory, update_session_title, Memory, MemoryFilter, MemoryType,
 };
 pub use tool::load_skill::LoadSkillTool;
 pub use tool::{Tool, ToolCallInfo, ToolContext, ToolRegistry, ToolResult};

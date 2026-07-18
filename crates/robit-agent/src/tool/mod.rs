@@ -8,6 +8,7 @@ pub mod load_skill;
 pub mod ls;
 pub mod find;
 pub mod grep;
+pub mod memory;
 
 use async_trait::async_trait;
 use robit_ai::ChatCompletionTools;

@@ -15,6 +15,7 @@ use crate::tool::find::FindTool;
 use crate::tool::grep::GrepTool;
 use crate::tool::load_skill::LoadSkillTool;
 use crate::tool::ls::LsTool;
+use crate::tool::memory::{ForgetTool, ListMemoriesTool, MemorizeTool, RecallTool};
 use crate::tool::read::ReadTool;
 use crate::tool::write::WriteTool;
 use crate::tool::ToolRegistry;
@@ -129,6 +130,10 @@ pub fn create_tools_from_config(
                     "ls" => tools.register(LsTool::new()),
                     "find" => tools.register(FindTool::new(max_bytes)),
                     "grep" => tools.register(GrepTool::new(max_lines, max_bytes)),
+                    "memorize" => tools.register(MemorizeTool::new()),
+                    "recall" => tools.register(RecallTool::new()),
+                    "forget" => tools.register(ForgetTool::new()),
+                    "list_memories" => tools.register(ListMemoriesTool::new()),
                     _ => tracing::warn!("Unknown tool in enabled_tools config: {}", tool_name),
                 }
             }
@@ -141,6 +146,10 @@ pub fn create_tools_from_config(
             tools.register(LsTool::new());
             tools.register(FindTool::new(max_bytes));
             tools.register(GrepTool::new(max_lines, max_bytes));
+            tools.register(MemorizeTool::new());
+            tools.register(RecallTool::new());
+            tools.register(ForgetTool::new());
+            tools.register(ListMemoriesTool::new());
         }
     }
 

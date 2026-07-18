@@ -68,7 +68,126 @@ pub struct ToolCallInfoData {
 }
 
 /// Current schema version. Increment when the schema changes.
-const CURRENT_SCHEMA_VERSION: i32 = 2;
+const CURRENT_SCHEMA_VERSION: i32 = 3;
+
+// ============================================================================
+// Memory data structures
+// ============================================================================
+
+/// Type of memory entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MemoryType {
+    /// Objective fact (e.g., "User likes Rust").
+    Fact,
+    /// User preference (e.g., "Prefer deepseek-chat").
+    Preference,
+    /// Note or documentation (e.g., "Project directory structure").
+    Note,
+    /// Task record (e.g., "Completed XX last time").
+    Task,
+    /// Custom type with a name.
+    Custom(String),
+}
+
+impl MemoryType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            MemoryType::Fact => "fact",
+            MemoryType::Preference => "preference",
+            MemoryType::Note => "note",
+            MemoryType::Task => "task",
+            MemoryType::Custom(s) => s,
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "fact" => MemoryType::Fact,
+            "preference" => MemoryType::Preference,
+            "note" => MemoryType::Note,
+            "task" => MemoryType::Task,
+            _ => MemoryType::Custom(s.to_string()),
+        }
+    }
+}
+
+/// A memory entry stored in the database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Memory {
+    /// Unique ID (UUID v4).
+    pub id: String,
+    /// Associated session ID (optional).
+    pub session_id: Option<String>,
+    /// Associated chat ID (for Bot platforms, optional).
+    pub chat_id: Option<String>,
+    /// Type of memory.
+    pub memory_type: MemoryType,
+    /// Short title for the memory (for retrieval).
+    pub title: String,
+    /// Full content of the memory.
+    pub content: String,
+    /// Tags for categorization and filtering.
+    pub tags: Vec<String>,
+    /// Soft deletion flag.
+    pub is_active: bool,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+    /// ISO 8601 last update timestamp.
+    pub updated_at: String,
+}
+
+/// Filter for memory queries.
+#[derive(Debug, Clone, Default)]
+pub struct MemoryFilter {
+    /// Filter by memory type.
+    pub memory_type: Option<MemoryType>,
+    /// Filter by tags (any match).
+    pub tags: Option<Vec<String>>,
+    /// Filter by session ID.
+    pub session_id: Option<String>,
+    /// Filter by chat ID (Bot platforms).
+    pub chat_id: Option<String>,
+    /// Filter by creation time (only memories created after this time).
+    pub since: Option<String>,
+    /// Only return active memories (default: true).
+    pub only_active: bool,
+}
+
+impl Memory {
+    /// Create a new memory with the given details.
+    pub fn new(
+        title: String,
+        content: String,
+        memory_type: MemoryType,
+        tags: Vec<String>,
+    ) -> Self {
+        let now = current_timestamp();
+        Memory {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: None,
+            chat_id: None,
+            memory_type,
+            title,
+            content,
+            tags,
+            is_active: true,
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    }
+
+    /// Attach a session ID to this memory.
+    pub fn with_session_id(mut self, session_id: String) -> Self {
+        self.session_id = Some(session_id);
+        self
+    }
+
+    /// Attach a chat ID to this memory.
+    pub fn with_chat_id(mut self, chat_id: String) -> Self {
+        self.chat_id = Some(chat_id);
+        self
+    }
+}
 
 /// Initialize the database: create tables if needed, then run migrations.
 ///
@@ -164,7 +283,28 @@ fn create_all_tables(conn: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_messages_created
             ON messages(session_id, created_at);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_chat_id
-            ON sessions(chat_id) WHERE chat_id IS NOT NULL;",
+            ON sessions(chat_id) WHERE chat_id IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS memories (
+            id           TEXT PRIMARY KEY,
+            session_id   TEXT,
+            chat_id      TEXT,
+            memory_type  TEXT NOT NULL,
+            title        TEXT NOT NULL,
+            content      TEXT NOT NULL,
+            tags         TEXT,
+            is_active    INTEGER DEFAULT 1,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
+        CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_chat ON memories(chat_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(is_active) WHERE is_active = 1;",
     )?;
     Ok(())
 }
@@ -176,6 +316,7 @@ fn migrate(conn: &Connection, from: i32, to: i32) -> SqliteResult<()> {
         tracing::info!("Migrating database: v{} → v{}", current, current + 1);
         match current {
             1 => migrate_v1_to_v2(conn)?,
+            2 => migrate_v2_to_v3(conn)?,
             other => {
                 return Err(rusqlite::Error::InvalidParameterName(format!(
                     "Unknown schema version: {}",
@@ -192,9 +333,6 @@ fn migrate(conn: &Connection, from: i32, to: i32) -> SqliteResult<()> {
 
 /// v1 → v2: add `chat_id`, `source` to sessions; ensure `tool_info` on messages;
 /// add the partial unique index on `sessions.chat_id`.
-///
-/// Each ALTER TABLE is wrapped to ignore "duplicate column" errors so the
-/// migration is idempotent (safe to run on a partially migrated DB).
 fn migrate_v1_to_v2(conn: &Connection) -> SqliteResult<()> {
     let _ = conn.execute("ALTER TABLE sessions ADD COLUMN chat_id TEXT", []);
     let _ = conn.execute(
@@ -205,6 +343,33 @@ fn migrate_v1_to_v2(conn: &Connection) -> SqliteResult<()> {
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_chat_id
             ON sessions(chat_id) WHERE chat_id IS NOT NULL;",
+    )?;
+    Ok(())
+}
+
+/// v2 → v3: add `memories` table for long-term memory.
+fn migrate_v2_to_v3(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS memories (
+            id           TEXT PRIMARY KEY,
+            session_id   TEXT,
+            chat_id      TEXT,
+            memory_type  TEXT NOT NULL,
+            title        TEXT NOT NULL,
+            content      TEXT NOT NULL,
+            tags         TEXT,
+            is_active    INTEGER DEFAULT 1,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
+        CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_chat ON memories(chat_id);
+        CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(is_active) WHERE is_active = 1;",
     )?;
     Ok(())
 }
@@ -578,6 +743,307 @@ pub fn load_chat_messages(
     }
     tracing::debug!("load_chat_messages: successfully converted {} messages", result.len());
     Ok(result)
+}
+
+// ============================================================================
+// Memory accessors (public)
+// ============================================================================
+
+/// Insert a new memory into the database.
+pub fn insert_memory(conn: &Connection, memory: &Memory) -> SqliteResult<()> {
+    let tags_str = if memory.tags.is_empty() {
+        None
+    } else {
+        Some(memory.tags.join(","))
+    };
+
+    conn.execute(
+        "INSERT INTO memories (
+            id, session_id, chat_id, memory_type, title, content, tags, is_active, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            memory.id,
+            memory.session_id,
+            memory.chat_id,
+            memory.memory_type.as_str(),
+            memory.title,
+            memory.content,
+            tags_str,
+            memory.is_active,
+            memory.created_at,
+            memory.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Update an existing memory.
+pub fn update_memory(conn: &Connection, memory: &Memory) -> SqliteResult<()> {
+    let tags_str = if memory.tags.is_empty() {
+        None
+    } else {
+        Some(memory.tags.join(","))
+    };
+
+    conn.execute(
+        "UPDATE memories SET
+            title = ?1,
+            content = ?2,
+            tags = ?3,
+            memory_type = ?4,
+            updated_at = ?5
+        WHERE id = ?6",
+        params![
+            memory.title,
+            memory.content,
+            tags_str,
+            memory.memory_type.as_str(),
+            current_timestamp(),
+            memory.id,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Deactivate a memory (soft delete).
+pub fn deactivate_memory(conn: &Connection, memory_id: &str) -> SqliteResult<()> {
+    conn.execute(
+        "UPDATE memories SET is_active = 0, updated_at = ?1 WHERE id = ?2",
+        params![current_timestamp(), memory_id],
+    )?;
+    Ok(())
+}
+
+/// Permanently delete a memory (hard delete).
+pub fn delete_memory_permanently(conn: &Connection, memory_id: &str) -> SqliteResult<()> {
+    conn.execute("DELETE FROM memories WHERE id = ?1", params![memory_id])?;
+    Ok(())
+}
+
+/// Get a single memory by ID.
+pub fn get_memory(conn: &Connection, memory_id: &str) -> SqliteResult<Option<Memory>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session_id, chat_id, memory_type, title, content, tags, is_active, created_at, updated_at
+         FROM memories WHERE id = ?1",
+    )?;
+
+    let mut rows = stmt.query_map(params![memory_id], map_memory_row)?;
+    rows.next().transpose()
+}
+
+/// Find memories by title (fuzzy match using LIKE).
+pub fn find_memories_by_title(
+    conn: &Connection,
+    title_part: &str,
+    filter: &MemoryFilter,
+    limit: Option<usize>,
+) -> SqliteResult<Vec<Memory>> {
+    let (sql, params) = build_memory_query(Some(title_part), filter, limit);
+    let mut stmt = conn.prepare(&sql)?;
+
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), map_memory_row)?;
+    rows.collect()
+}
+
+/// List memories with optional filtering.
+pub fn list_memories(
+    conn: &Connection,
+    filter: &MemoryFilter,
+    limit: Option<usize>,
+) -> SqliteResult<Vec<Memory>> {
+    let (sql, params) = build_memory_query(None, filter, limit);
+    let mut stmt = conn.prepare(&sql)?;
+
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), map_memory_row)?;
+    rows.collect()
+}
+
+/// Recall memories using keyword search (title, content, tags).
+pub fn recall_memories(
+    conn: &Connection,
+    query: &str,
+    filter: &MemoryFilter,
+    limit: usize,
+) -> SqliteResult<Vec<Memory>> {
+    // First try exact match in title
+    let mut results = find_memories_by_title(conn, query, filter, Some(limit))?;
+
+    // If we have enough results, return them
+    if results.len() >= limit {
+        results.truncate(limit);
+        return Ok(results);
+    }
+
+    // Otherwise, do a broader search using LIKE on title or content
+    let remaining = limit - results.len();
+    let (sql, params) = build_recall_query(query, filter, remaining);
+    let mut stmt = conn.prepare(&sql)?;
+
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), map_memory_row)?;
+    for row in rows {
+        let memory = row?;
+        if !results.iter().any(|m| m.id == memory.id) {
+            results.push(memory);
+        }
+    }
+
+    results.truncate(limit);
+    Ok(results)
+}
+
+// ============================================================================
+// Memory helpers (private)
+// ============================================================================
+
+fn map_memory_row(row: &rusqlite::Row) -> SqliteResult<Memory> {
+    let tags_str: Option<String> = row.get(6)?;
+    let tags = tags_str
+        .map(|s| {
+            s.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(Memory {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        chat_id: row.get(2)?,
+        memory_type: MemoryType::from_str(&row.get::<_, String>(3)?),
+        title: row.get(4)?,
+        content: row.get(5)?,
+        tags,
+        is_active: row.get::<_, i32>(7)? != 0,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+fn build_memory_query<'a>(
+    title_search: Option<&'a str>,
+    filter: &'a MemoryFilter,
+    limit: Option<usize>,
+) -> (String, Vec<rusqlite::types::ToSqlOutput<'a>>) {
+    let mut conditions = Vec::new();
+    let mut params: Vec<rusqlite::types::ToSqlOutput> = Vec::new();
+
+    // Active flag
+    if filter.only_active {
+        conditions.push("is_active = 1".to_string());
+    }
+
+    // Type filter
+    if let Some(memory_type) = &filter.memory_type {
+        conditions.push("memory_type = ?".to_string());
+        params.push(memory_type.as_str().into());
+    }
+
+    // Session ID
+    if let Some(session_id) = &filter.session_id {
+        conditions.push("session_id = ?".to_string());
+        params.push(session_id.as_str().into());
+    }
+
+    // Chat ID
+    if let Some(chat_id) = &filter.chat_id {
+        conditions.push("chat_id = ?".to_string());
+        params.push(chat_id.as_str().into());
+    }
+
+    // Since time
+    if let Some(since) = &filter.since {
+        conditions.push("created_at >= ?".to_string());
+        params.push(since.as_str().into());
+    }
+
+    // Title search
+    if let Some(title) = title_search {
+        conditions.push("title LIKE ?".to_string());
+        params.push(format!("%{}%", title).into());
+    }
+
+    // Tags filter (any match)
+    if let Some(tags) = &filter.tags {
+        if !tags.is_empty() {
+            let tag_conditions: Vec<_> = tags.iter().map(|_| "tags LIKE ?").collect();
+            conditions.push(format!("({})", tag_conditions.join(" OR ")));
+            for tag in tags {
+                params.push(format!("%{}%", tag).into());
+            }
+        }
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let limit_clause = limit.map(|l| format!("LIMIT {}", l)).unwrap_or_default();
+
+    let sql = format!(
+        "SELECT id, session_id, chat_id, memory_type, title, content, tags, is_active, created_at, updated_at
+         FROM memories
+         {}
+         ORDER BY created_at DESC
+         {}",
+        where_clause, limit_clause
+    );
+
+    (sql, params)
+}
+
+fn build_recall_query<'a>(
+    query: &'a str,
+    filter: &'a MemoryFilter,
+    limit: usize,
+) -> (String, Vec<rusqlite::types::ToSqlOutput<'a>>) {
+    let mut conditions = Vec::new();
+    let mut params: Vec<rusqlite::types::ToSqlOutput> = Vec::new();
+
+    // Active flag
+    if filter.only_active {
+        conditions.push("is_active = 1".to_string());
+    }
+
+    // Type filter
+    if let Some(memory_type) = &filter.memory_type {
+        conditions.push("memory_type = ?".to_string());
+        params.push(memory_type.as_str().into());
+    }
+
+    // Session ID
+    if let Some(session_id) = &filter.session_id {
+        conditions.push("session_id = ?".to_string());
+        params.push(session_id.as_str().into());
+    }
+
+    // Chat ID
+    if let Some(chat_id) = &filter.chat_id {
+        conditions.push("chat_id = ?".to_string());
+        params.push(chat_id.as_str().into());
+    }
+
+    // Keyword search (match in title, content, or tags)
+    conditions.push("(title LIKE ? OR content LIKE ? OR tags LIKE ?)".to_string());
+    let pattern = format!("%{}%", query);
+    params.push(pattern.clone().into());
+    params.push(pattern.clone().into());
+    params.push(pattern.into());
+
+    let where_clause = format!("WHERE {}", conditions.join(" AND "));
+
+    let sql = format!(
+        "SELECT id, session_id, chat_id, memory_type, title, content, tags, is_active, created_at, updated_at
+         FROM memories
+         {}
+         ORDER BY created_at DESC
+         LIMIT {}",
+        where_clause, limit
+    );
+
+    (sql, params)
 }
 
 #[cfg(test)]

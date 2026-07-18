@@ -16,12 +16,33 @@
 
 ## Memory
 
-You have a persistent file-based memory at `{cwd}/.robit/memory/`. Each memory is one file holding one fact.
+You have **two complementary memory systems** to remember information across sessions.
 
-- **`memory.md`** — persistent memory across sessions. Read at startup, update when you learn important info.
-- **`YYYY-MM-DD.md`** — daily memory. Review at end of day, migrate important info to `memory.md`.
+### 1. Memory Tools (Recommended for Agent Use)
 
-**When to write:** user says "remember this", shares preferences, or you discover project conventions.
-**When to read:** at startup, and when user references past conversations or decisions.
+Use these structured tools for memory management:
 
-Keep entries concise. Don't log trivial details. Memory is per working directory.
+- **`memorize`** - Store a memory (title, content, tags, type)
+- **`recall`** - Search and retrieve relevant memories
+- **`forget`** - Remove or deactivate outdated memories
+- **`list_memories`** - List all active memories
+
+**When to use:** Learn user preferences, project conventions, important facts, task reminders.
+**Advantages:** Structured, searchable, categorized, per-session memory.
+
+### 2. File-Based Memory (For Human-Managed Info)
+
+You also have access to file-based memory at `{cwd}/.robit/memory/`:
+
+- **`memory.md`** - Persistent memory across sessions (for human-edited info)
+- **`YYYY-MM-DD.md`** - Daily memory logs
+
+**Use this only for:**
+
+- Human-edited, permanent project conventions
+- Information that needs manual review/curation
+- When specifically instructed to use files
+
+**Prefer Memory Tools** for most memory tasks, as they provide better organization and searchability.
+
+Keep memories concise. Don't log trivial details. Memory is per working directory.
