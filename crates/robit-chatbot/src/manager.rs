@@ -243,6 +243,33 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             return;
         }
 
+        // Check for command messages
+        let trimmed_text = msg.text.trim();
+        if trimmed_text.eq_ignore_ascii_case("/clear") {
+            self.handle_clear_command(&chat_id).await;
+            return;
+        }
+        if trimmed_text.eq_ignore_ascii_case("/stop") {
+            self.handle_stop_command(&chat_id).await;
+            return;
+        }
+        if trimmed_text.eq_ignore_ascii_case("/new") {
+            self.handle_new_command(&chat_id).await;
+            return;
+        }
+        if trimmed_text.eq_ignore_ascii_case("/list") {
+            self.handle_list_command(&chat_id).await;
+            return;
+        }
+        if trimmed_text.to_lowercase().starts_with("/switch ") {
+            self.handle_switch_command(&chat_id, &trimmed_text["/switch ".len()..]).await;
+            return;
+        }
+        if trimmed_text.eq_ignore_ascii_case("/help") {
+            self.handle_help_command(&chat_id).await;
+            return;
+        }
+
         // Download and save media files locally
         let media_dir = self.working_dir.join("media");
         for attachment in &msg.attachments {
@@ -285,6 +312,202 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                     .await;
             }
         }
+    }
+
+    /// Handle /clear command: clear the current conversation context (in-memory only).
+    async fn handle_clear_command(&self, chat_id: &str) {
+        // Send "/clear" as a user message to Agent - Agent already has built-in handling for this
+        match self.get_or_create_session(chat_id, "clear command").await {
+            Ok((tx, _)) => {
+                if let Err(e) = tx.send("/clear".into()).await {
+                    tracing::warn!("Failed to send /clear to agent: {}", e);
+                    let _ = self.platform_sender.send(chat_id, "❌ 清空失败").await;
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to get session for /clear: {}", e);
+                let _ = self.platform_sender.send(chat_id, &format!("❌ 无法执行清空：{}", e)).await;
+            }
+        }
+    }
+
+    /// Handle /stop command: stop the current operation.
+    async fn handle_stop_command(&self, chat_id: &str) {
+        let agents = self.agents.lock().await;
+        if let Some(handle) = agents.get(chat_id) {
+            // Send Cancel message to Agent
+            if let Err(e) = handle.message_tx.send(robit_agent::event::FrontendMessage::Cancel).await {
+                tracing::warn!("Failed to send Cancel to agent: {}", e);
+                let _ = self.platform_sender.send(chat_id, "❌ 停止失败").await;
+                return;
+            }
+            let _ = self.platform_sender.send(chat_id, "⏹️ 已发送停止信号").await;
+        } else {
+            let _ = self.platform_sender.send(chat_id, "ℹ️ 当前没有活动的会话").await;
+        }
+    }
+
+    /// Handle /new command: create a fresh conversation session.
+    async fn handle_new_command(&self, chat_id: &str) {
+        let mut agents = self.agents.lock().await;
+
+        // 1. 如果有当前会话，先关闭它
+        if let Some(old_handle) = agents.remove(chat_id) {
+            // 把旧会话标记为不活跃
+            let db = self.db.lock().await;
+            if let Err(e) = robit_agent::storage::delete_session(&db, &old_handle.session_id) {
+                tracing::warn!("Failed to deactivate old session: {}", e);
+            }
+            drop(db);
+
+            // 丢弃旧的 Agent 通道，让任务自然结束
+            drop(old_handle);
+        }
+        drop(agents);
+
+        // 2. 创建新会话（会自动触发 get_or_create_session）
+        match self.get_or_create_session(chat_id, "新会话").await {
+            Ok((_, frontend)) => {
+                let msg = format!(
+                    "✨ 已创建新会话\n会话ID: {}\n旧会话已归档，使用 /list 查看历史",
+                    frontend.session_id
+                );
+                let _ = self.platform_sender.send(chat_id, &msg).await;
+            }
+            Err(e) => {
+                tracing::error!("Failed to create new session: {}", e);
+                let _ = self.platform_sender.send(chat_id, &format!("❌ 创建新会话失败：{}", e)).await;
+            }
+        }
+    }
+
+    /// Handle /list command: list all sessions for this chat.
+    async fn handle_list_command(&self, chat_id: &str) {
+        let db = self.db.lock().await;
+        match robit_agent::storage::list_all_sessions_by_chat_id(&db, chat_id) {
+            Ok(sessions) if sessions.is_empty() => {
+                let _ = self.platform_sender.send(chat_id, "ℹ️ 暂无历史会话").await;
+            }
+            Ok(sessions) => {
+                let mut list_text = String::from("📜 历史会话列表\n\n");
+                for (i, session) in sessions.iter().enumerate() {
+                    let indicator = if i == 0 { "👉" } else { "  " };
+                    let current_mark = if i == 0 { " [当前]" } else { "" };
+                    list_text.push_str(&format!(
+                        "{} {}. {}{}\n",
+                        indicator,
+                        i + 1,
+                        session.title,
+                        current_mark
+                    ));
+                    list_text.push_str(&format!(
+                        "   ID: {} | 创建: {}\n\n",
+                        session.id,
+                        session.created_at
+                    ));
+                }
+                list_text.push_str("💡 使用 /switch <序号> 切换到对应会话");
+                let _ = self.platform_sender.send(chat_id, &list_text).await;
+            }
+            Err(e) => {
+                tracing::error!("Failed to list sessions: {}", e);
+                let _ = self.platform_sender.send(chat_id, &format!("❌ 获取会话列表失败：{}", e)).await;
+            }
+        }
+    }
+
+    /// Handle /switch command: switch to a specific session.
+    async fn handle_switch_command(&self, chat_id: &str, arg: &str) {
+        let trimmed_arg = arg.trim();
+
+        // 解析序号（支持数字）
+        let session_index = match trimmed_arg.parse::<usize>() {
+            Ok(n) if n > 0 => n - 1, // 转换为0-based索引
+            _ => {
+                let _ = self.platform_sender.send(chat_id, "❌ 请输入有效的会话序号，如 /switch 1").await;
+                return;
+            }
+        };
+
+        // 获取会话列表
+        let db = self.db.lock().await;
+        let sessions = match robit_agent::storage::list_all_sessions_by_chat_id(&db, chat_id) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to list sessions: {}", e);
+                let _ = self.platform_sender.send(chat_id, &format!("❌ 获取会话列表失败：{}", e)).await;
+                return;
+            }
+        };
+        drop(db);
+
+        // 检查序号是否有效
+        if session_index >= sessions.len() {
+            let _ = self.platform_sender.send(
+                chat_id,
+                &format!("❌ 会话序号无效，共有 {} 个会话", sessions.len())
+            ).await;
+            return;
+        }
+
+        let target_session = &sessions[session_index];
+        let target_id = target_session.id.clone();
+
+        // 如果已经是当前会话，不需要切换
+        {
+            let agents = self.agents.lock().await;
+            if let Some(current) = agents.get(chat_id) {
+                if current.session_id == target_id {
+                    let _ = self.platform_sender.send(chat_id, "ℹ️ 已经是当前会话").await;
+                    return;
+                }
+            }
+        }
+
+        // 在数据库中激活目标会话，停用其他会话
+        let db = self.db.lock().await;
+        if let Err(e) = robit_agent::storage::activate_session(&db, &target_id, chat_id) {
+            tracing::error!("Failed to activate session: {}", e);
+            let _ = self.platform_sender.send(chat_id, &format!("❌ 切换失败：{}", e)).await;
+            return;
+        }
+        drop(db);
+
+        // 替换内存中的 Agent
+        let mut agents = self.agents.lock().await;
+        // 先移除旧的
+        agents.remove(chat_id);
+        drop(agents);
+
+        // 创建新的 Agent
+        match self.get_or_create_session(chat_id, "切换会话").await {
+            Ok((_, _frontend)) => {
+                let _ = self.platform_sender.send(
+                    chat_id,
+                    &format!("✅ 已切换到会话：{}", target_session.title)
+                ).await;
+            }
+            Err(e) => {
+                tracing::error!("Failed to create agent after switch: {}", e);
+                let _ = self.platform_sender.send(chat_id, &format!("❌ 会话加载失败：{}", e)).await;
+            }
+        }
+    }
+
+    /// Handle /help command: show available commands.
+    async fn handle_help_command(&self, chat_id: &str) {
+        let help_text = r#"🤖 Robit 帮助
+
+可用指令：
+- /clear - 清空当前对话上下文（仅内存中）
+- /stop - 停止当前执行
+- /new - 创建新会话（旧会话归档）
+- /list - 列出所有历史会话
+- /switch <序号> - 切换到指定会话
+- /help - 显示此帮助
+
+提示：直接发送消息与机器人对话即可。"#;
+        let _ = self.platform_sender.send(chat_id, help_text).await;
     }
 
     /// Get an existing Agent session for `chat_id`, or create a new one.

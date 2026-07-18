@@ -298,6 +298,39 @@ pub fn find_session_by_chat_id(
     }
 }
 
+/// List ALL sessions (including inactive ones) for a chat_id, ordered by most recent first.
+pub fn list_all_sessions_by_chat_id(
+    conn: &Connection,
+    chat_id: &str,
+) -> SqliteResult<Vec<SessionInfo>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, chat_id, title, model, source, created_at, updated_at \
+         FROM sessions WHERE chat_id = ?1 ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt.query_map(params![chat_id], map_session_row)?;
+    rows.collect()
+}
+
+/// Activate a specific session and deactivate others for the same chat_id.
+pub fn activate_session(
+    conn: &Connection,
+    session_id: &str,
+    chat_id: &str,
+) -> SqliteResult<()> {
+    let now = current_timestamp();
+    // First deactivate all sessions for this chat_id
+    conn.execute(
+        "UPDATE sessions SET is_active = 0 WHERE chat_id = ?1",
+        params![chat_id],
+    )?;
+    // Then activate the target session and update its timestamp
+    conn.execute(
+        "UPDATE sessions SET is_active = 1, updated_at = ?1 WHERE id = ?2",
+        params![now, session_id],
+    )?;
+    Ok(())
+}
+
 /// Get a single session by ID.
 pub fn get_session(conn: &Connection, id: &str) -> SqliteResult<Option<SessionInfo>> {
     let mut stmt = conn.prepare(

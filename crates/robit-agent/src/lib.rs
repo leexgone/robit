@@ -28,6 +28,10 @@ pub use lock::{DirectoryLock, LockError, LockInfo};
 pub use media::{download_and_encode_base64, download_media, MediaError};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
 pub use skill::{Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
-pub use storage::{load_chat_messages, message_to_chat_message};
+pub use storage::{
+    activate_session, delete_session, find_session_by_chat_id, get_session,
+    insert_message, insert_session, list_all_sessions_by_chat_id, list_sessions,
+    load_chat_messages, message_to_chat_message, touch_session, update_session_title,
+};
 pub use tool::load_skill::LoadSkillTool;
 pub use tool::{Tool, ToolCallInfo, ToolContext, ToolRegistry, ToolResult};
