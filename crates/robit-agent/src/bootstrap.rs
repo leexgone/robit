@@ -98,7 +98,7 @@ pub fn filter_skills_by_config(skills: Vec<Skill>, config: &RobitConfig) -> Vec<
 ///
 /// - If enabled_tools is not specified: all tools are registered
 /// - If enabled_tools is specified: only register tools in the list
-/// - `read` and `load_skill` are always registered (required for basic functionality)
+/// - `read`, `load_skill`, and memory tools are always registered (required for basic functionality)
 pub fn create_tools_from_config(
     config: &RobitConfig,
     skill_registry: Arc<SkillRegistry>,
@@ -110,46 +110,46 @@ pub fn create_tools_from_config(
         .and_then(|c| c.max_output_bytes)
         .unwrap_or(51200);
 
-    // Always register read and load_skill (required for basic functionality)
+    // Always register read, load_skill, and memory tools (required for basic functionality)
     tools.register(ReadTool::new(max_lines, max_bytes));
     tools.register(LoadSkillTool::new(skill_registry));
+    tools.register(MemorizeTool::new());
+    tools.register(RecallTool::new());
+    tools.register(ForgetTool::new());
+    tools.register(ListMemoriesTool::new());
 
     // Get enabled tools from config
     let enabled_tools = config.app.as_ref().and_then(|a| a.enabled_tools.as_ref());
 
     match enabled_tools {
         Some(list) => {
-            // Configured: only register specified tools (read and load_skill already registered)
+            // Configured: only register specified tools (always available tools already registered)
             for tool_name in list {
                 match tool_name.as_str() {
                     "read" => {} // already registered
                     "load_skill" => {} // already registered
+                    "memorize" => {} // already registered
+                    "recall" => {} // already registered
+                    "forget" => {} // already registered
+                    "list_memories" => {} // already registered
                     "bash" => tools.register(BashTool::new(max_bytes)),
                     "write" => tools.register(WriteTool::new()),
                     "edit" => tools.register(EditTool::new()),
                     "ls" => tools.register(LsTool::new()),
                     "find" => tools.register(FindTool::new(max_bytes)),
                     "grep" => tools.register(GrepTool::new(max_lines, max_bytes)),
-                    "memorize" => tools.register(MemorizeTool::new()),
-                    "recall" => tools.register(RecallTool::new()),
-                    "forget" => tools.register(ForgetTool::new()),
-                    "list_memories" => tools.register(ListMemoriesTool::new()),
                     _ => tracing::warn!("Unknown tool in enabled_tools config: {}", tool_name),
                 }
             }
         }
         None => {
-            // Not configured: register all tools
+            // Not configured: register all remaining tools
             tools.register(BashTool::new(max_bytes));
             tools.register(WriteTool::new());
             tools.register(EditTool::new());
             tools.register(LsTool::new());
             tools.register(FindTool::new(max_bytes));
             tools.register(GrepTool::new(max_lines, max_bytes));
-            tools.register(MemorizeTool::new());
-            tools.register(RecallTool::new());
-            tools.register(ForgetTool::new());
-            tools.register(ListMemoriesTool::new());
         }
     }
 
