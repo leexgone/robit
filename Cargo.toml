@@ -34,7 +34,7 @@ tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 reqwest = { version = "0.13", features = ["json", "multipart"] }
 
 # 编码
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1.0"
 
 # 序列化
@@ -72,4 +72,4 @@ unicode-width = "0.2.2"
 pulldown-cmark = "0.13"
 
 # CLI
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
