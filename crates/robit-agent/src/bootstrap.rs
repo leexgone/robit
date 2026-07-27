@@ -17,6 +17,7 @@ use crate::tool::load_skill::LoadSkillTool;
 use crate::tool::ls::LsTool;
 use crate::tool::memory::{ForgetTool, ListMemoriesTool, MemorizeTool, RecallTool};
 use crate::tool::read::ReadTool;
+use crate::tool::search_history::SearchHistoryTool;
 use crate::tool::write::WriteTool;
 use crate::tool::ToolRegistry;
 use crate::SkillLoadError;
@@ -110,13 +111,14 @@ pub fn create_tools_from_config(
         .and_then(|c| c.max_output_bytes)
         .unwrap_or(51200);
 
-    // Always register read, load_skill, and memory tools (required for basic functionality)
+    // Always register read, load_skill, memory, and history tools (required for basic functionality)
     tools.register(ReadTool::new(max_lines, max_bytes));
     tools.register(LoadSkillTool::new(skill_registry));
     tools.register(MemorizeTool::new());
     tools.register(RecallTool::new());
     tools.register(ForgetTool::new());
     tools.register(ListMemoriesTool::new());
+    tools.register(SearchHistoryTool::new());
 
     // Get enabled tools from config
     let enabled_tools = config.app.as_ref().and_then(|a| a.enabled_tools.as_ref());
@@ -132,6 +134,7 @@ pub fn create_tools_from_config(
                     "recall" => {} // already registered
                     "forget" => {} // already registered
                     "list_memories" => {} // already registered
+                    "search_history" => {} // already registered
                     "bash" => tools.register(BashTool::new(max_bytes)),
                     "write" => tools.register(WriteTool::new()),
                     "edit" => tools.register(EditTool::new()),

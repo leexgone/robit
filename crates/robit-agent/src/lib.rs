@@ -33,7 +33,8 @@ pub use storage::{
     find_memories_by_title, find_session_by_chat_id, get_memory, get_session,
     insert_memory, insert_message, insert_session, list_all_sessions_by_chat_id, list_sessions,
     list_memories, load_chat_messages, message_to_chat_message, recall_memories,
-    touch_session, update_memory, update_session_title, Memory, MemoryFilter, MemoryType,
+    search_messages, touch_session, update_memory, update_session_title, Memory, MemoryFilter,
+    MemoryType, MessageSearchFilter, MessageSearchResult,
 };
 pub use tool::load_skill::LoadSkillTool;
 pub use tool::{Tool, ToolCallInfo, ToolContext, ToolRegistry, ToolResult};

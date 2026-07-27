@@ -7,7 +7,7 @@ use async_openai::types::chat::{
     ChatCompletionRequestToolMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent,
 };
-use rusqlite::{params, Connection, Result as SqliteResult};
+use rusqlite::{params, types::ToSqlOutput, Connection, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
 
 use crate::datetime::current_timestamp;
@@ -68,7 +68,7 @@ pub struct ToolCallInfoData {
 }
 
 /// Current schema version. Increment when the schema changes.
-const CURRENT_SCHEMA_VERSION: i32 = 3;
+const CURRENT_SCHEMA_VERSION: i32 = 4;
 
 // ============================================================================
 // Memory data structures
@@ -304,7 +304,29 @@ fn create_all_tables(conn: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
         CREATE INDEX IF NOT EXISTS idx_memories_chat ON memories(chat_id);
-        CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(is_active) WHERE is_active = 1;",
+        CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(is_active) WHERE is_active = 1;
+
+        -- FTS5 virtual table for full-text search on messages
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            content,
+            content='messages',
+            content_rowid='id',
+            tokenize='unicode61'
+        );
+
+        -- Triggers to keep FTS index in sync with messages table
+        CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF content ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;",
     )?;
     Ok(())
 }
@@ -317,6 +339,7 @@ fn migrate(conn: &Connection, from: i32, to: i32) -> SqliteResult<()> {
         match current {
             1 => migrate_v1_to_v2(conn)?,
             2 => migrate_v2_to_v3(conn)?,
+            3 => migrate_v3_to_v4(conn)?,
             other => {
                 return Err(rusqlite::Error::InvalidParameterName(format!(
                     "Unknown schema version: {}",
@@ -370,6 +393,36 @@ fn migrate_v2_to_v3(conn: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
         CREATE INDEX IF NOT EXISTS idx_memories_chat ON memories(chat_id);
         CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(is_active) WHERE is_active = 1;",
+    )?;
+    Ok(())
+}
+
+/// v3 → v4: add FTS5 virtual table for full-text search on messages.
+fn migrate_v3_to_v4(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            content,
+            content='messages',
+            content_rowid='id',
+            tokenize='unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF content ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        -- Backfill existing messages into the FTS index
+        INSERT INTO messages_fts(rowid, content)
+        SELECT id, content FROM messages;",
     )?;
     Ok(())
 }
@@ -695,6 +748,120 @@ pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionReque
             data.role
         ))),
     }
+}
+
+// ============================================================================
+// Message full-text search
+// ============================================================================
+
+/// A message search result from FTS full-text search.
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageSearchResult {
+    pub message_id: i64,
+    pub session_id: String,
+    pub session_title: String,
+    pub role: String,
+    pub content_snippet: String,
+    pub created_at: String,
+}
+
+/// Filter for message search queries.
+#[derive(Debug, Clone, Default)]
+pub struct MessageSearchFilter<'a> {
+    /// Search within a specific session (None means all sessions).
+    pub session_id: Option<&'a str>,
+    /// Filter by message role: "user", "assistant", "tool".
+    pub role: Option<&'a str>,
+    /// Only messages created after this ISO 8601 timestamp.
+    pub since: Option<&'a str>,
+    /// Only messages created before this ISO 8601 timestamp.
+    pub until: Option<&'a str>,
+}
+
+/// Search messages using FTS5 full-text search.
+///
+/// `query` is an FTS5 match expression (supports prefix queries with `*`,
+/// phrase queries with quotes, AND/OR/NOT operators).
+///
+/// Returns results ordered by relevance (FTS5 bm25), with snippets.
+pub fn search_messages(
+    conn: &Connection,
+    query: &str,
+    filter: &MessageSearchFilter,
+    limit: usize,
+) -> SqliteResult<Vec<MessageSearchResult>> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut conditions: Vec<String> = Vec::new();
+    let mut params: Vec<ToSqlOutput> = Vec::new();
+
+    // FTS query is always the first param (bound to ?1)
+    params.push(ToSqlOutput::from(query));
+
+    // Session filter
+    if let Some(session_id) = filter.session_id {
+        conditions.push("m.session_id = ?".to_string());
+        params.push(ToSqlOutput::from(session_id));
+    }
+
+    // Role filter
+    if let Some(role) = filter.role {
+        conditions.push("m.role = ?".to_string());
+        params.push(ToSqlOutput::from(role));
+    }
+
+    // Since filter
+    if let Some(since) = filter.since {
+        conditions.push("m.created_at >= ?".to_string());
+        params.push(ToSqlOutput::from(since));
+    }
+
+    // Until filter
+    if let Some(until) = filter.until {
+        conditions.push("m.created_at <= ?".to_string());
+        params.push(ToSqlOutput::from(until));
+    }
+
+    let where_extra = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {}", conditions.join(" AND "))
+    };
+
+    let sql = format!(
+        "SELECT
+            m.id,
+            m.session_id,
+            s.title,
+            m.role,
+            snippet(messages_fts, 0, '<b>', '</b>', '...', 16),
+            m.created_at
+         FROM messages_fts
+         JOIN messages m ON m.id = messages_fts.rowid
+         JOIN sessions s ON s.id = m.session_id
+         WHERE messages_fts MATCH ?1{}
+         ORDER BY bm25(messages_fts)
+         LIMIT {}",
+        where_extra,
+        limit
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), |row| {
+        Ok(MessageSearchResult {
+            message_id: row.get(0)?,
+            session_id: row.get(1)?,
+            session_title: row.get(2)?,
+            role: row.get(3)?,
+            content_snippet: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })?;
+
+    rows.collect()
 }
 
 /// Load all messages for a session and convert to chat messages
@@ -1315,5 +1482,208 @@ mod tests {
         // Running again on an already-current DB must not error.
         init_db(&conn).unwrap();
         assert_eq!(read_schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+    }
+
+    // ========================================================================
+    // Message search tests
+    // ========================================================================
+
+    fn setup_search_test(conn: &Connection) {
+        init_db(conn).unwrap();
+        insert_session(conn, "sess-1", None, "Session One", "model", "gui").unwrap();
+        insert_session(conn, "sess-2", None, "Session Two", "model", "gui").unwrap();
+
+        insert_message(conn, "sess-1", "user", "Hello, how do I write Rust code?", None, None, None).unwrap();
+        insert_message(conn, "sess-1", "assistant", "To write Rust code, start with cargo new.", None, None, None).unwrap();
+        insert_message(conn, "sess-1", "user", "What about Python?", None, None, None).unwrap();
+        insert_message(conn, "sess-1", "assistant", "Python is also a great language.", None, None, None).unwrap();
+
+        insert_message(conn, "sess-2", "user", "How to deploy a Rust application?", None, None, None).unwrap();
+        insert_message(conn, "sess-2", "assistant", "You can deploy Rust apps with Docker.", None, None, None).unwrap();
+    }
+
+    #[test]
+    fn search_messages_basic() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup_search_test(&conn);
+
+        let filter = MessageSearchFilter {
+            session_id: None,
+            role: None,
+            since: None,
+            until: None,
+        };
+        let results = search_messages(&conn, "Rust", &filter, 10).unwrap();
+        assert!(results.len() >= 2, "Expected at least 2 results for 'Rust', got {}", results.len());
+
+        // Verify snippet contains highlighting
+        assert!(results[0].content_snippet.contains("<b>"));
+    }
+
+    #[test]
+    fn search_messages_session_filter() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup_search_test(&conn);
+
+        let filter = MessageSearchFilter {
+            session_id: Some("sess-1"),
+            role: None,
+            since: None,
+            until: None,
+        };
+        let results = search_messages(&conn, "Rust", &filter, 10).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let filter2 = MessageSearchFilter {
+            session_id: Some("sess-2"),
+            role: None,
+            since: None,
+            until: None,
+        };
+        let results2 = search_messages(&conn, "Rust", &filter2, 10).unwrap();
+        assert_eq!(results2.len(), 2);
+    }
+
+    #[test]
+    fn search_messages_role_filter() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup_search_test(&conn);
+
+        let filter = MessageSearchFilter {
+            session_id: Some("sess-1"),
+            role: Some("user"),
+            since: None,
+            until: None,
+        };
+        let results = search_messages(&conn, "Rust", &filter, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].role, "user");
+    }
+
+    #[test]
+    fn search_messages_empty_query() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup_search_test(&conn);
+
+        let filter = MessageSearchFilter::default();
+        let results = search_messages(&conn, "", &filter, 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_messages_no_results() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup_search_test(&conn);
+
+        let filter = MessageSearchFilter::default();
+        let results = search_messages(&conn, "nonexistent_keyword_xyz", &filter, 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_messages_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup_search_test(&conn);
+
+        let filter = MessageSearchFilter {
+            session_id: None,
+            role: None,
+            since: None,
+            until: None,
+        };
+        let results = search_messages(&conn, "Rust", &filter, 2).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_messages_cross_session_has_session_title() {
+        let conn = Connection::open_in_memory().unwrap();
+        setup_search_test(&conn);
+
+        let filter = MessageSearchFilter {
+            session_id: None,
+            role: None,
+            since: None,
+            until: None,
+        };
+        let results = search_messages(&conn, "Rust", &filter, 10).unwrap();
+        // All results should have a session title
+        for r in &results {
+            assert!(!r.session_title.is_empty());
+        }
+    }
+
+    #[test]
+    fn migration_v3_to_v4_backfill() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Create v3 schema manually (no FTS)
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id          TEXT PRIMARY KEY,
+                chat_id     TEXT,
+                title       TEXT NOT NULL,
+                model       TEXT NOT NULL,
+                source      TEXT NOT NULL DEFAULT 'gui',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                is_active   INTEGER DEFAULT 1
+            );
+
+            CREATE TABLE messages (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT NOT NULL REFERENCES sessions(id),
+                role         TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                tool_name    TEXT,
+                tool_call_id TEXT,
+                tool_info    TEXT,
+                tokens       INTEGER,
+                created_at   TEXT NOT NULL
+            );
+
+            CREATE TABLE memories (
+                id           TEXT PRIMARY KEY,
+                session_id   TEXT,
+                chat_id      TEXT,
+                memory_type  TEXT NOT NULL,
+                title        TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                tags         TEXT,
+                is_active    INTEGER DEFAULT 1,
+                created_at   TEXT NOT NULL,
+                updated_at   TEXT NOT NULL
+            );
+
+            CREATE TABLE _schema_meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            INSERT INTO _schema_meta (key, value) VALUES ('version', '3');
+
+            INSERT INTO sessions (id, title, model, source, created_at, updated_at)
+            VALUES ('old-sess', 'Old Session', 'model', 'gui', '2025-01-01', '2025-01-01');
+
+            INSERT INTO messages (session_id, role, content, created_at)
+            VALUES ('old-sess', 'user', 'This is a legacy message about testing', '2025-01-01');",
+        )
+        .unwrap();
+
+        // Run init_db — should migrate v3 -> v4 and backfill
+        init_db(&conn).unwrap();
+
+        assert_eq!(read_schema_version(&conn).unwrap(), 4);
+
+        // Verify search works on the legacy message
+        let filter = MessageSearchFilter {
+            session_id: Some("old-sess"),
+            role: None,
+            since: None,
+            until: None,
+        };
+        let results = search_messages(&conn, "legacy", &filter, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].session_title, "Old Session");
     }
 }

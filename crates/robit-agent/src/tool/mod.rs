@@ -9,6 +9,7 @@ pub mod ls;
 pub mod find;
 pub mod grep;
 pub mod memory;
+pub mod search_history;
 
 use async_trait::async_trait;
 use robit_ai::ChatCompletionTools;
