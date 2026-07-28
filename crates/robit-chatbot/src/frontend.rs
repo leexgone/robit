@@ -384,13 +384,13 @@ mod tests {
         }
     }
 
-    fn make_frontend(sender: Arc<dyn PlatformSender>, auto_approve: bool) -> ChatbotFrontend {
+    async fn make_frontend(sender: Arc<dyn PlatformSender>, auto_approve: bool) -> ChatbotFrontend {
         let confirmer = Arc::new(Confirmer::new(sender.clone(), std::time::Duration::from_secs(60)));
         // 创建一个内存中的 SQLite 连接用于测试
         let db = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
         // 初始化数据库 schema
         {
-            let db = db.blocking_lock();
+            let db = db.lock().await;
             robit_agent::storage::init_db(&db).unwrap();
         }
         ChatbotFrontend::new(
@@ -406,7 +406,7 @@ mod tests {
     #[tokio::test]
     async fn textdelta_accumulates_until_turn_complete() {
         let sender = MockSender::new_with_edit(false);
-        let fe = make_frontend(sender.clone(), false);
+        let fe = make_frontend(sender.clone(), false).await;
         // Text deltas only accumulate, nothing is sent until TurnComplete.
         fe.on_event(AgentEvent::TextDelta("你好".to_string())).await.unwrap();
         fe.on_event(AgentEvent::TextDelta("世界".to_string())).await.unwrap();
@@ -420,7 +420,7 @@ mod tests {
     #[tokio::test]
     async fn turn_complete_flushes_accumulated_text() {
         let sender = MockSender::new_with_edit(false);
-        let fe = make_frontend(sender.clone(), false);
+        let fe = make_frontend(sender.clone(), false).await;
         fe.on_event(AgentEvent::TextDelta("一段未被刷新的文本".to_string())).await.unwrap();
         assert!(sender.sent_texts().is_empty());
         fe.on_event(AgentEvent::TurnComplete).await.unwrap();
@@ -431,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn progress_hint_rate_limited_per_turn() {
         let sender = MockSender::new_with_edit(false);
-        let fe = make_frontend(sender.clone(), true); // auto_approve
+        let fe = make_frontend(sender.clone(), true).await; // auto_approve
         // Two tool calls in one turn — only one hint should be sent.
         fe.on_event(AgentEvent::ToolCallRequested {
             tool_call_id: "tc1".into(),
@@ -454,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn progress_hint_resets_on_turn_complete() {
         let sender = MockSender::new_with_edit(false);
-        let fe = make_frontend(sender.clone(), true);
+        let fe = make_frontend(sender.clone(), true).await;
         fe.on_event(AgentEvent::ToolCallRequested {
             tool_call_id: "tc1".into(),
             name: "bash".into(),
@@ -478,7 +478,7 @@ mod tests {
     #[tokio::test]
     async fn no_hint_in_manual_mode() {
         let sender = MockSender::new_with_edit(false);
-        let fe = make_frontend(sender.clone(), false); // manual confirm
+        let fe = make_frontend(sender.clone(), false).await; // manual confirm
         fe.on_event(AgentEvent::ToolCallRequested {
             tool_call_id: "tc1".into(),
             name: "bash".into(),
@@ -491,7 +491,7 @@ mod tests {
     #[tokio::test]
     async fn error_sends_error_message() {
         let sender = MockSender::new_with_edit(false);
-        let fe = make_frontend(sender.clone(), false);
+        let fe = make_frontend(sender.clone(), false).await;
         fe.on_event(AgentEvent::Error(robit_agent::AgentError::ToolError("boom".into())))
             .await
             .unwrap();
