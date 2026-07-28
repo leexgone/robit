@@ -166,6 +166,11 @@ token_safety_margin = 1.3              # Token 估算安全系数
 compression_enabled = true             # 是否启用摘要压缩
 compression_token_threshold = 5000     # 触发压缩的 token 阈值
 max_tool_calls_per_turn = 30           # 单轮最大工具调用数
+progressive_compression = true         # 是否启用渐进式分段压缩（false 退化为单层单次压缩）
+rounds_per_summary = 3                 # 每个摘要段覆盖的完整轮数
+max_summary_segments = 5               # 最多保留的摘要段数量（超过则合并/丢弃最旧的）
+merge_count = 2                        # 每次合并的摘要段数量
+max_merges_per_segment = 2             # 单条摘要最多被合并次数，超过则丢弃
 
 [app.retry]                            # 重试策略配置（可选，以下为默认值）
 max_retries = 3

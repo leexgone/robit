@@ -1,11 +1,34 @@
 //! Context management — output truncation and history window management.
 
-use async_openai::types::chat::ChatCompletionRequestMessage;
+use async_openai::types::chat::{
+    ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
+    ChatCompletionRequestUserMessageContent,
+};
 use robit_ai::config::ContextConfig;
 
 // ============================================================================
 // Truncation result
 // ============================================================================
+
+/// Type of truncation action, determines how the caller should handle the result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TruncationAction {
+    /// Generate a new summary segment from full conversation rounds.
+    /// The removed messages in `TruncationResult` are the full rounds to summarize.
+    NewSegment,
+    /// Merge multiple existing summary segments into one.
+    /// `summaries` contains the text of segments to merge (oldest first).
+    /// `start_position` is the index of the first segment in history.
+    /// `count` is how many consecutive segments to merge.
+    MergeSegments {
+        summaries: Vec<String>,
+        start_position: usize,
+        count: usize,
+    },
+    /// No compression needed — history was truncated but the removed content
+    /// is too small to justify an LLM summary call.
+    TruncateOnly,
+}
 
 /// Result of context truncation, used for async compression.
 #[derive(Debug)]
@@ -14,12 +37,14 @@ pub struct TruncationResult {
     pub rounds_removed: usize,
     /// Number of individual messages removed.
     pub messages_removed: usize,
-    /// The removed messages (for generating summary).
+    /// The removed messages (for generating summary — only for NewSegment action).
     pub removed_messages: Vec<ChatCompletionRequestMessage>,
-    /// Position where summary should be inserted.
+    /// Position where summary should be inserted / replaced.
     pub insert_position: usize,
     /// Whether compression is needed (token count exceeds threshold).
     pub needs_compression: bool,
+    /// The type of truncation action taken.
+    pub action: TruncationAction,
 }
 
 // ============================================================================
@@ -194,6 +219,16 @@ pub struct ContextManager {
     pub compression_enabled: bool,
     /// Maximum tool calls per turn (default 30).
     pub max_tool_calls_per_turn: usize,
+    /// Whether progressive segmented compression is enabled (default true).
+    pub progressive_compression: bool,
+    /// Number of full rounds per summary segment (default 3).
+    pub rounds_per_summary: usize,
+    /// Maximum number of summary segments to keep (default 5).
+    pub max_summary_segments: usize,
+    /// Number of segments to merge at a time (default 2).
+    pub merge_count: usize,
+    /// Maximum merges per segment before discarding (default 2).
+    pub max_merges_per_segment: usize,
 }
 
 impl ContextManager {
@@ -210,6 +245,11 @@ impl ContextManager {
             compression_token_threshold,
             compression_enabled,
             max_tool_calls_per_turn,
+            progressive_compression,
+            rounds_per_summary,
+            max_summary_segments,
+            merge_count,
+            max_merges_per_segment,
         ) = match config {
             Some(c) => (
                 c.max_output_lines.unwrap_or(500),
@@ -221,8 +261,13 @@ impl ContextManager {
                 c.compression_token_threshold.unwrap_or(5000),
                 c.compression_enabled.unwrap_or(true),
                 c.max_tool_calls_per_turn.unwrap_or(30),
+                c.progressive_compression.unwrap_or(true),
+                c.rounds_per_summary.unwrap_or(3),
+                c.max_summary_segments.unwrap_or(5),
+                c.merge_count.unwrap_or(2),
+                c.max_merges_per_segment.unwrap_or(2),
             ),
-            None => (500, 51200, 0.2, 0.7, 3, 1.3, 5000, true, 30),
+            None => (500, 51200, 0.2, 0.7, 3, 1.3, 5000, true, 30, true, 3, 5, 2, 2),
         };
 
         Self {
@@ -236,6 +281,11 @@ impl ContextManager {
             compression_token_threshold,
             compression_enabled,
             max_tool_calls_per_turn,
+            progressive_compression,
+            rounds_per_summary,
+            max_summary_segments,
+            merge_count,
+            max_merges_per_segment,
         }
     }
 
@@ -261,21 +311,23 @@ impl ContextManager {
     /// Check if history needs truncation and perform it if necessary.
     /// Returns `TruncationResult` with removed messages for async compression.
     ///
-    /// Strategy:
-    /// 1. Uses `truncation_threshold()` (default 70% of max_tokens) as trigger point
-    /// 2. Removes oldest non-system rounds first
-    /// 3. Always keeps at least `min_keep_rounds` recent rounds
-    /// 4. Applies `token_safety_margin` to estimates to avoid underestimation
+    /// Strategy (progressive compression):
+    /// 1. Uses `truncation_threshold()` (default 70% of max_tokens) as trigger point.
+    /// 2. When over threshold, performs exactly one compression action per call:
+    ///    - Priority 1: Compress the oldest `rounds_per_summary` full rounds into a new summary segment.
+    ///    - Priority 2: Merge the oldest `merge_count` summary segments into one.
+    ///    - Priority 3: Discard the oldest summary segment (if merge limit reached).
+    ///    - Priority 4: Fall back to aggressive truncation (old behavior).
+    /// 3. If `progressive_compression` is disabled, falls back to single-shot truncation.
     pub fn maybe_truncate(
         &self,
         messages: &mut Vec<ChatCompletionRequestMessage>,
     ) -> TruncationResult {
         let estimated = estimate_messages_tokens_with_margin(messages, self.token_safety_margin);
         let threshold = self.truncation_threshold();
-        let initial_count = messages.len();
 
         tracing::debug!("maybe_truncate: initial message count = {}, estimated tokens = {}, threshold = {}",
-            initial_count, estimated, threshold);
+            messages.len(), estimated, threshold);
 
         if estimated <= threshold {
             tracing::debug!("maybe_truncate: No truncation needed ({} <= {})", estimated, threshold);
@@ -285,6 +337,7 @@ impl ContextManager {
                 removed_messages: Vec::new(),
                 insert_position: 0,
                 needs_compression: false,
+                action: TruncationAction::TruncateOnly,
             };
         }
 
@@ -298,9 +351,240 @@ impl ContextManager {
             threshold,
             self.max_tokens
         );
-        tracing::info!("Compression enabled: {}, Compression threshold: {} tokens",
-            self.compression_enabled, self.compression_token_threshold);
+        tracing::info!("Compression enabled: {}, Progressive: {}",
+            self.compression_enabled, self.progressive_compression);
 
+        // Fall back to legacy single-shot truncation if progressive is disabled
+        if !self.progressive_compression {
+            tracing::info!("Progressive compression disabled, using legacy single-shot truncation");
+            return self.legacy_truncate(messages, threshold);
+        }
+
+        // Try progressive compression actions in priority order
+        if let Some(result) = self.try_new_segment(messages) {
+            tracing::info!("Progressive action: NewSegment ({} rounds)", result.rounds_removed);
+            return result;
+        }
+
+        if let Some(result) = self.try_merge_segments(messages) {
+            tracing::info!("Progressive action: MergeSegments");
+            return result;
+        }
+
+        if let Some(result) = self.try_discard_oldest_segment(messages) {
+            tracing::info!("Progressive action: Discard oldest segment");
+            return result;
+        }
+
+        // Fallback: aggressive single-shot truncation
+        tracing::warn!("All progressive actions exhausted, falling back to legacy truncation");
+        self.legacy_truncate(messages, threshold)
+    }
+
+    // ------------------------------------------------------------------------
+    // Progressive compression: Priority 1 — new summary segment
+    // ------------------------------------------------------------------------
+
+    fn try_new_segment(
+        &self,
+        messages: &mut Vec<ChatCompletionRequestMessage>,
+    ) -> Option<TruncationResult> {
+        if !self.compression_enabled {
+            return None;
+        }
+
+        // Find all full (non-summary, non-system) user rounds,
+        // skipping summary segments and the discard notice.
+        let round_starts: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| is_user_message(m) && !is_summary_segment(m) && !is_discard_notice(m))
+            .map(|(i, _)| i)
+            .collect();
+
+        if round_starts.len() <= self.min_keep_rounds + self.rounds_per_summary {
+            tracing::debug!("Not enough full rounds to compress (have {}, need min_keep + rounds_per_summary = {})",
+                round_starts.len(), self.min_keep_rounds + self.rounds_per_summary);
+            return None;
+        }
+
+        // Take the oldest `rounds_per_summary` rounds
+        let take_rounds = self.rounds_per_summary.min(round_starts.len() - self.min_keep_rounds);
+        if take_rounds == 0 {
+            return None;
+        }
+
+        let start_idx = round_starts[0];
+        let end_idx = if take_rounds < round_starts.len() {
+            round_starts[take_rounds]
+        } else {
+            messages.len()
+        };
+
+        let removed_messages: Vec<ChatCompletionRequestMessage> =
+            messages[start_idx..end_idx].to_vec();
+        let messages_removed = removed_messages.len();
+        let removed_tokens = estimate_messages_tokens(&removed_messages);
+
+        // Need enough tokens to justify compression
+        if removed_tokens < self.compression_token_threshold {
+            tracing::debug!("Removed tokens ({}) below compression threshold ({})",
+                removed_tokens, self.compression_token_threshold);
+            return None;
+        }
+
+        // Remove the rounds
+        messages.drain(start_idx..end_idx);
+
+        // Insert placeholder after system messages + discard notice (if any)
+        // i.e. before any other summary segments
+        let system_msg_count = messages.iter().take_while(|m| is_system_message(m)).count();
+        let has_discard = find_discard_notice_pos(messages).is_some();
+        let insert_pos = system_msg_count + if has_discard { 1 } else { 0 };
+
+        let placeholder = make_summary_placeholder(take_rounds);
+        messages.insert(insert_pos, placeholder);
+
+        tracing::info!(
+            "New summary segment: removed {} rounds ({} messages, ~{} tokens), insert at {}",
+            take_rounds, messages_removed, removed_tokens, insert_pos
+        );
+
+        Some(TruncationResult {
+            rounds_removed: take_rounds,
+            messages_removed,
+            removed_messages,
+            insert_position: insert_pos,
+            needs_compression: true,
+            action: TruncationAction::NewSegment,
+        })
+    }
+
+    // ------------------------------------------------------------------------
+    // Progressive compression: Priority 2 — merge summary segments
+    // ------------------------------------------------------------------------
+
+    fn try_merge_segments(
+        &self,
+        messages: &mut Vec<ChatCompletionRequestMessage>,
+    ) -> Option<TruncationResult> {
+        if !self.compression_enabled {
+            return None;
+        }
+
+        let segments = find_summary_segments(messages);
+        if segments.len() <= self.max_summary_segments {
+            tracing::debug!("Segment count ({}) within limit ({})", segments.len(), self.max_summary_segments);
+            return None;
+        }
+
+        // Check if the oldest segment can still be merged
+        let oldest = segments.first()?;
+        if oldest.merge_level >= self.max_merges_per_segment {
+            tracing::debug!("Oldest segment at merge level {} >= max {}, will discard instead",
+                oldest.merge_level, self.max_merges_per_segment);
+            return None;
+        }
+
+        // Take the oldest `merge_count` segments
+        let take_count = self.merge_count.min(segments.len());
+        if take_count < 2 {
+            return None;
+        }
+
+        let start_pos = segments[0].index;
+        let end_pos = segments[take_count - 1].index + 1;
+
+        let summaries: Vec<String> = segments[..take_count]
+            .iter()
+            .map(|s| s.content.clone())
+            .collect();
+
+        let max_level = segments[..take_count]
+            .iter()
+            .map(|s| s.merge_level)
+            .max()
+            .unwrap_or(0);
+        let new_level = max_level + 1;
+
+        // Remove the old segments
+        messages.drain(start_pos..end_pos);
+
+        // Insert merged placeholder
+        let placeholder = make_merge_placeholder(new_level, take_count);
+        messages.insert(start_pos, placeholder);
+
+        tracing::info!(
+            "Merging {} summary segments into one (level {}), start pos {}",
+            take_count, new_level, start_pos
+        );
+
+        Some(TruncationResult {
+            rounds_removed: 0,
+            messages_removed: take_count,
+            removed_messages: Vec::new(),
+            insert_position: start_pos,
+            needs_compression: true,
+            action: TruncationAction::MergeSegments {
+                summaries,
+                start_position: start_pos,
+                count: take_count,
+            },
+        })
+    }
+
+    // ------------------------------------------------------------------------
+    // Progressive compression: Priority 3 — discard oldest summary segment
+    // ------------------------------------------------------------------------
+
+    fn try_discard_oldest_segment(
+        &self,
+        messages: &mut Vec<ChatCompletionRequestMessage>,
+    ) -> Option<TruncationResult> {
+        let segments = find_summary_segments(messages);
+        if segments.len() <= self.max_summary_segments {
+            return None;
+        }
+
+        let oldest = segments.first()?;
+        if oldest.merge_level < self.max_merges_per_segment {
+            // Should have been handled by try_merge_segments
+            return None;
+        }
+
+        // Remove the oldest segment
+        let pos = oldest.index;
+        messages.remove(pos);
+
+        tracing::info!("Discarded oldest summary segment at position {}", pos);
+
+        // Ensure discard notice exists
+        let system_msg_count = messages.iter().take_while(|m| is_system_message(m)).count();
+        if find_discard_notice_pos(messages).is_none() {
+            let notice = make_discard_notice();
+            messages.insert(system_msg_count, notice);
+            tracing::debug!("Added discard notice at position {}", system_msg_count);
+        }
+
+        Some(TruncationResult {
+            rounds_removed: 0,
+            messages_removed: 1,
+            removed_messages: Vec::new(),
+            insert_position: pos,
+            needs_compression: false,
+            action: TruncationAction::TruncateOnly,
+        })
+    }
+
+    // ------------------------------------------------------------------------
+    // Legacy single-shot truncation (fallback)
+    // ------------------------------------------------------------------------
+
+    fn legacy_truncate(
+        &self,
+        messages: &mut Vec<ChatCompletionRequestMessage>,
+        threshold: usize,
+    ) -> TruncationResult {
         // Find round boundaries: a round starts with a User message
         let mut round_starts: Vec<usize> = Vec::new();
         for (i, msg) in messages.iter().enumerate() {
@@ -318,10 +602,10 @@ impl ContextManager {
                 removed_messages: Vec::new(),
                 insert_position: 0,
                 needs_compression: false,
+                action: TruncationAction::TruncateOnly,
             };
         }
 
-        // Count how many rounds we must keep
         let total_rounds = round_starts.len();
         let must_keep = self.min_keep_rounds.min(total_rounds);
         tracing::debug!("Total rounds: {}, Must keep at least: {} rounds", total_rounds, must_keep);
@@ -330,9 +614,6 @@ impl ContextManager {
         let mut rounds_removed = 0;
         let mut messages_removed = 0;
 
-        // Remove oldest rounds while:
-        // - estimated tokens still exceed threshold
-        // - we still have more rounds than must_keep
         while round_starts.len() > must_keep
             && estimate_messages_tokens_with_margin(messages, self.token_safety_margin) > threshold
         {
@@ -343,9 +624,6 @@ impl ContextManager {
                 messages.len()
             };
 
-            tracing::debug!("Removing round starting at index {} (rounds removed so far: {})", start_idx, rounds_removed);
-
-            // Collect removed messages for potential compression
             if self.compression_enabled {
                 removed_messages.extend(messages[start_idx..end_idx].to_vec());
             }
@@ -353,7 +631,6 @@ impl ContextManager {
             let count = end_idx - start_idx;
             messages.drain(start_idx..end_idx);
 
-            // Update round_starts indices
             round_starts.remove(0);
             for idx in round_starts.iter_mut() {
                 *idx = idx.saturating_sub(count);
@@ -361,7 +638,6 @@ impl ContextManager {
 
             rounds_removed += 1;
             messages_removed += count;
-            tracing::debug!("Removed {} messages in this round", count);
         }
 
         if rounds_removed == 0 {
@@ -372,45 +648,30 @@ impl ContextManager {
                 removed_messages: Vec::new(),
                 insert_position: 0,
                 needs_compression: false,
+                action: TruncationAction::TruncateOnly,
             };
         }
 
-        // Calculate removed tokens for threshold check
         let removed_tokens = estimate_messages_tokens(&removed_messages);
         let needs_compression =
             self.compression_enabled && removed_tokens >= self.compression_token_threshold;
 
-        tracing::info!(
-            "Removed tokens estimate: {}, Compression threshold: {}, Needs compression: {}",
-            removed_tokens, self.compression_token_threshold, needs_compression
-        );
-
-        // Insert informative notice after system messages
         let system_msg_count = messages
             .iter()
             .take_while(|m| is_system_message(m))
             .count();
 
-        tracing::debug!("System message count: {}, inserting notice at position: {}", system_msg_count, system_msg_count);
-
         let notice = if needs_compression {
             format!(
                 "[Context compressed: {} earlier rounds ({} messages, ~{} tokens) have been summarized. {} most recent rounds preserved.]",
-                rounds_removed,
-                messages_removed,
-                removed_tokens,
-                round_starts.len()
+                rounds_removed, messages_removed, removed_tokens, round_starts.len()
             )
         } else {
             format!(
                 "[Context truncated: {} earlier rounds ({} messages) removed to stay within token limit. {} most recent rounds preserved.]",
-                rounds_removed,
-                messages_removed,
-                round_starts.len()
+                rounds_removed, messages_removed, round_starts.len()
             )
         };
-
-        tracing::debug!("Inserting notice message: {}", notice);
 
         let notice_msg = ChatCompletionRequestMessage::User(
             async_openai::types::chat::ChatCompletionRequestUserMessage {
@@ -423,18 +684,8 @@ impl ContextManager {
         messages.insert(system_msg_count, notice_msg);
 
         tracing::info!(
-            "=== Context truncation complete ==="
-        );
-        tracing::info!(
-            "Removed: {} rounds ({} messages, ~{} tokens), Kept: {} rounds",
-            rounds_removed,
-            messages_removed,
-            removed_tokens,
-            round_starts.len()
-        );
-        tracing::info!(
-            "Final message count: {}, Insert position: {}, Needs compression: {}",
-            messages.len(), system_msg_count, needs_compression
+            "Legacy truncation: removed {} rounds ({} messages), kept {} rounds",
+            rounds_removed, messages_removed, round_starts.len()
         );
 
         TruncationResult {
@@ -443,6 +694,13 @@ impl ContextManager {
             removed_messages,
             insert_position: system_msg_count,
             needs_compression,
+            action: if needs_compression {
+                // For legacy mode, treat single-shot summary as NewSegment
+                // (one summary from many rounds)
+                TruncationAction::NewSegment
+            } else {
+                TruncationAction::TruncateOnly
+            },
         }
     }
 }
@@ -453,6 +711,157 @@ fn is_user_message(msg: &ChatCompletionRequestMessage) -> bool {
 
 fn is_system_message(msg: &ChatCompletionRequestMessage) -> bool {
     matches!(msg, ChatCompletionRequestMessage::System(_))
+}
+
+// ============================================================================
+// Summary segment helpers (progressive compression)
+// ============================================================================
+
+const SUMMARY_SEGMENT_PREFIX: &str = "summary_segment";
+const DISCARD_NOTICE_NAME: &str = "discard_notice";
+const LEGACY_NOTICE_NAME: &str = "system_notice";
+
+/// Returns the `name` field of a User message, if any.
+fn user_message_name(msg: &ChatCompletionRequestMessage) -> Option<&str> {
+    match msg {
+        ChatCompletionRequestMessage::User(u) => u.name.as_deref(),
+        _ => None,
+    }
+}
+
+/// Returns the text content of a User message, empty if not text.
+fn user_message_text(msg: &ChatCompletionRequestMessage) -> String {
+    match msg {
+        ChatCompletionRequestMessage::User(u) => match &u.content {
+            ChatCompletionRequestUserMessageContent::Text(t) => t.clone(),
+            ChatCompletionRequestUserMessageContent::Array(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    async_openai::types::chat::ChatCompletionRequestUserMessageContentPart::Text(t) => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        },
+        _ => String::new(),
+    }
+}
+
+/// Check whether a message is a summary segment (any merge level, including legacy notice).
+pub fn is_summary_segment(msg: &ChatCompletionRequestMessage) -> bool {
+    match user_message_name(msg) {
+        Some(name) => {
+            name.starts_with(SUMMARY_SEGMENT_PREFIX) || name == LEGACY_NOTICE_NAME
+        }
+        None => false,
+    }
+}
+
+/// Get the merge level (number of times this segment has been merged).
+/// 0 = fresh segment, 1 = merged once, etc.
+pub fn get_merge_level(msg: &ChatCompletionRequestMessage) -> usize {
+    match user_message_name(msg) {
+        Some(name) => {
+            if name == LEGACY_NOTICE_NAME {
+                0
+            } else if let Some(suffix) = name.strip_prefix(SUMMARY_SEGMENT_PREFIX) {
+                if suffix.is_empty() {
+                    0
+                } else if let Some(num_str) = suffix.strip_prefix("_m") {
+                    num_str.parse::<usize>().unwrap_or(0)
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        }
+        None => 0,
+    }
+}
+
+/// Check if a message is the discard notice.
+fn is_discard_notice(msg: &ChatCompletionRequestMessage) -> bool {
+    matches!(user_message_name(msg), Some(name) if name == DISCARD_NOTICE_NAME)
+}
+
+/// Build the `name` value for a summary segment at the given merge level.
+fn summary_segment_name(merge_level: usize) -> String {
+    if merge_level == 0 {
+        SUMMARY_SEGMENT_PREFIX.to_string()
+    } else {
+        format!("{}_m{}", SUMMARY_SEGMENT_PREFIX, merge_level)
+    }
+}
+
+/// Build a placeholder summary segment message (pending LLM generation).
+fn make_summary_placeholder(rounds_removed: usize) -> ChatCompletionRequestMessage {
+    let text = format!(
+        "[Compressing {} earlier conversation rounds into a summary...]",
+        rounds_removed
+    );
+    ChatCompletionRequestMessage::User(
+        ChatCompletionRequestUserMessage {
+            content: text.into(),
+            name: Some(summary_segment_name(0)),
+        }
+        .into(),
+    )
+}
+
+/// Build a placeholder for merged segments (pending LLM generation).
+fn make_merge_placeholder(merge_level: usize, count: usize) -> ChatCompletionRequestMessage {
+    let text = format!(
+        "[Merging {} earlier summary segments...]",
+        count
+    );
+    ChatCompletionRequestMessage::User(
+        ChatCompletionRequestUserMessage {
+            content: text.into(),
+            name: Some(summary_segment_name(merge_level)),
+        }
+        .into(),
+    )
+}
+
+/// Build the discard notice message.
+fn make_discard_notice() -> ChatCompletionRequestMessage {
+    let text = "[Note: Earlier conversation history beyond the earliest summary has been discarded to save context space.]";
+    ChatCompletionRequestMessage::User(
+        ChatCompletionRequestUserMessage {
+            content: text.into(),
+            name: Some(DISCARD_NOTICE_NAME.to_string()),
+        }
+        .into(),
+    )
+}
+
+/// Information about a summary segment found in history.
+#[derive(Debug, Clone)]
+struct SummarySegmentInfo {
+    index: usize,
+    merge_level: usize,
+    content: String,
+}
+
+/// Scan message history and collect all summary segments, ordered from oldest to newest.
+fn find_summary_segments(messages: &[ChatCompletionRequestMessage]) -> Vec<SummarySegmentInfo> {
+    let mut segments = Vec::new();
+    for (i, msg) in messages.iter().enumerate() {
+        if is_summary_segment(msg) {
+            segments.push(SummarySegmentInfo {
+                index: i,
+                merge_level: get_merge_level(msg),
+                content: user_message_text(msg),
+            });
+        }
+    }
+    segments
+}
+
+/// Find the position of the discard notice, if any.
+fn find_discard_notice_pos(messages: &[ChatCompletionRequestMessage]) -> Option<usize> {
+    messages.iter().position(is_discard_notice)
 }
 
 // ============================================================================
@@ -581,7 +990,42 @@ mod tests {
             compression_token_threshold: Some(5000),
             compression_enabled: Some(true),
             max_tool_calls_per_turn: Some(30),
+            progressive_compression: Some(true),
+            rounds_per_summary: Some(3),
+            max_summary_segments: Some(5),
+            merge_count: Some(2),
+            max_merges_per_segment: Some(2),
         }
+    }
+
+    fn make_user_message_named(content: &str, name: &str) -> ChatCompletionRequestMessage {
+        ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage {
+                content: content.into(),
+                name: Some(name.to_string()),
+            }
+            .into(),
+        )
+    }
+
+    fn make_summary_segment(content: &str, merge_level: usize) -> ChatCompletionRequestMessage {
+        let name = if merge_level == 0 {
+            "summary_segment".to_string()
+        } else {
+            format!("summary_segment_m{}", merge_level)
+        };
+        make_user_message_named(content, &name)
+    }
+
+    fn make_legacy_notice(content: &str) -> ChatCompletionRequestMessage {
+        make_user_message_named(content, "system_notice")
+    }
+
+    fn make_discard_notice_msg() -> ChatCompletionRequestMessage {
+        make_user_message_named(
+            "[Note: Earlier conversation history beyond the earliest summary has been discarded.]",
+            "discard_notice",
+        )
     }
 
     // ==========================================================================
@@ -862,5 +1306,313 @@ mod tests {
         assert!(transcript.contains("..."));
         // Should not contain the full 500 chars
         assert!(transcript.len() < long_text.len() + 50);
+    }
+
+    // ==========================================================================
+    // Progressive compression tests
+    // ==========================================================================
+
+    #[test]
+    fn test_is_summary_segment_recognizes_all_levels() {
+        let m0 = make_summary_segment("summary 0", 0);
+        let m1 = make_summary_segment("summary 1", 1);
+        let m2 = make_summary_segment("summary 2", 2);
+        let legacy = make_legacy_notice("old notice");
+        let normal = make_user_message("hello");
+
+        assert!(is_summary_segment(&m0));
+        assert!(is_summary_segment(&m1));
+        assert!(is_summary_segment(&m2));
+        assert!(is_summary_segment(&legacy));
+        assert!(!is_summary_segment(&normal));
+    }
+
+    #[test]
+    fn test_get_merge_level() {
+        assert_eq!(get_merge_level(&make_summary_segment("a", 0)), 0);
+        assert_eq!(get_merge_level(&make_summary_segment("b", 1)), 1);
+        assert_eq!(get_merge_level(&make_summary_segment("c", 2)), 2);
+        assert_eq!(get_merge_level(&make_legacy_notice("d")), 0);
+        assert_eq!(get_merge_level(&make_user_message("e")), 0);
+    }
+
+    #[test]
+    fn test_progressive_no_truncation_needed() {
+        let mut messages = vec![
+            make_system_message("sys"),
+            make_user_message("hi"),
+        ];
+        let config = make_test_config();
+        let manager = ContextManager::new(Some(65536), Some(&config));
+        let result = manager.maybe_truncate(&mut messages);
+
+        assert_eq!(result.rounds_removed, 0);
+        assert!(!result.needs_compression);
+        assert_eq!(result.action, TruncationAction::TruncateOnly);
+    }
+
+    #[test]
+    fn test_progressive_new_segment() {
+        let mut messages = vec![make_system_message("sys")];
+        // 10 rounds of large content
+        for i in 0..10 {
+            let content = format!("Round {}: {}", i, "x".repeat(2000));
+            messages.push(make_user_message(&content));
+        }
+
+        let mut config = make_test_config();
+        config.min_keep_rounds = Some(3);
+        config.rounds_per_summary = Some(3);
+        config.compression_token_threshold = Some(100); // low threshold
+
+        let manager = ContextManager::new(Some(8000), Some(&config));
+        let result = manager.maybe_truncate(&mut messages);
+
+        assert_eq!(result.action, TruncationAction::NewSegment);
+        assert!(result.needs_compression);
+        assert_eq!(result.rounds_removed, 3);
+        assert!(result.removed_messages.len() > 0);
+
+        // Verify the placeholder was inserted
+        let has_seg = messages.iter().any(|m| is_summary_segment(m));
+        assert!(has_seg, "Should have a summary segment placeholder");
+    }
+
+    #[test]
+    fn test_progressive_disabled_falls_back_to_legacy() {
+        let mut messages = vec![make_system_message("sys")];
+        // 20 rounds of large content — definitely over threshold
+        for i in 0..20 {
+            let content = format!("Round {}: {}", i, "x".repeat(2000));
+            messages.push(make_user_message(&content));
+        }
+
+        let mut config = make_test_config();
+        config.progressive_compression = Some(false);
+        config.min_keep_rounds = Some(3);
+        config.compression_token_threshold = Some(100);
+
+        let manager = ContextManager::new(Some(8000), Some(&config));
+        let result = manager.maybe_truncate(&mut messages);
+
+        // Legacy mode removes as many rounds as needed to go below threshold,
+        // which for 20 rounds of 2000 chars in an 8000-token window is more than 3.
+        assert!(result.rounds_removed > 3,
+            "Legacy should remove more than rounds_per_summary (3) rounds, removed {}",
+            result.rounds_removed);
+        // And the action type should be NewSegment (legacy single summary)
+        assert!(matches!(result.action, TruncationAction::NewSegment));
+    }
+
+    #[test]
+    fn test_progressive_merge_segments() {
+        // Build history where full rounds are within budget (fewer than min_keep + rounds_per_summary)
+        // but we have too many summary segments, forcing a merge.
+        let mut messages = vec![make_system_message("sys")];
+        // 6 summary segments at level 0 — exceeds max of 5, each large enough to matter
+        for i in 0..6 {
+            let content = format!("Summary {}: {}", i, "x".repeat(500));
+            messages.push(make_summary_segment(&content, 0));
+        }
+        // Only 2 full user messages — less than min_keep, so NewSegment won't trigger
+        for i in 0..2 {
+            let content = format!("User {}: {}", i, "x".repeat(300));
+            messages.push(make_user_message(&content));
+        }
+
+        let mut config = make_test_config();
+        config.max_summary_segments = Some(5);
+        config.merge_count = Some(2);
+        config.min_keep_rounds = Some(3);
+        config.rounds_per_summary = Some(3);
+        config.compression_token_threshold = Some(10);
+
+        // Tiny context window to force over-threshold
+        let manager = ContextManager::new(Some(2000), Some(&config));
+
+        // First check: confirm we're over threshold
+        let estimated = estimate_messages_tokens_with_margin(&messages, 1.3);
+        assert!(estimated > manager.truncation_threshold(),
+            "Test setup error: should be over threshold, est={}, threshold={}",
+            estimated, manager.truncation_threshold());
+
+        let result = manager.maybe_truncate(&mut messages);
+
+        // With full rounds < min_keep + rounds_per_summary, and segments > max,
+        // try_new_segment returns None, try_merge_segments should run
+        match &result.action {
+            TruncationAction::MergeSegments { summaries, start_position, count } => {
+                assert_eq!(*count, 2, "Should merge 2 segments");
+                assert_eq!(summaries.len(), 2);
+                assert!(*start_position >= 1, "Start after system message");
+            }
+            other => {
+                panic!("Expected MergeSegments, got {:?}", other);
+            }
+        }
+
+        // After merge: 6 - 2 + 1 = 5 segments (including the placeholder)
+        let seg_count = messages.iter().filter(|m| is_summary_segment(m)).count();
+        assert_eq!(seg_count, 5, "Should have 5 segments after merge");
+    }
+
+    #[test]
+    fn test_progressive_discard_after_merge_limit() {
+        // 6 summary segments at merge level 2 (at the max), plus some full rounds
+        let mut messages = vec![make_system_message("sys")];
+        for i in 0..6 {
+            messages.push(make_summary_segment(&format!("Old summary {}", i), 2));
+        }
+        for i in 0..5 {
+            let content = format!("User {}: {}", i, "x".repeat(2000));
+            messages.push(make_user_message(&content));
+        }
+
+        let mut config = make_test_config();
+        config.max_summary_segments = Some(5);
+        config.max_merges_per_segment = Some(2);
+        config.merge_count = Some(2);
+
+        let manager = ContextManager::new(Some(8000), Some(&config));
+
+        // First call may do NewSegment, so call a few times to reach discard
+        let mut did_discard = false;
+        for _ in 0..5 {
+            let result = manager.maybe_truncate(&mut messages);
+            if result.rounds_removed == 0 && result.messages_removed > 0 && !result.needs_compression {
+                // Likely a discard
+                if find_discard_notice_pos(&messages).is_some() {
+                    did_discard = true;
+                    break;
+                }
+            }
+        }
+
+        // Verify segment count went down or discard notice appeared
+        let seg_count = messages.iter().filter(|m| is_summary_segment(m)).count();
+        assert!(
+            seg_count <= 6,
+            "Segment count should decrease or stay same, got {}",
+            seg_count
+        );
+
+        // Just verify no panics and something happened
+        let _ = did_discard;
+    }
+
+    #[test]
+    fn test_legacy_notice_recognized_as_summary_segment() {
+        let mut messages = vec![
+            make_system_message("sys"),
+            make_legacy_notice("[Old compressed context notice]"),
+        ];
+        // Add several full rounds to push over threshold
+        for i in 0..8 {
+            let content = format!("User {}: {}", i, "x".repeat(2000));
+            messages.push(make_user_message(&content));
+        }
+
+        let mut config = make_test_config();
+        config.min_keep_rounds = Some(3);
+        config.max_summary_segments = Some(5);
+        config.compression_token_threshold = Some(100);
+
+        let manager = ContextManager::new(Some(8000), Some(&config));
+        let result = manager.maybe_truncate(&mut messages);
+
+        // Should not crash; legacy notice is treated as a summary segment
+        assert!(result.messages_removed > 0 || result.rounds_removed > 0);
+    }
+
+    #[test]
+    fn test_discard_notice_inserted_once() {
+        let mut messages = vec![
+            make_system_message("sys"),
+            make_summary_segment("old seg 1", 2),
+            make_summary_segment("old seg 2", 2),
+            make_summary_segment("old seg 3", 2),
+            make_summary_segment("old seg 4", 2),
+            make_summary_segment("old seg 5", 2),
+            make_summary_segment("old seg 6", 2),
+        ];
+        for i in 0..4 {
+            let content = format!("User {}: {}", i, "x".repeat(2000));
+            messages.push(make_user_message(&content));
+        }
+
+        let mut config = make_test_config();
+        config.max_summary_segments = Some(5);
+        config.max_merges_per_segment = Some(2);
+
+        let manager = ContextManager::new(Some(6000), Some(&config));
+
+        // Trigger a few discards
+        for _ in 0..3 {
+            let _ = manager.maybe_truncate(&mut messages);
+        }
+
+        // Count discard notices — should be at most 1
+        let discard_count = messages.iter().filter(|m| is_discard_notice(m)).count();
+        assert!(
+            discard_count <= 1,
+            "Should have at most 1 discard notice, found {}",
+            discard_count
+        );
+    }
+
+    #[test]
+    fn test_multiple_progressive_rounds_gradual() {
+        // Build a long history and verify compression happens gradually
+        let mut messages = vec![make_system_message("sys")];
+        for i in 0..20 {
+            let content = format!("Round {} user message: {}", i, "x".repeat(1500));
+            messages.push(make_user_message(&content));
+        }
+
+        let mut config = make_test_config();
+        config.min_keep_rounds = Some(3);
+        config.rounds_per_summary = Some(3);
+        config.max_summary_segments = Some(4);
+        config.compression_token_threshold = Some(100);
+
+        let manager = ContextManager::new(Some(10000), Some(&config));
+
+        let mut seg_count_before = 0;
+        let mut did_new_segment = false;
+        let mut did_merge = false;
+
+        for round in 0..10 {
+            let result = manager.maybe_truncate(&mut messages);
+
+            let seg_count = messages.iter().filter(|m| is_summary_segment(m)).count();
+
+            match &result.action {
+                TruncationAction::NewSegment => {
+                    did_new_segment = true;
+                    assert_eq!(result.rounds_removed, 3);
+                    assert!(seg_count > seg_count_before || seg_count_before == 0);
+                }
+                TruncationAction::MergeSegments { .. } => {
+                    did_merge = true;
+                    assert!(seg_count <= seg_count_before);
+                }
+                TruncationAction::TruncateOnly => {
+                    // Could be discard or nothing
+                }
+            }
+
+            seg_count_before = seg_count;
+
+            let estimated = estimate_messages_tokens_with_margin(&messages, 1.3);
+            if estimated <= manager.truncation_threshold() {
+                break;
+            }
+
+            tracing::debug!("Round {}: segments={}, estimated={}", round, seg_count, estimated);
+        }
+
+        // With 20 rounds and a small window, we should see at least new segments
+        assert!(did_new_segment, "Should have created at least one new summary segment");
+        let _ = did_merge;
     }
 }

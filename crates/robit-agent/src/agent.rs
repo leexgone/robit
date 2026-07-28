@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::context::ContextManager;
+use crate::context::{ContextManager, TruncationAction, TruncationResult};
 use crate::error::{AgentError, Result};
 use crate::event::{new_session_id, AgentEvent, FrontendMessage, MediaAttachment, SessionId};
 use crate::frontend::Frontend;
@@ -255,48 +255,69 @@ impl Agent {
     pub async fn run(mut self, mut message_rx: mpsc::Receiver<FrontendMessage>) {
         tracing::info!("Agent started, session: {}", self.default_session_id);
 
-        // Handle pending compression from with_history initialization
-        if let Some((session_id, truncation_result)) = self.pending_truncation.take() {
+        // Handle pending compression from with_history initialization.
+        // May need multiple compression rounds for long histories.
+        if self.pending_truncation.is_some() {
             tracing::info!("=== Starting pending compression processing ===");
-            tracing::info!("Session ID: {}", session_id);
-            tracing::info!("Removed rounds: {}", truncation_result.rounds_removed);
-            tracing::info!("Removed messages: {}", truncation_result.messages_removed);
-            tracing::info!("Insert position: {}", truncation_result.insert_position);
+            let session_id = self.default_session_id.clone();
+            let mut iterations = 0;
+            const MAX_COMPRESSION_ITERATIONS: usize = 20;
 
-            let removed_tokens = crate::context::estimate_messages_tokens(&truncation_result.removed_messages);
-            tracing::info!("Estimated removed tokens: {}", removed_tokens);
+            loop {
+                // Take one pending result, if any
+                let pending = self.pending_truncation.take();
+                let result = match pending {
+                    Some((_, r)) => r,
+                    None => break,
+                };
 
-            tracing::info!("Generating summary for {} removed messages...", truncation_result.removed_messages.len());
-            let summary = generate_summary(&self.llm_client, &truncation_result.removed_messages).await;
-            tracing::info!("Generated summary: \"{}\"", summary);
-
-            // Replace the placeholder notice with the actual summary
-            let mut replaced = false;
-            if let Some(session) = self.sessions.get_mut(&session_id) {
-                tracing::info!("Session found, current history length: {}", session.history.len());
-                if let Some(msg) = session.history.get_mut(truncation_result.insert_position) {
-                    let notice = format!("[Earlier conversation summary: {}]", summary);
-                    tracing::info!("Replacing message at position {} with summary...", truncation_result.insert_position);
-                    *msg = ChatCompletionRequestMessage::User(
-                        ChatCompletionRequestUserMessage {
-                            content: notice.into(),
-                            name: Some("system_notice".to_string()),
-                        }
-                    );
-                    replaced = true;
-                    tracing::info!("Compression complete! Summary successfully inserted at position {}", truncation_result.insert_position);
-                } else {
-                    tracing::warn!("Insert position {} not found in session history (length: {})",
-                        truncation_result.insert_position, session.history.len());
+                iterations += 1;
+                if iterations > MAX_COMPRESSION_ITERATIONS {
+                    tracing::warn!("Reached max compression iterations ({}), stopping", MAX_COMPRESSION_ITERATIONS);
+                    break;
                 }
-            } else {
-                tracing::warn!("Session {} not found, cannot insert summary", session_id);
+
+                tracing::info!("Compression iteration {}: action={:?}, removed_rounds={}, removed_msgs={}",
+                    iterations, result.action, result.rounds_removed, result.messages_removed);
+
+                // Apply the compression result (generate summary / merge)
+                if let Some(session) = self.sessions.get_mut(&session_id) {
+                    apply_compression_result(&self.llm_client, &mut session.history, &result).await;
+                }
+
+                // Check if more compression is needed
+                let needs_more = if let Some(session) = self.sessions.get(&session_id) {
+                    let estimated = crate::context::estimate_messages_tokens_with_margin(
+                        &session.history,
+                        self.context_manager.token_safety_margin,
+                    );
+                    estimated > self.context_manager.truncation_threshold()
+                } else {
+                    false
+                };
+
+                if !needs_more {
+                    tracing::info!("Context below threshold after {} compression iterations", iterations);
+                    break;
+                }
+
+                // Do another round of truncation
+                if let Some(session) = self.sessions.get_mut(&session_id) {
+                    let next_result = self.context_manager.maybe_truncate(&mut session.history);
+                    if next_result.needs_compression {
+                        self.pending_truncation = Some((session_id.clone(), next_result));
+                    } else if next_result.messages_removed > 0 {
+                        // Truncation happened but no compression needed (e.g. discard)
+                        tracing::info!("Truncation without compression: {} messages removed", next_result.messages_removed);
+                        // Continue the loop to check if still over threshold
+                        self.pending_truncation = Some((session_id.clone(), next_result));
+                    } else {
+                        break;
+                    }
+                }
             }
 
-            if !replaced {
-                tracing::warn!("Summary not inserted, using fallback behavior");
-            }
-            tracing::info!("=== Compression processing finished ===");
+            tracing::info!("=== Compression processing finished ({} iterations) ===", iterations);
         } else {
             tracing::info!("No pending compression needed");
         }
@@ -433,24 +454,18 @@ impl Agent {
         // Truncate context if needed
         let truncation_result = self.context_manager.maybe_truncate(&mut session.history);
 
-        // Handle compression: generate actual summary via LLM
+        // Handle compression: generate actual summary / merge via LLM
         if truncation_result.needs_compression {
-            let summary = generate_summary(&self.llm_client, &truncation_result.removed_messages).await;
-
-            // Replace the placeholder notice with the actual summary
-            if let Some(msg) = session.history.get_mut(truncation_result.insert_position) {
-                let notice = format!("[Earlier conversation summary: {}]", summary);
-                *msg = ChatCompletionRequestMessage::User(
-                    ChatCompletionRequestUserMessage {
-                        content: notice.into(),
-                        name: Some("system_notice".to_string()),
-                    }
-                );
-            }
+            apply_compression_result(&self.llm_client, &mut session.history, &truncation_result).await;
 
             tracing::info!(
-                "Compression completed: removed {} tokens, summary inserted",
-                crate::context::estimate_messages_tokens(&truncation_result.removed_messages),
+                "Compression completed: action={:?}, removed_rounds={}",
+                truncation_result.action, truncation_result.rounds_removed
+            );
+        } else if truncation_result.messages_removed > 0 {
+            tracing::info!(
+                "Context truncated without compression: {} messages removed",
+                truncation_result.messages_removed
             );
         }
 
@@ -913,6 +928,58 @@ impl Agent {
 /// Generate a summary of removed conversation messages using the LLM.
 /// Uses a non-streaming call to produce a 1-2 sentence summary.
 /// Falls back to a static message on failure.
+/// Apply a truncation result to the session history.
+/// For NewSegment: generates a summary from removed messages and replaces the placeholder.
+/// For MergeSegments: merges existing summary segments and replaces the placeholder.
+/// For TruncateOnly: no-op.
+async fn apply_compression_result(
+    llm_client: &LlmClient,
+    history: &mut [ChatCompletionRequestMessage],
+    result: &TruncationResult,
+) {
+    if !result.needs_compression {
+        return;
+    }
+
+    let pos = result.insert_position;
+    if pos >= history.len() {
+        tracing::warn!("Insert position {} out of bounds (history len: {})", pos, history.len());
+        return;
+    }
+
+    let (content, name) = match &result.action {
+        TruncationAction::NewSegment => {
+            let summary = generate_summary(llm_client, &result.removed_messages).await;
+            (
+                format!("[Summary: {}]", summary),
+                "summary_segment".to_string(),
+            )
+        }
+        TruncationAction::MergeSegments { summaries, .. } => {
+            let merged = merge_summaries(llm_client, summaries).await;
+            // Determine new merge level from the placeholder's name
+            let current_level = crate::context::get_merge_level(&history[pos]);
+            let name = if current_level == 0 {
+                "summary_segment".to_string()
+            } else {
+                format!("summary_segment_m{}", current_level)
+            };
+            (format!("[Summary: {}]", merged), name)
+        }
+        TruncationAction::TruncateOnly => return,
+    };
+
+    tracing::info!("Compression applied at position {}: {}", pos, name);
+
+    history[pos] = ChatCompletionRequestMessage::User(
+        ChatCompletionRequestUserMessage {
+            content: content.into(),
+            name: Some(name),
+        }
+    );
+}
+
+/// Generate a short summary from removed full conversation rounds.
 async fn generate_summary(
     llm_client: &LlmClient,
     removed_messages: &[ChatCompletionRequestMessage],
@@ -960,6 +1027,66 @@ async fn generate_summary(
         Err(e) => {
             tracing::error!("Summary generation failed with error: {}, using fallback", e);
             "Conversation history compressed.".to_string()
+        }
+    }
+}
+
+/// Merge multiple existing summary segments into one coherent summary.
+async fn merge_summaries(
+    llm_client: &LlmClient,
+    summaries: &[String],
+) -> String {
+    tracing::info!("Merging {} summary segments...", summaries.len());
+
+    let numbered: Vec<String> = summaries
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("[{}] {}", i + 1, s))
+        .collect();
+    let joined = numbered.join("\n\n");
+
+    let system_prompt = "You are given multiple conversation summaries from different time periods, ordered from oldest to newest. Merge them into a single concise summary (2-3 sentences) that preserves all key information.
+
+Key points to preserve:
+- User goals and requests
+- Important decisions made
+- Technical context (file paths, APIs, architectures)
+- Major outcomes and conclusions
+
+Do not simply concatenate — synthesize into a coherent narrative.";
+
+    let messages = vec![
+        ChatCompletionRequestMessage::System(
+            ChatCompletionRequestSystemMessage {
+                content: system_prompt.into(),
+                name: None,
+            }
+        ),
+        ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage {
+                content: format!("Summaries to merge:\n\n{}", joined).into(),
+                name: None,
+            }
+        ),
+    ];
+
+    match llm_client.chat(messages, None).await {
+        Ok(response) => {
+            if let Some(choice) = response.choices.first() {
+                if let Some(content) = &choice.message.content {
+                    let summary = content.trim().to_string();
+                    if !summary.is_empty() {
+                        tracing::info!("Successfully merged {} summaries (length: {})", summaries.len(), summary.len());
+                        return summary;
+                    }
+                }
+            }
+            tracing::warn!("Summary merge returned empty response, using fallback");
+            "Multiple earlier conversation segments merged.".to_string()
+        }
+        Err(e) => {
+            tracing::error!("Summary merge failed with error: {}, using fallback", e);
+            "Multiple earlier conversation segments merged.".to_string()
         }
     }
 }

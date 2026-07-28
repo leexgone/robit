@@ -7,7 +7,7 @@ robit（robo it）是一个基于 LLM 的 AI 自动化代理框架。它提供�
 ## 功能特性
 
 - **统一 LLM 配置**：通过 OpenAI 兼容接口接入 DeepSeek、QWen 等模型提供商。
-- **Agent 运行时**：事件驱动循环，支持流式输出、工具调用、用户确认和分层上下文管理（输出截断 → 历史截断提前触发 + 保留最近轮次 → LLM 摘要压缩）。
+- **Agent 运行时**：事件驱动循环，支持流式输出、工具调用、用户确认和渐进式上下文管理（输出截断 → 分段历史压缩（含合并与丢弃上限）→ LLM 摘要生成）。
 - **终端前端**：`robit` TUI 基于 `ratatui` + `crossterm`，支持 Windows、Linux 和 macOS。
 - **桌面 GUI**：`robit-gui` 基于 Tauri v2 + React，提供桌面应用体验。
 - **多会话 Bot 框架**：`robit-chatbot` 提供平台无关的 Bot 基础设施，支持每个对话独立的 Agent 会话。

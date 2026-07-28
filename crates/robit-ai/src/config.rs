@@ -98,7 +98,7 @@ pub struct AppConfig {
     pub bot: Option<BotConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ContextConfig {
     pub max_output_lines: Option<usize>,
     pub max_output_bytes: Option<usize>,
@@ -120,6 +120,20 @@ pub struct ContextConfig {
     /// Maximum tool calls allowed per turn before forcing early termination (default 30).
     /// Prevents a single user turn from exploding the context with excessive tool calls.
     pub max_tool_calls_per_turn: Option<usize>,
+    /// Enable progressive segmented compression (default true).
+    /// When false, falls back to the old single-shot truncation + one summary behavior.
+    pub progressive_compression: Option<bool>,
+    /// Number of full conversation rounds per summary segment (default 3).
+    /// Each compression converts the oldest N full rounds into one summary segment.
+    pub rounds_per_summary: Option<usize>,
+    /// Maximum number of summary segments to keep (default 5).
+    /// When exceeded, the oldest segments are merged (or discarded if merge limit reached).
+    pub max_summary_segments: Option<usize>,
+    /// Number of segments to merge each time (default 2).
+    pub merge_count: Option<usize>,
+    /// Maximum times a single summary segment may be merged before being discarded (default 2).
+    /// Controls information distortion — each merge loses detail; discard when limit is hit.
+    pub max_merges_per_segment: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]

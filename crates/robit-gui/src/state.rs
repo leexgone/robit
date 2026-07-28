@@ -150,8 +150,12 @@ impl AppState {
             .and_then(|a| a.auto_approve)
             .unwrap_or(false);
 
-        // ContextConfig doesn't implement Clone - skip MVP
-        let context_config: Option<robit_ai::config::ContextConfig> = None;
+        // Extract context config from app config
+        let context_config: Option<robit_ai::config::ContextConfig> = config
+            .app
+            .as_ref()
+            .and_then(|a| a.context.as_ref())
+            .cloned();
 
         let context_window = llm_client.resolved().context_window;
 
@@ -252,12 +256,14 @@ impl AppState {
         // Parse session_id string to SessionId
         let session_id_obj = SessionId::from(session_id.to_string());
 
+        let context_config = self.context_config.as_ref();
+
         let agent = Agent::with_history(
             llm_client,
             tools,
             skills,
             gui_frontend,
-            None,
+            context_config,
             context_window,
             working_dir,
             auto_approve,
