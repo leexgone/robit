@@ -86,8 +86,17 @@ impl Tool for BashTool {
         let mut cmd = build_shell_command(&parsed.command);
         cmd.current_dir(&work_dir);
 
+        tracing::trace!(
+            "[tool:bash] spawning command: cmd='{}', work_dir='{}', timeout_ms={}",
+            parsed.command,
+            work_dir.display(),
+            timeout_ms
+        );
+
         // Execute with timeout
+        let started = std::time::Instant::now();
         let result = timeout(Duration::from_millis(timeout_ms), cmd.output()).await;
+        let elapsed = started.elapsed();
 
         match result {
             Ok(Ok(output)) => {
@@ -95,6 +104,14 @@ impl Tool for BashTool {
                 let stdout = decode_output(&output.stdout);
                 let stderr = decode_output(&output.stderr);
                 let exit_code = output.status.code().unwrap_or(-1);
+
+                tracing::trace!(
+                    "[tool:bash] command completed: exit_code={}, elapsed_ms={}, stdout_len={}, stderr_len={}",
+                    exit_code,
+                    elapsed.as_millis(),
+                    stdout.len(),
+                    stderr.len()
+                );
 
                 let mut content = String::new();
 
@@ -129,11 +146,25 @@ impl Tool for BashTool {
                     is_error: exit_code != 0,
                 })
             }
-            Ok(Err(e)) => Ok(ToolResult::error(format!("Command execution failed: {}", e))),
-            Err(_) => Ok(ToolResult::error(format!(
-                "Command timed out ({}ms limit)",
-                timeout_ms
-            ))),
+            Ok(Err(e)) => {
+                tracing::trace!(
+                    "[tool:bash] command failed to spawn after {:?}: {}",
+                    elapsed,
+                    e
+                );
+                Ok(ToolResult::error(format!("Command execution failed: {}", e)))
+            }
+            Err(_) => {
+                tracing::trace!(
+                    "[tool:bash] command timed out after {}ms (elapsed={:?})",
+                    timeout_ms,
+                    elapsed
+                );
+                Ok(ToolResult::error(format!(
+                    "Command timed out ({}ms limit)",
+                    timeout_ms
+                )))
+            }
         }
     }
 }

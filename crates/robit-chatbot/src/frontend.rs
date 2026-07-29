@@ -167,6 +167,12 @@ impl ChatbotFrontend {
         let text = std::mem::take(&mut *buffer);
         drop(buffer);
 
+        tracing::trace!(
+            "[chatbot] flush_buffer: chat_id='{}', text_len={}",
+            self.chat_id,
+            text.len()
+        );
+
         let caps = self.platform_sender.capabilities();
 
         let prepared = if caps.supports_markdown {
@@ -189,8 +195,18 @@ impl ChatbotFrontend {
             }
         } else {
             // No previous message this turn, just send
-            if let Ok(res) = self.platform_sender.send(&self.chat_id, &prepared).await {
-                *last_msg_id = Some(res.msg_id);
+            match self.platform_sender.send(&self.chat_id, &prepared).await {
+                Ok(res) => {
+                    *last_msg_id = Some(res.msg_id);
+                    tracing::trace!(
+                        "[chatbot] reply sent: chat_id='{}', msg_len={}",
+                        self.chat_id, prepared.len()
+                    );
+                }
+                Err(e) => tracing::warn!(
+                    "[chatbot] failed to send reply to platform: chat_id='{}', error={}",
+                    self.chat_id, e
+                ),
             }
         }
 
@@ -218,8 +234,18 @@ impl ChatbotFrontend {
             "find" => "🔍 正在查找...".to_string(),
             _ => "🔧 正在处理...".to_string(),
         };
-        if let Ok(res) = self.platform_sender.send(&self.chat_id, &hint).await {
-            *self.last_msg_id.lock().await = Some(res.msg_id);
+        match self.platform_sender.send(&self.chat_id, &hint).await {
+            Ok(res) => {
+                *self.last_msg_id.lock().await = Some(res.msg_id);
+                tracing::trace!(
+                    "[chatbot] progress hint sent: chat_id='{}', tool='{}'",
+                    self.chat_id, tool_name
+                );
+            }
+            Err(e) => tracing::warn!(
+                "[chatbot] failed to send progress hint: chat_id='{}', tool='{}', error={}",
+                self.chat_id, tool_name, e
+            ),
         }
     }
 }
@@ -232,6 +258,10 @@ impl Frontend for ChatbotFrontend {
                 self.append_delta(&delta).await;
             }
             AgentEvent::ToolCallRequested { name, .. } => {
+                tracing::trace!(
+                    "[chatbot] ToolCallRequested received: chat_id='{}', tool='{}' (auto_approve={})",
+                    self.chat_id, name, self.auto_approve
+                );
                 // Flush any buffered text before showing tool progress.
                 self.flush_buffer().await;
                 // In auto-approve mode, send a progress hint so the user knows
@@ -241,25 +271,45 @@ impl Frontend for ChatbotFrontend {
                     self.send_progress_hint(&name).await;
                 }
             }
-            AgentEvent::ToolCallResult { .. } => {
-                // Silent: tool outputs are internal; the user only sees the
-                // final text reply. Any progress hint is replaced by the reply
-                // on TurnComplete.
+            AgentEvent::ToolCallResult { tool_call_id, ref result } => {
+                // Silent by design: tool outputs are internal; the user only
+                // sees the final text reply. Traced so we can confirm the
+                // result actually reached the frontend when diagnosing
+                // "no feedback" issues.
+                tracing::trace!(
+                    "[chatbot] ToolCallResult received (silent by design): chat_id='{}', tool_call_id='{}', is_error={}, content_len={}",
+                    self.chat_id, tool_call_id, result.is_error, result.content.len()
+                );
             }
             AgentEvent::TurnComplete => {
+                tracing::trace!(
+                    "[chatbot] TurnComplete received: chat_id='{}', flushing buffered reply",
+                    self.chat_id
+                );
                 self.flush_buffer().await;
                 // Reset per-turn state.
                 *self.progress_hint_sent.lock().await = false;
                 *self.last_msg_id.lock().await = None;
             }
             AgentEvent::Error(e) => {
+                tracing::trace!(
+                    "[chatbot] Error received: chat_id='{}', error={}",
+                    self.chat_id, e
+                );
                 self.flush_buffer().await;
                 let msg = format!("❌ Error: {}", e);
-                let _ = self.platform_sender.send(&self.chat_id, &msg).await;
+                if let Err(send_err) = self.platform_sender.send(&self.chat_id, &msg).await {
+                    tracing::warn!(
+                        "[chatbot] failed to send error message to platform: chat_id='{}', error={}",
+                        self.chat_id, send_err
+                    );
+                }
             }
-            AgentEvent::SkillTriggered { .. } => {
-                // Silent: skill trigger is internal; the skill's own output
-                // arrives as TextDelta events.
+            AgentEvent::SkillTriggered { ref name, .. } => {
+                tracing::trace!(
+                    "[chatbot] SkillTriggered received (silent by design): chat_id='{}', skill='{}'",
+                    self.chat_id, name
+                );
             }
         }
         Ok(())

@@ -186,7 +186,25 @@ impl ToolRegistry {
         match self.tools.get(name) {
             Some(tool) => {
                 tracing::debug!("Found tool '{}', executing...", name);
-                match tool.execute(args, ctx).await {
+                let started = std::time::Instant::now();
+                let outcome = tool.execute(args, ctx).await;
+                let elapsed = started.elapsed();
+                match &outcome {
+                    Ok(result) => tracing::trace!(
+                        "[tool:{}] execution finished in {:?}: is_error={}, content_len={}",
+                        name,
+                        elapsed,
+                        result.is_error,
+                        result.content.len()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "[tool:{}] execution returned error after {:?}: {}",
+                        name,
+                        elapsed,
+                        e
+                    ),
+                }
+                match outcome {
                     Ok(result) => result,
                     Err(e) => ToolResult::error(format!("Tool execution error: {}", e)),
                 }

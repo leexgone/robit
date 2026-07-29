@@ -646,11 +646,23 @@ impl Agent {
         }
 
         // Execute each tool call
-        for tc in &assembled_tool_calls {
+        tracing::trace!(
+            "[tool] beginning execution of {} tool call(s) this step",
+            assembled_tool_calls.len()
+        );
+        for (tc_idx, tc) in assembled_tool_calls.iter().enumerate() {
             tracing::info!(
-                "About to execute tool: id='{}', name='{}'",
+                "About to execute tool [{}/{}]: id='{}', name='{}'",
+                tc_idx + 1,
+                assembled_tool_calls.len(),
                 tc.id,
                 tc.function.name
+            );
+            tracing::trace!(
+                "[tool] tool_call_id='{}', name='{}', arguments='{}'",
+                tc.id,
+                tc.function.name,
+                tc.function.arguments
             );
 
             let tc_info = ToolCallInfo {
@@ -659,20 +671,66 @@ impl Agent {
                 arguments: tc.function.arguments.clone(),
             };
 
-            // Notify frontend
-            let _ = self
+            // Notify frontend. Capture the result instead of `let _ =` so a
+            // failed delivery (closed/full channel, platform send error) is
+            // surfaced — a silent failure here is exactly the "no feedback"
+            // symptom we want to catch.
+            match self
                 .frontend
                 .on_event(AgentEvent::ToolCallRequested {
                     tool_call_id: tc_info.id.clone(),
                     name: tc_info.name.clone(),
                     arguments: tc_info.arguments.clone(),
                 })
-                .await;
+                .await
+            {
+                Ok(()) => tracing::trace!(
+                    "[tool] ToolCallRequested delivered to frontend: tool_call_id='{}', name='{}'",
+                    tc_info.id,
+                    tc_info.name
+                ),
+                Err(e) => tracing::warn!(
+                    "[tool] ToolCallRequested delivery FAILED (user feedback may be lost): tool_call_id='{}', name='{}', error={}",
+                    tc_info.id,
+                    tc_info.name,
+                    e
+                ),
+            }
 
             // Check confirmation
-            let approved = if self.tools.requires_confirmation(&tc.function.name) && !self.auto_approve {
-                self.frontend.request_tool_confirmation(&tc_info).await?
+            let requires_confirm = self.tools.requires_confirmation(&tc.function.name);
+            let approved = if requires_confirm && !self.auto_approve {
+                tracing::trace!(
+                    "[tool] requesting user confirmation: tool_call_id='{}', name='{}'",
+                    tc_info.id,
+                    tc_info.name
+                );
+                match self.frontend.request_tool_confirmation(&tc_info).await {
+                    Ok(approved) => {
+                        tracing::trace!(
+                            "[tool] confirmation response: tool_call_id='{}', name='{}', approved={}",
+                            tc_info.id,
+                            tc_info.name,
+                            approved
+                        );
+                        approved
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[tool] confirmation request failed: tool_call_id='{}', name='{}', error={}",
+                            tc_info.id,
+                            tc_info.name,
+                            e
+                        );
+                        return Err(e);
+                    }
+                }
             } else {
+                tracing::trace!(
+                    "[tool] skipping confirmation (requires_confirm={}, auto_approve={})",
+                    requires_confirm,
+                    self.auto_approve
+                );
                 true
             };
 
@@ -688,25 +746,67 @@ impl Agent {
                     extensions: self.extensions.clone(),
                 };
 
-                self.tools.execute(&tc.function.name, args, &ctx).await
+                tracing::trace!(
+                    "[tool] dispatching to registry: tool_call_id='{}', name='{}'",
+                    tc_info.id,
+                    tc_info.name
+                );
+                let result = self.tools.execute(&tc.function.name, args, &ctx).await;
+                tracing::trace!(
+                    "[tool] execution returned: tool_call_id='{}', name='{}', is_error={}, content_len={}",
+                    tc_info.id,
+                    tc_info.name,
+                    result.is_error,
+                    result.content.len()
+                );
+                result
             } else {
+                tracing::trace!(
+                    "[tool] tool call rejected by user: tool_call_id='{}', name='{}'",
+                    tc_info.id,
+                    tc_info.name
+                );
                 ToolResult::error("User rejected this tool call")
             };
 
             // Truncate output
+            let raw_len = result.content.len();
             let truncated_result = ToolResult {
                 content: self.context_manager.truncate_tool_output(&result.content),
                 is_error: result.is_error,
             };
+            if truncated_result.content.len() != raw_len {
+                tracing::trace!(
+                    "[tool] output truncated: tool_call_id='{}', name='{}', raw_len={}, truncated_len={}",
+                    tc_info.id,
+                    tc_info.name,
+                    raw_len,
+                    truncated_result.content.len()
+                );
+            }
 
-            // Notify frontend of result
-            let _ = self
+            // Notify frontend of result. Same rationale as above: capture
+            // delivery errors so a lost ToolCallResult is never silent.
+            match self
                 .frontend
                 .on_event(AgentEvent::ToolCallResult {
                     tool_call_id: tc.id.clone(),
                     result: truncated_result.clone(),
                 })
-                .await;
+                .await
+            {
+                Ok(()) => tracing::trace!(
+                    "[tool] ToolCallResult delivered to frontend: tool_call_id='{}', name='{}'",
+                    tc_info.id,
+                    tc_info.name
+                ),
+                Err(e) => tracing::warn!(
+                    "[tool] ToolCallResult delivery FAILED (user feedback may be lost): tool_call_id='{}', name='{}', error={}",
+                    tc_info.id,
+                    tc_info.name,
+                    e
+                ),
+            }
 
             // Add tool result to history
             let tool_msg = ChatCompletionRequestMessage::Tool(
@@ -722,8 +822,18 @@ impl Agent {
                 .get_mut(session_id)
                 .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
             session.history.push(tool_msg);
+            tracing::trace!(
+                "[tool] tool result appended to history: tool_call_id='{}', name='{}', history_len={}",
+                tc_info.id,
+                tc_info.name,
+                session.history.len()
+            );
         }
 
+        tracing::trace!(
+            "[tool] all {} tool call(s) executed this step",
+            assembled_tool_calls.len()
+        );
         Ok(assembled_tool_calls.len())
     }
 
