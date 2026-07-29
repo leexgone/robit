@@ -57,7 +57,7 @@
 
 - [x] 基础压缩策略（token 阈值触发 + 截断提示）
 - [x] 摘要压缩（调用 LLM 生成对话摘要，替换占位符）
-- [ ] 渐进式压缩（分段摘要 + 合并 + 丢弃上限，详见 [实现计划](plans/progressive-context-compression.md)）
+- [x] 渐进式压缩（分段摘要 + 合并 + 丢弃上限，详见 [实现计划](plans/progressive-context-compression.md)）
 - [ ] 远期结构化提取（摘要 → 关键要点，长期记忆增强）
 
 ### LLM 提供商扩展
