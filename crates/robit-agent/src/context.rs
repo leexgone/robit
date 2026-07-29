@@ -1021,12 +1021,12 @@ mod tests {
         make_user_message_named(content, "system_notice")
     }
 
-    fn make_discard_notice_msg() -> ChatCompletionRequestMessage {
-        make_user_message_named(
-            "[Note: Earlier conversation history beyond the earliest summary has been discarded.]",
-            "discard_notice",
-        )
-    }
+    // fn make_discard_notice_msg() -> ChatCompletionRequestMessage {
+    //     make_user_message_named(
+    //         "[Note: Earlier conversation history beyond the earliest summary has been discarded.]",
+    //         "discard_notice",
+    //     )
+    // }
 
     // ==========================================================================
     // estimate_tokens tests
