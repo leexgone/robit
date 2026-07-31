@@ -81,7 +81,7 @@ impl ImageGenError {
             ImageGenError::Timeout(secs) => ImageGenErrorInfo {
                 kind: "timeout",
                 code: None,
-                message: format!("Task timed out after {}s", secs),
+                message: format!("Image generation timed out after {}s", secs),
                 retryable: true,
             },
             ImageGenError::TaskFailed(status) => ImageGenErrorInfo {
@@ -125,7 +125,6 @@ fn is_retryable_api_error(code: &str, message: &str) -> bool {
 /// Parameters for an image generation request.
 pub struct ImageGenRequest {
     pub prompt: String,
-    pub size: Option<String>,
     pub n: Option<u32>,
     /// Extra parameters passed through to the provider (e.g. `watermark`).
     pub extra_params: Value,
@@ -173,18 +172,48 @@ impl ImageGenClient {
             mask_key(&self.provider.api_key),
         );
         tracing::debug!(
-            "[image_gen] request: prompt={:?}, size={:?}, n={:?}, extra_params={}",
+            "[image_gen] request: prompt={:?}, n={:?}, extra_params={}",
             req.prompt,
-            req.size,
             req.n,
             req.extra_params,
         );
-        match self.provider.protocol {
-            ImageProtocol::Openai => self.generate_openai(req).await,
-            ImageProtocol::Dashscope => match self.provider.mode {
-                ImageCallMode::Sync => self.generate_dashscope_sync(req).await,
-                ImageCallMode::Async => self.generate_dashscope_async(req).await,
+
+        // Overall timeout guard. The reqwest client-level timeout is not
+        // reliable when a server accepts the connection but never responds,
+        // so we wrap the whole call in tokio::time::timeout as a hard
+        // backstop. Without this a hung image request blocks the agent task
+        // indefinitely (and with it the whole chat session, since tool
+        // execution is synchronous).
+        let timeout_secs = match self.provider.protocol {
+            ImageProtocol::Dashscope if self.provider.mode == ImageCallMode::Async => {
+                self.provider.poll_timeout_secs
+            }
+            _ => HTTP_TIMEOUT_SECS,
+        };
+        match timeout(
+            Duration::from_secs(timeout_secs),
+            async {
+                match self.provider.protocol {
+                    ImageProtocol::Openai => self.generate_openai(req).await,
+                    ImageProtocol::Dashscope => match self.provider.mode {
+                        ImageCallMode::Sync => self.generate_dashscope_sync(req).await,
+                        ImageCallMode::Async => self.generate_dashscope_async(req).await,
+                    },
+                }
             },
+        )
+        .await
+        {
+            Ok(inner) => inner,
+            Err(_) => {
+                tracing::warn!(
+                    "[image_gen] generate timed out after {}s (protocol={:?}, mode={:?})",
+                    timeout_secs,
+                    self.provider.protocol,
+                    self.provider.mode
+                );
+                Err(ImageGenError::Timeout(timeout_secs))
+            }
         }
     }
 
@@ -202,9 +231,6 @@ impl ImageGenClient {
         });
         if let Some(n) = req.n {
             body["n"] = json!(n);
-        }
-        if let Some(ref size) = req.size {
-            body["size"] = json!(size);
         }
         // Merge any extra params (caller-provided overrides)
         if let Value::Object(ref extra) = req.extra_params {
@@ -246,7 +272,7 @@ impl ImageGenClient {
             .filter_map(|item| {
                 item.get("url")
                     .and_then(|u| u.as_str())
-                    .map(|u| GeneratedImage { url: u.to_string(), size: req.size.clone() })
+                    .map(|u| GeneratedImage { url: u.to_string(), size: None })
             })
             .collect::<Vec<_>>();
 
@@ -396,9 +422,6 @@ impl ImageGenClient {
         let mut parameters = json!({});
         if let Some(n) = req.n {
             parameters["n"] = json!(n);
-        }
-        if let Some(ref size) = req.size {
-            parameters["size"] = json!(size);
         }
         // Merge extra params into parameters (e.g. watermark, thinking_mode)
         if let Value::Object(ref extra) = req.extra_params {

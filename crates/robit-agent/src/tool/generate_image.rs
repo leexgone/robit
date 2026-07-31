@@ -28,8 +28,6 @@ struct GenerateImageArgs {
     #[serde(default)]
     output_path: Option<String>,
     #[serde(default)]
-    size: Option<String>,
-    #[serde(default)]
     n: Option<u32>,
 }
 
@@ -73,11 +71,6 @@ impl Tool for GenerateImageTool {
                     "type": "string",
                     "description": "Directory to save images (relative or absolute). \
                                     Defaults to {working_dir}/images."
-                },
-                "size": {
-                    "type": "string",
-                    "description": "Output image size, e.g. '2K', '4K' or '1024x1024'. \
-                                    Leave empty for the model default."
                 },
                 "n": {
                     "type": "integer",
@@ -124,16 +117,11 @@ impl Tool for GenerateImageTool {
         // Build request and call the provider
         let req = ImageGenRequest {
             prompt: parsed.prompt.clone(),
-            size: parsed.size.clone(),
             n: Some(n),
             extra_params: Value::Null,
         };
 
-        tracing::info!(
-            "[generate_image] requesting {} image(s), size={:?}",
-            n,
-            parsed.size
-        );
+        tracing::info!("[generate_image] requesting {} image(s)", n);
 
         let images = match self.client.generate(&req).await {
             Ok(imgs) => imgs,
