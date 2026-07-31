@@ -23,7 +23,7 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use robit_agent::{Agent, AgentEvent, FrontendMessage, bootstrap, log_skill_errors};
-use robit_ai::{init_logging_silent, load_config, LlmClient};
+use robit_ai::{init_logging_silent, load_config, resolve_image_provider, LlmClient};
 use tokio::sync::mpsc;
 
 use app::{App, InputMode};
@@ -79,6 +79,11 @@ fn main() -> Result<()> {
 
     let client = Arc::new(LlmClient::from_config(&config, None)?);
     let model = client.model().to_string();
+
+    // Resolve image generation model (if configured) for status bar display.
+    let image_model = resolve_image_provider(&config)
+        .ok()
+        .map(|p| p.model_id);
 
     let context_config = config.app.as_ref().and_then(|a| a.context.as_ref());
     let context_window = client.resolved().context_window;
@@ -136,7 +141,7 @@ fn main() -> Result<()> {
             agent.run(message_rx).await;
         });
 
-        let mut app = App::new(model, &tools, Arc::clone(&skill_registry));
+        let mut app = App::new(model, image_model, &tools, Arc::clone(&skill_registry));
         app.status.tools_enabled = tools.tool_names().len();
         app.status.tools_total = tools.tool_names().len();
 

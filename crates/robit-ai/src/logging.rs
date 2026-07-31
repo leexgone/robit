@@ -159,19 +159,66 @@ pub fn init_logging(
     }
 }
 
-/// Initialize logging but discard output (for TUI mode).
+/// Initialize logging but discard console output (for TUI mode).
 ///
-/// Same as `init_logging` but logs go to `/dev/null` instead of stdout.
+/// Same as `init_logging` but logs go to `/dev/null` instead of stdout, so
+/// they don't corrupt the terminal UI. When `app.log_file = true`, logs are
+/// still written to `{working_dir}/.robit/logs/robit-YYYY-MM-DD.log` - only
+/// console output is suppressed.
 pub fn init_logging_silent(
     app_config: Option<&AppConfig>,
     target_crate: &str,
-    _working_dir: &PathBuf,
+    working_dir: &PathBuf,
     additional_directives: &[&str],
 ) {
     let filter = build_filter(app_config, target_crate, additional_directives);
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::sink)
-        .init();
+    let log_file_enabled = app_config.and_then(|c| c.log_file).unwrap_or(false);
+
+    if log_file_enabled {
+        // TUI mode: no console output, but write to file if enabled.
+        match get_log_file_path(working_dir) {
+            Ok(log_path) => match OpenOptions::new().create(true).append(true).open(&log_path) {
+                Ok(file) => {
+                    let file_writer =
+                        tracing_subscriber::fmt::writer::MakeWriterExt::with_max_level(
+                            file,
+                            tracing::Level::TRACE,
+                        );
+                    tracing_subscriber::fmt()
+                        .with_env_filter(filter)
+                        .with_writer(file_writer)
+                        .with_ansi(false)
+                        .init();
+                    tracing::info!("Logging to file: {}", log_path.display());
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Failed to open log file: {}. Falling back to silent logging.",
+                        e
+                    );
+                    tracing_subscriber::fmt()
+                        .with_env_filter(filter)
+                        .with_writer(std::io::sink)
+                        .init();
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "Failed to prepare log path: {}. Falling back to silent logging.",
+                    e
+                );
+                tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_writer(std::io::sink)
+                    .init();
+            }
+        }
+    } else {
+        // No file logging configured: discard all logs (TUI mode).
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::sink)
+            .init();
+    }
 }

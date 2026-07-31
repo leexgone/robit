@@ -66,13 +66,19 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(indicator_color),
         ),
         Span::styled(
-            "robit v0.1.1",
+            format!("robit v{}", env!("CARGO_PKG_VERSION")),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&app.status.model, Style::default().fg(Color::Cyan)),
+        Span::styled(
+            match &app.status.image_model {
+                Some(img) => format!("{} / {}", app.status.model, img),
+                None => app.status.model.clone(),
+            },
+            Style::default().fg(Color::Cyan),
+        ),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!(

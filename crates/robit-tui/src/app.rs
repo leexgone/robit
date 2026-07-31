@@ -60,6 +60,9 @@ pub enum InputMode {
 /// Information displayed in the status bar.
 pub struct StatusInfo {
     pub model: String,
+    /// Image generation model (model_id), if configured. Displayed alongside
+    /// the chat model as "chat / image".
+    pub image_model: Option<String>,
     pub tools_enabled: usize,
     pub tools_total: usize,
     pub skills_total: usize,
@@ -85,7 +88,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(model: String, tools: &ToolRegistry, skills: Arc<SkillRegistry>) -> Self {
+    pub fn new(
+        model: String,
+        image_model: Option<String>,
+        tools: &ToolRegistry,
+        skills: Arc<SkillRegistry>,
+    ) -> Self {
         let tool_names = tools.tool_names();
         Self {
             conversation: Vec::new(),
@@ -97,6 +105,7 @@ impl App {
             scroll_mode: false,
             status: StatusInfo {
                 model,
+                image_model,
                 tools_enabled: tool_names.len(),
                 tools_total: tool_names.len(),
                 skills_total: skills.count(),
@@ -235,7 +244,13 @@ impl App {
                     .push(ConversationEntry::SystemNotice("Conversation history cleared".to_string()));
             }
             "/model" => {
-                let msg = format!("Current model: {}", self.status.model);
+                let msg = match &self.status.image_model {
+                    Some(img) => format!(
+                        "Current model: {} / {} (chat / image)",
+                        self.status.model, img
+                    ),
+                    None => format!("Current model: {}", self.status.model),
+                };
                 self.conversation
                     .push(ConversationEntry::SystemNotice(msg));
             }
