@@ -72,6 +72,7 @@
 | `grep` | 搜索文件内容 | 否 | 否 |
 | `find` | 按模式查找文件 | 否 | 否 |
 | `ls` | 列出目录内容 | 否 | 否 |
+| `generate_image` | 文生图，使用配置的 `default_image_model` 指定的模型（万相/OpenAI 兼容） | 否（需显式配置 `image_providers`） | 是 |
 
 ## 技能系统
 
@@ -147,6 +148,36 @@ context_window = 32768
 temperature = 0.7
 supports_images = true
 supports_tools = true
+
+# 图片生成配置（可选，用于 generate_image 工具）
+default_image_model = "wanxiang/wan2.7-image-pro"  # 默认生图模型，格式 "provider/model"
+
+[image_providers.wanxiang]              # 万相（DashScope 协议）
+name = "通义万相"
+base_url = "https://dashscope.aliyuncs.com/api/v1"  # 含 /api/v1 前缀，与对话模型 base_url 配置风格一致
+api_key = "${DASHSCOPE_API_KEY}"
+protocol = "dashscope"                  # dashscope | openai
+mode = "async"                          # sync | async（仅 dashscope 有效，默认 sync）
+poll_interval_secs = 3                  # 异步轮询间隔（秒，默认 3）
+poll_timeout_secs = 300                 # 异步轮询总超时（秒，默认 300）
+
+[[image_providers.wanxiang.models]]
+id = "wan2.7-image-pro"
+name = "万相2.7 Pro"
+
+[[image_providers.wanxiang.models]]
+id = "wan2.7-image"
+name = "万相2.7"
+
+[image_providers.dalle]                 # OpenAI 兼容生图提供商示例
+name = "OpenAI DALL-E"
+base_url = "https://api.openai.com/v1"
+api_key = "${OPENAI_API_KEY}"
+protocol = "openai"
+
+[[image_providers.dalle.models]]
+id = "dall-e-3"
+name = "DALL-E 3"
 
 # 应用配置
 [app]

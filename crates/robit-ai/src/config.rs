@@ -42,6 +42,13 @@ pub struct RobitConfig {
     /// Communication channel configurations (QQ Bot, Feishu, etc.).
     #[serde(default)]
     pub channels: Option<ChannelsConfig>,
+    /// Default image generation model in "provider/model" format
+    /// (e.g. "wanxiang/wan2.7-image-pro"). Only effective when
+    /// `image_providers` is also configured.
+    pub default_image_model: Option<String>,
+    /// Image generation provider definitions, keyed by provider name.
+    #[serde(default)]
+    pub image_providers: HashMap<String, ImageProviderConfig>,
 }
 
 /// A single LLM provider (one API endpoint with multiple models).
@@ -76,6 +83,88 @@ pub struct ModelConfig {
     pub supports_images: Option<bool>,
     /// Whether this model supports tool calling (optional, default false).
     pub supports_tools: Option<bool>,
+}
+
+// ============================================================================
+// Image generation provider config
+// ============================================================================
+
+/// Protocol used by an image generation provider.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageProtocol {
+    /// OpenAI-compatible Images API (`POST /images/generations`).
+    Openai,
+    /// DashScope native protocol (Wanxiang, supports sync/async modes).
+    Dashscope,
+}
+
+impl Default for ImageProtocol {
+    fn default() -> Self {
+        Self::Openai
+    }
+}
+
+/// Call mode for DashScope image generation.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageCallMode {
+    /// Synchronous call: one request returns the result directly.
+    Sync,
+    /// Asynchronous call: submit a task, then poll until completion.
+    Async,
+}
+
+impl Default for ImageCallMode {
+    fn default() -> Self {
+        Self::Sync
+    }
+}
+
+/// A single image generation model definition.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ImageModelConfig {
+    /// Model ID used in API calls (e.g. "wan2.7-image-pro").
+    pub id: String,
+    /// Display name (optional).
+    pub name: Option<String>,
+}
+
+/// An image generation provider (one API endpoint with multiple models).
+#[derive(Debug, Deserialize, Clone)]
+pub struct ImageProviderConfig {
+    /// Display name for the provider (optional).
+    pub name: Option<String>,
+    /// API base URL. For DashScope this includes the `/api/v1` prefix
+    /// (e.g. `https://dashscope.aliyuncs.com/api/v1`). For OpenAI-compatible
+    /// providers, include the `/v1` prefix (e.g. `https://api.openai.com/v1`).
+    /// This mirrors how chat `providers` configure `base_url` - the client
+    /// only appends the endpoint path, not a version prefix.
+    pub base_url: String,
+    /// API key (supports `${ENV_VAR}` substitution).
+    pub api_key: String,
+    /// Protocol used by this provider (default: openai).
+    #[serde(default)]
+    pub protocol: ImageProtocol,
+    /// Call mode, only effective for `Dashscope` protocol (default: sync).
+    #[serde(default)]
+    pub mode: ImageCallMode,
+    /// Available models under this provider.
+    pub models: Vec<ImageModelConfig>,
+    /// Polling interval in seconds for async mode (default: 3).
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_secs: u64,
+    /// Total polling timeout in seconds for async mode (default: 300).
+    #[serde(default = "default_poll_timeout")]
+    pub poll_timeout_secs: u64,
+}
+
+fn default_poll_interval() -> u64 {
+    3
+}
+
+fn default_poll_timeout() -> u64 {
+    300
 }
 
 // ============================================================================
@@ -250,6 +339,11 @@ pub fn load_config(workdir: Option<&std::path::Path>) -> Result<RobitConfig, Llm
 
     // Resolve environment variables in api_key fields
     for provider in config.providers.values_mut() {
+        provider.api_key = resolve_env_var(&provider.api_key);
+    }
+
+    // Resolve env vars in image provider configs
+    for provider in config.image_providers.values_mut() {
         provider.api_key = resolve_env_var(&provider.api_key);
     }
 
@@ -438,6 +532,100 @@ fn parse_default_model(default_model: &str) -> Result<(String, String), LlmError
         )));
     }
     Ok((parts[0].to_string(), parts[1].to_string()))
+}
+
+// ============================================================================
+// Image provider resolution
+// ============================================================================
+
+/// A fully resolved image generation provider, ready for client construction.
+///
+/// Resolved from `default_image_model` (in "provider/model" format) together
+/// with the matching `ImageProviderConfig`.
+#[derive(Debug, Clone)]
+pub struct ResolvedImageProvider {
+    /// Provider key in config (e.g. "wanxiang").
+    pub provider_name: String,
+    /// Model ID parsed from `default_image_model` (e.g. "wan2.7-image-pro").
+    pub model_id: String,
+    /// API base URL.
+    pub base_url: String,
+    /// API key (env vars already resolved).
+    pub api_key: String,
+    /// Protocol used by this provider.
+    pub protocol: ImageProtocol,
+    /// Call mode (only effective for DashScope).
+    pub mode: ImageCallMode,
+    /// Polling interval in seconds for async mode.
+    pub poll_interval_secs: u64,
+    /// Total polling timeout in seconds for async mode.
+    pub poll_timeout_secs: u64,
+}
+
+/// Resolve the image generation provider to use.
+///
+/// Requires `default_image_model` ("provider/model" format) to be configured.
+/// Without it, image generation is considered disabled and the tool is not
+/// registered.
+///
+/// Returns an error if no image providers are configured, `default_image_model`
+/// is absent, the referenced provider/model is not found, or the API key is
+/// empty.
+pub fn resolve_image_provider(config: &RobitConfig) -> Result<ResolvedImageProvider, LlmError> {
+    if config.image_providers.is_empty() {
+        return Err(LlmError::ConfigError(
+            "No image providers defined in config.toml".to_string(),
+        ));
+    }
+
+    // default_image_model is required - without it we don't know which
+    // provider/model to use, so image generation is considered disabled.
+    let default = config.default_image_model.as_ref().ok_or_else(|| {
+        LlmError::ConfigError(
+            "default_image_model is not configured. Set it to \"provider/model\" \
+             (e.g. \"wanxiang/wan2.7-image-pro\") to enable image generation."
+                .to_string(),
+        )
+    })?;
+
+    let (provider_key, model_id) = parse_default_model(default)?;
+
+    let provider = config.image_providers.get(&provider_key).ok_or_else(|| {
+        let available: Vec<&str> = config.image_providers.keys().map(|s| s.as_str()).collect();
+        LlmError::ConfigError(format!(
+            "Image provider '{}' is not defined in config.toml. Available image providers: {:?}",
+            provider_key, available
+        ))
+    })?;
+
+    // Validate that the model exists in this provider
+    let model_exists = provider.models.iter().any(|m| m.id == model_id);
+    if !model_exists {
+        let available: Vec<&str> = provider.models.iter().map(|m| m.id.as_str()).collect();
+        return Err(LlmError::ConfigError(format!(
+            "Image model '{}' not found in provider '{}'. Available models: {:?}",
+            model_id, provider_key, available
+        )));
+    }
+
+    // Validate API key
+    if provider.api_key.is_empty() || provider.api_key.starts_with("${") {
+        return Err(LlmError::ConfigError(format!(
+            "Image provider '{}' API key is not configured or the environment variable is not set",
+            provider_key
+        )));
+    }
+
+    Ok(ResolvedImageProvider {
+        provider_name: provider_key,
+        model_id,
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        protocol: provider.protocol.clone(),
+        mode: provider.mode.clone(),
+        poll_interval_secs: provider.poll_interval_secs,
+        poll_timeout_secs: provider.poll_timeout_secs,
+    })
 }
 
 // ============================================================================
@@ -857,5 +1045,196 @@ mod tests {
         let config: RobitConfig = toml::from_str(toml_str).unwrap();
         assert!(config.channels.is_none());
         assert!(config.app.is_none() || config.app.as_ref().unwrap().bot.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Image provider config tests
+    // ------------------------------------------------------------------
+
+    fn make_image_test_config() -> RobitConfig {
+        let toml_str = r#"
+            default_image_model = "wanxiang/wan2.7-image-pro"
+
+            [providers.test]
+            base_url = "https://api.test.com"
+            api_key = "sk-test"
+
+            [[providers.test.models]]
+            id = "test-model"
+
+            [image_providers.wanxiang]
+            name = "通义万相"
+            base_url = "https://ws.cn-beijing.maas.aliyuncs.com"
+            api_key = "sk-test"
+            protocol = "dashscope"
+            mode = "async"
+
+            [[image_providers.wanxiang.models]]
+            id = "wan2.7-image-pro"
+            name = "万相2.7 Pro"
+
+            [[image_providers.wanxiang.models]]
+            id = "wan2.7-image"
+
+            [image_providers.dalle]
+            base_url = "https://api.openai.com/v1"
+            api_key = "sk-openai"
+
+            [[image_providers.dalle.models]]
+            id = "dall-e-3"
+        "#;
+        toml::from_str(toml_str).unwrap()
+    }
+
+    #[test]
+    fn test_parse_image_providers() {
+        let config = make_image_test_config();
+
+        assert_eq!(
+            config.default_image_model.as_deref(),
+            Some("wanxiang/wan2.7-image-pro")
+        );
+        assert_eq!(config.image_providers.len(), 2);
+
+        let wx = &config.image_providers["wanxiang"];
+        assert_eq!(wx.name.as_deref(), Some("通义万相"));
+        assert_eq!(wx.base_url, "https://ws.cn-beijing.maas.aliyuncs.com");
+        assert_eq!(wx.api_key, "sk-test");
+        assert_eq!(wx.protocol, ImageProtocol::Dashscope);
+        assert_eq!(wx.mode, ImageCallMode::Async);
+        assert_eq!(wx.poll_interval_secs, 3);
+        assert_eq!(wx.poll_timeout_secs, 300);
+        assert_eq!(wx.models.len(), 2);
+        assert_eq!(wx.models[0].id, "wan2.7-image-pro");
+
+        // Defaults: openai protocol + sync mode
+        let dalle = &config.image_providers["dalle"];
+        assert_eq!(dalle.protocol, ImageProtocol::Openai);
+        assert_eq!(dalle.mode, ImageCallMode::Sync);
+    }
+
+    #[test]
+    fn test_resolve_image_provider_from_default() {
+        let config = make_image_test_config();
+        let resolved = resolve_image_provider(&config).unwrap();
+        assert_eq!(resolved.provider_name, "wanxiang");
+        assert_eq!(resolved.model_id, "wan2.7-image-pro");
+        assert_eq!(resolved.base_url, "https://ws.cn-beijing.maas.aliyuncs.com");
+        assert_eq!(resolved.protocol, ImageProtocol::Dashscope);
+        assert_eq!(resolved.mode, ImageCallMode::Async);
+    }
+
+    #[test]
+    fn test_resolve_image_provider_no_default_model() {
+        // image_providers configured but default_image_model absent -> error
+        // (image generation is considered disabled in this case)
+        let toml_str = r#"
+            [providers.test]
+            base_url = "https://api.test.com"
+            api_key = "sk-test"
+
+            [[providers.test.models]]
+            id = "test-model"
+
+            [image_providers.wanxiang]
+            base_url = "https://ws.cn-beijing.maas.aliyuncs.com"
+            api_key = "sk-test"
+
+            [[image_providers.wanxiang.models]]
+            id = "wan2.7-image-pro"
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert!(resolve_image_provider(&config).is_err());
+    }
+
+    #[test]
+    fn test_resolve_image_provider_none_configured() {
+        let toml_str = r#"
+            [providers.deepseek]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.deepseek.models]]
+            id = "deepseek-chat"
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert!(resolve_image_provider(&config).is_err());
+    }
+
+    #[test]
+    fn test_resolve_image_provider_empty_api_key() {
+        let toml_str = r#"
+            default_image_model = "wanxiang/wan2.7-image-pro"
+
+            [providers.test]
+            base_url = "https://api.test.com"
+            api_key = "sk-test"
+
+            [[providers.test.models]]
+            id = "test-model"
+
+            [image_providers.wanxiang]
+            base_url = "https://ws.cn-beijing.maas.aliyuncs.com"
+            api_key = ""
+
+            [[image_providers.wanxiang.models]]
+            id = "wan2.7-image-pro"
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert!(resolve_image_provider(&config).is_err());
+    }
+
+    #[test]
+    fn test_resolve_image_provider_model_not_found() {
+        let toml_str = r#"
+            default_image_model = "wanxiang/nonexistent-model"
+
+            [providers.test]
+            base_url = "https://api.test.com"
+            api_key = "sk-test"
+
+            [[providers.test.models]]
+            id = "test-model"
+
+            [image_providers.wanxiang]
+            base_url = "https://ws.cn-beijing.maas.aliyuncs.com"
+            api_key = "sk-test"
+
+            [[image_providers.wanxiang.models]]
+            id = "wan2.7-image-pro"
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert!(resolve_image_provider(&config).is_err());
+    }
+
+    #[test]
+    fn test_resolve_image_provider_env_var_substitution() {
+        std::env::set_var("ROBIT_IMG_TEST_KEY", "sk-from-env");
+        let toml_str = r#"
+            default_image_model = "wanxiang/wan2.7-image-pro"
+
+            [providers.test]
+            base_url = "https://api.test.com"
+            api_key = "sk-test"
+
+            [[providers.test.models]]
+            id = "test-model"
+
+            [image_providers.wanxiang]
+            base_url = "https://ws.cn-beijing.maas.aliyuncs.com"
+            api_key = "${ROBIT_IMG_TEST_KEY}"
+
+            [[image_providers.wanxiang.models]]
+            id = "wan2.7-image-pro"
+        "#;
+        // load_config resolves env vars; here we test resolve_image_provider
+        // after manual substitution (load_config path is covered elsewhere).
+        let mut config: RobitConfig = toml::from_str(toml_str).unwrap();
+        for provider in config.image_providers.values_mut() {
+            provider.api_key = resolve_env_var(&provider.api_key);
+        }
+        let resolved = resolve_image_provider(&config).unwrap();
+        assert_eq!(resolved.api_key, "sk-from-env");
+        std::env::remove_var("ROBIT_IMG_TEST_KEY");
     }
 }

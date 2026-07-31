@@ -10,6 +10,7 @@ pub mod datetime;
 pub mod error;
 pub mod event;
 pub mod frontend;
+pub mod image_gen;
 pub mod lock;
 pub mod media;
 pub mod prompt;
@@ -24,6 +25,7 @@ pub use bootstrap::{
 };
 pub use error::AgentError;
 pub use event::{AgentEvent, FrontendMessage, MediaAttachment, SessionId};
+pub use image_gen::{GeneratedImage, ImageGenClient, ImageGenError, ImageGenErrorInfo, ImageGenRequest};
 pub use lock::{DirectoryLock, LockError, LockInfo};
 pub use media::{download_and_encode_base64, download_media, MediaError};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};

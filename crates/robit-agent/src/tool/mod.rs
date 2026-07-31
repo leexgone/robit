@@ -4,6 +4,7 @@ pub mod bash;
 pub mod read;
 pub mod write;
 pub mod edit;
+pub mod generate_image;
 pub mod load_skill;
 pub mod ls;
 pub mod find;

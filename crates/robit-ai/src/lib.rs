@@ -24,8 +24,9 @@ pub use async_openai::types::chat::{
 pub use client::LlmClient;
 pub use config::{
     load_config, load_env, AppConfig, BotConfig, ChannelsConfig, ConfirmKeywordsConfig,
-    ContextConfig, ModelConfig, ProviderConfig, QqBotConfig, ResolvedModel, RetryConfig,
-    RobitConfig,
+    ContextConfig, ImageCallMode, ImageModelConfig, ImageProtocol, ImageProviderConfig, ModelConfig,
+    ProviderConfig, QqBotConfig, ResolvedImageProvider, ResolvedModel, RetryConfig, RobitConfig,
+    resolve_image_provider,
 };
 pub use error::LlmError;
 pub use logging::{init_logging, init_logging_silent};

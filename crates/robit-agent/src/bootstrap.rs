@@ -6,12 +6,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use robit_ai::config::RobitConfig;
+use robit_ai::config::{resolve_image_provider, RobitConfig};
 
+use crate::image_gen::ImageGenClient;
 use crate::skill::{load_skills, Skill, SkillRegistry};
 use crate::tool::bash::BashTool;
 use crate::tool::edit::EditTool;
 use crate::tool::find::FindTool;
+use crate::tool::generate_image::GenerateImageTool;
 use crate::tool::grep::GrepTool;
 use crate::tool::load_skill::LoadSkillTool;
 use crate::tool::ls::LsTool;
@@ -120,6 +122,10 @@ pub fn create_tools_from_config(
     tools.register(ListMemoriesTool::new());
     tools.register(SearchHistoryTool::new());
 
+    // Try to build the image generation client. Returns None when no image
+    // providers are configured (the tool is simply not registered in that case).
+    let mut image_client = build_image_client(config);
+
     // Get enabled tools from config
     let enabled_tools = config.app.as_ref().and_then(|a| a.enabled_tools.as_ref());
 
@@ -141,6 +147,13 @@ pub fn create_tools_from_config(
                     "ls" => tools.register(LsTool::new()),
                     "find" => tools.register(FindTool::new(max_bytes)),
                     "grep" => tools.register(GrepTool::new(max_lines, max_bytes)),
+                    "generate_image" => match image_client.take() {
+                        Some(client) => tools.register(GenerateImageTool::new(client)),
+                        None => tracing::warn!(
+                            "generate_image listed in enabled_tools but no image_provider \
+                             is configured, skipping"
+                        ),
+                    },
                     _ => tracing::warn!("Unknown tool in enabled_tools config: {}", tool_name),
                 }
             }
@@ -153,10 +166,47 @@ pub fn create_tools_from_config(
             tools.register(LsTool::new());
             tools.register(FindTool::new(max_bytes));
             tools.register(GrepTool::new(max_lines, max_bytes));
+            if let Some(client) = image_client.take() {
+                tools.register(GenerateImageTool::new(client));
+            }
         }
     }
 
     tools
+}
+
+/// Build the image generation client from config.
+///
+/// Returns `None` (without warning) when image generation is not configured -
+/// either no image providers are defined, or `default_image_model` is absent.
+/// Both are normal "user doesn't need image generation" states. Returns `None`
+/// with a warning only when configuration is present but invalid (e.g. missing
+/// API key or invalid model reference).
+fn build_image_client(config: &RobitConfig) -> Option<ImageGenClient> {
+    if config.image_providers.is_empty() {
+        return None;
+    }
+    // default_image_model is required; if absent, image generation is
+    // considered disabled (no warning - this is a valid "not using it" state).
+    if config.default_image_model.is_none() {
+        return None;
+    }
+    match resolve_image_provider(config) {
+        Ok(provider) => {
+            tracing::info!(
+                "Image generation provider configured: {}/{} (protocol: {:?}, mode: {:?})",
+                provider.provider_name,
+                provider.model_id,
+                provider.protocol,
+                provider.mode
+            );
+            Some(ImageGenClient::new(provider))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to resolve image generation provider: {}", e);
+            None
+        }
+    }
 }
 
 /// Log any skill load errors as warnings.
