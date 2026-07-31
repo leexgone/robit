@@ -585,7 +585,6 @@ fn spawn_heartbeat(adapter: Arc<QqPlatformAdapter>, shutdown: Arc<tokio::sync::N
                         .await;
                     return;
                 }
-                debug!("Heartbeat sent (seq={:?})", last_seq);
             } else {
                 warn!("Heartbeat: no WS writer (disconnected)");
                 return;
@@ -639,9 +638,7 @@ fn spawn_dispatch(
                     };
 
                     match payload.op {
-                        op::HEARTBEAT_ACK => {
-                            debug!("Heartbeat ACK");
-                        }
+                        op::HEARTBEAT_ACK => {}
                         op::RECONNECT => {
                             warn!("Server requested reconnect");
                             let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
