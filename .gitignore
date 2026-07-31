@@ -29,3 +29,6 @@ config.toml
 .vscode
 
 data
+
+# generated image output (generate_image tool default save dir)
+/images/
