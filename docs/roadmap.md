@@ -53,6 +53,16 @@
 - [x] `find` — 按模式查找文件
 - [x] `ls` — 列出目录内容
 
+### 工具系统增强
+
+- [ ] 工具异步执行机制
+  - **动机**：长耗时工具（`generate_image`、视频生成、语音合成）当前同步阻塞 Agent 主循环（`agent.rs` 的 `tools.execute().await`），前端在等待期间无进度反馈。万相生图通常耗时 30-60 秒，视频生成可达分钟级
+  - **核心设计**：工具可返回"延迟结果"（pending），框架 `tokio::spawn` 后台 task 执行实际工作；主 Agent 拿到占位结果（如"图片生成中，task_id=xxx"）后可继续响应用户
+  - 后台任务完成后通过 `AgentEvent` 异步通知前端 / 主 Agent，并支持查询任务状态与结果
+  - 需扩展 `Tool` trait（或新增 `AsyncTool` trait）+ 后台任务调度 + 状态跟踪 + 结果回灌对话历史
+  - **演进价值**：此机制是未来子智能体（subagent）编排的基础。子智能体可复用异步执行独立运行，处理需要多步推理的复合任务（如"分析需求 -> 生图 -> 评估 -> 迭代"）。先用异步工具执行解决长耗时体验，再在其上构建子智能体
+  - **参考**：[`docs/wan.md`](wan.md)（万相 API）、[`crates/robit-agent/src/image_gen.rs`](../crates/robit-agent/src/image_gen.rs)（当前同步实现，含 sync/async 两种 DashScope 调用模式）
+
 ### 上下文管理增强
 
 - [x] 基础压缩策略（token 阈值触发 + 截断提示）
