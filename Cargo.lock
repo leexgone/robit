@@ -114,9 +114,9 @@ dependencies = [
 
 [[package]]
 name = "async-openai"
-version = "0.41.1"
+version = "0.41.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3007014661d5b98168b7b6f1014147bce8b1362a194783543eeb9f6117a20be9"
+checksum = "571f7a5ae5e7b3aabf0d8f39e40c3c4ce1672b7b4aa5d85d7a934bc936d3788f"
 dependencies = [
  "async-openai-macros",
  "base64 0.22.1",
@@ -1964,9 +1964,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.4.2"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
+checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
 dependencies = [
  "bytes",
  "itoa",
@@ -2003,9 +2003,9 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "hybrid-array"
-version = "0.4.13"
+version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
+checksum = "707114b52a152fa7bdb290cd7cd5912d9467273b6d74e21b8d81aca1f8533f6b"
 dependencies = [
  "typenum",
 ]
@@ -3992,7 +3992,7 @@ dependencies = [
 
 [[package]]
 name = "robit"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4013,7 +4013,7 @@ dependencies = [
 
 [[package]]
 name = "robit-agent"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "async-openai",
  "async-trait",
@@ -4040,7 +4040,7 @@ dependencies = [
 
 [[package]]
 name = "robit-agent-cli"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4056,7 +4056,7 @@ dependencies = [
 
 [[package]]
 name = "robit-ai"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "async-openai",
  "chrono",
@@ -4074,7 +4074,7 @@ dependencies = [
 
 [[package]]
 name = "robit-chat"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -4085,7 +4085,7 @@ dependencies = [
 
 [[package]]
 name = "robit-chatbot"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "async-trait",
  "pulldown-cmark",
@@ -4102,7 +4102,7 @@ dependencies = [
 
 [[package]]
 name = "robit-gui"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "alloc-no-stdlib",
  "anyhow",
@@ -4127,7 +4127,7 @@ dependencies = [
 
 [[package]]
 name = "robit-qq"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "async-trait",
  "base64 0.23.0",
@@ -4210,9 +4210,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.42"
+version = "0.23.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
+checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -5513,13 +5513,13 @@ dependencies = [
 
 [[package]]
 name = "tokio-macros"
-version = "2.7.1"
+version = "2.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6328af13490e73a9b4694030fafd93f8c8c6a9dede33e821c3fc63eddf8042ba"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
