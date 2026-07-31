@@ -168,18 +168,6 @@ impl Agent {
             session_id,
             history.len()
         );
-        for (idx, msg) in history.iter().enumerate() {
-            let role = match msg {
-                ChatCompletionRequestMessage::System(_) => "system",
-                ChatCompletionRequestMessage::User(_) => "user",
-                ChatCompletionRequestMessage::Assistant(_) => "assistant",
-                ChatCompletionRequestMessage::Tool(_) => "tool",
-                ChatCompletionRequestMessage::Developer(_) => "developer",
-                ChatCompletionRequestMessage::Function(_) => "function",
-            };
-            tracing::debug!("  History message {}: role={}", idx, role);
-        }
-
         let prompt_builder = PromptBuilder::with_working_dir(Some(&working_dir));
         let context_manager = ContextManager::new(context_window, context_config);
 
@@ -200,18 +188,6 @@ impl Agent {
             "Agent::with_history: after adding system prompt, session history length = {}",
             session.history.len()
         );
-        for (idx, msg) in session.history.iter().enumerate() {
-            let role = match msg {
-                ChatCompletionRequestMessage::System(_) => "system",
-                ChatCompletionRequestMessage::User(_) => "user",
-                ChatCompletionRequestMessage::Assistant(_) => "assistant",
-                ChatCompletionRequestMessage::Tool(_) => "tool",
-                ChatCompletionRequestMessage::Developer(_) => "developer",
-                ChatCompletionRequestMessage::Function(_) => "function",
-            };
-            tracing::debug!("  Session history {}: role={}", idx, role);
-        }
-
         // Apply context truncation before starting
         let truncation_result = context_manager.maybe_truncate(&mut session.history);
         if truncation_result.rounds_removed > 0 {
@@ -522,13 +498,6 @@ impl Agent {
                 // Tool call deltas
                 if let Some(tool_calls) = &choice.delta.tool_calls {
                     for tc in tool_calls {
-                        tracing::debug!(
-                            "Received tool call chunk: index={}, id={:?}, function={:?}",
-                            tc.index,
-                            tc.id,
-                            tc.function
-                        );
-
                         let acc = tool_call_chunks
                             .entry(tc.index as usize)
                             .or_insert_with(ToolCallAccumulator::new);
@@ -536,7 +505,6 @@ impl Agent {
                         if let Some(id) = &tc.id {
                             // 只有当id非空时才更新
                             if !id.is_empty() {
-                                tracing::debug!("Updating tool id: '{}'", id);
                                 acc.id = Some(id.clone());
                             }
                         }
@@ -544,17 +512,13 @@ impl Agent {
                             if let Some(name) = &function.name {
                                 // 只有当name非空时才更新
                                 if !name.is_empty() {
-                                    tracing::debug!("Tool name chunk: '{}'", name);
                                     acc.name = Some(name.clone());
                                 }
                             }
                             if let Some(args) = &function.arguments {
-                                tracing::debug!("Tool args chunk: '{}'", args);
                                 acc.arguments.push_str(args);
                             }
                         }
-
-                        tracing::debug!("Accumulator state after chunk: {:?}", acc);
                     }
                 }
             }
@@ -594,11 +558,11 @@ impl Agent {
         tracing::debug!("Assembled {} tool call(s)", assembled_tool_calls.len());
         for (i, tc) in assembled_tool_calls.iter().enumerate() {
             tracing::debug!(
-                "Tool call [{}]: id='{}', name='{}', arguments='{}'",
+                "Tool call [{}]: id='{}', name='{}', arguments={}",
                 i,
                 tc.id,
                 tc.function.name,
-                tc.function.arguments
+                truncate_for_log(&tc.function.arguments, 80)
             );
         }
 
@@ -659,10 +623,10 @@ impl Agent {
                 tc.function.name
             );
             tracing::trace!(
-                "[tool] tool_call_id='{}', name='{}', arguments='{}'",
+                "[tool] tool_call_id='{}', name='{}', arguments={}",
                 tc.id,
                 tc.function.name,
-                tc.function.arguments
+                truncate_for_log(&tc.function.arguments, 80)
             );
 
             let tc_info = ToolCallInfo {
@@ -1097,7 +1061,6 @@ async fn generate_summary(
     tracing::debug!("Generating summary: removed_messages count = {}", removed_messages.len());
     let transcript = crate::context::format_removed_messages_as_transcript(removed_messages);
     tracing::debug!("Formatted transcript length: {} characters", transcript.len());
-    tracing::trace!("Transcript content:\n{}", transcript);
 
     let system_prompt = "Summarize the following conversation transcript in 1-2 concise sentences. Focus on: what the user asked for, what actions were taken, and the outcomes. Be brief and factual.";
 
@@ -1224,12 +1187,15 @@ impl ToolCallAccumulator {
 
     /// Convert accumulated chunks into a complete tool call.
     fn into_tool_call(self) -> Option<ChatCompletionMessageToolCall> {
-        tracing::debug!("Converting accumulator to tool call: {:?}", self);
-
         let id = self.id?;
         let name = self.name?;
 
-        tracing::debug!("Tool call assembled: id='{}', name='{}', args='{}'", id, name, self.arguments);
+        tracing::debug!(
+            "Tool call assembled: id='{}', name='{}', args={}",
+            id,
+            name,
+            truncate_for_log(&self.arguments, 80)
+        );
 
         Some(ChatCompletionMessageToolCall {
             id,
@@ -1238,5 +1204,18 @@ impl ToolCallAccumulator {
                 arguments: self.arguments,
             },
         })
+    }
+}
+
+/// Truncate a string to at most `max_chars` characters for log output,
+/// appending a length note when truncated. Counts by `char` to avoid
+/// splitting multi-byte UTF-8 sequences (safe for CJK text).
+fn truncate_for_log(s: &str, max_chars: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        s.to_string()
+    } else {
+        let preview: String = s.chars().take(max_chars).collect();
+        format!("{}... ({} chars total)", preview, char_count)
     }
 }
