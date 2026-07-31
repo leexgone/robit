@@ -13,7 +13,7 @@ use async_openai::types::chat::{
 
 // Import ImageUrl from wherever it is in async-openai 0.41
 use async_openai::types::chat::ImageUrl;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use robit_ai::config::ContextConfig;
 use robit_ai::LlmClient;
 use std::any::Any;

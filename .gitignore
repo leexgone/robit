@@ -19,6 +19,9 @@ target/
 # ignore config
 config.toml
 
+# Local cargo build config (machine-specific, use .cargo/config.toml.example as template)
+.cargo/config.toml
+
 # robit runtime directories
 .robit/
 

@@ -9,6 +9,7 @@
 use crate::config::AppConfig;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
+use time::format_description;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{filter::Directive, EnvFilter};
 
@@ -21,8 +22,10 @@ fn get_log_file_path(working_dir: &PathBuf) -> Result<PathBuf, Box<dyn std::erro
     // Create logs directory if it doesn't exist
     std::fs::create_dir_all(&logs_dir)?;
 
-    // Format date as YYYY-MM-DD
-    let date = chrono::Local::now().format("%Y-%m-%d");
+    // Format date as YYYY-MM-DD (UTC)
+    let now = time::OffsetDateTime::now_utc();
+    let format = format_description::parse("[year]-[month]-[day]").unwrap();
+    let date = now.format(&format).unwrap();
     let log_file = logs_dir.join(format!("robit-{}.log", date));
 
     Ok(log_file)

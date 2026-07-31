@@ -1,0 +1,41 @@
+# 本地构建优化配置示例
+# 使用方法：复制为 config.toml 并按需修改（config.toml 已在 .gitignore 中，不会提交）
+# 根据你的操作系统和安装路径选择对应段落，删除不需要的
+
+[build]
+# sccache 编译缓存（推荐，反复构建时大幅加速）
+# 安装：
+#   Windows: winget install Mozilla.sccache
+#   macOS:   brew install sccache
+#   Linux:   cargo install sccache
+rustc-wrapper = "sccache"
+
+# 并行编译任务数，默认等于 CPU 逻辑核心数
+# jobs = 8
+
+# ===== Windows (MSVC) =====
+[target.x86_64-pc-windows-msvc]
+# LLD 链接器（链接速度提升 2-5 倍）
+# 安装：winget install LLVM.LLVM
+# 默认路径：C:\Program Files\LLVM\bin\lld-link.exe
+# 如果 LLVM 已加入 PATH，可以直接写 "lld-link.exe"
+# 注意：MSVC 工具链下直接指定 linker 即可，不需要 -fuse-ld 参数
+linker = "lld-link.exe"
+
+# ===== Windows (MinGW/GNU) =====
+# [target.x86_64-pc-windows-gnu]
+# linker = "lld.exe"
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# ===== Linux =====
+# [target.x86_64-unknown-linux-gnu]
+# mold 链接器（比 LLD 更快）
+# 安装：sudo apt install mold  或  cargo install mold
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# ===== macOS =====
+# [target.x86_64-apple-darwin]
+# [target.aarch64-apple-darwin]
+# Xcode 自带的 ld_prime 已经很快，一般不需要额外配置
+# 如需尝试 lld：brew install llvm

@@ -24,14 +24,23 @@ robit-ai = { path = "crates/robit-ai", version = "0.1.14" }
 robit-agent = { path = "crates/robit-agent", version = "0.1.14" }
 robit-chatbot = { path = "crates/robit-chatbot", version = "0.1.14" }
 
-# 异步运行时
-tokio = { version = "1", features = ["full"] }
+# 异步运行时（按需启用 feature，避免 full 带来的冗余编译）
+tokio = { version = "1", features = [
+    "rt-multi-thread",  # 多线程运行时
+    "macros",           # #[tokio::main] / #[tokio::test]
+    "sync",             # mpsc, Mutex, RwLock, oneshot 等同步原语
+    "time",             # sleep, timeout, Duration
+    "fs",               # 异步文件操作
+    "io-util",          # AsyncReadExt / AsyncWriteExt 等扩展 trait
+    "io-std",           # stdin / stdout / stderr 异步 IO
+] }
 async-trait = "0.1"
-futures = "0.3"
 futures-util = "0.3"
 tokio-util = "0.7"
-tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
-reqwest = { version = "0.13", features = ["json", "multipart"] }
+# WebSocket（robit-qq 使用）
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+# HTTP 客户端（默认用 rustls，纯 Rust 实现，避免 OpenSSL C 编译依赖）
+reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls"] }
 
 # 编码
 base64 = "0.23"
@@ -61,7 +70,6 @@ uuid = { version = "1.23", features = ["v4"] }
 globset = "0.4"
 regex = "1"
 time = { version = "0.3", features = ["formatting", "macros"] }
-chrono = "0.4"
 rusqlite = { version = "0.40", features = ["bundled", "bundled-full"] }
 fs2 = "0.4"
 

@@ -8,5 +8,5 @@ publish = false
 robit-ai = { workspace = true }
 async-openai.workspace = true
 tokio.workspace = true
-futures.workspace = true
+futures-util.workspace = true
 anyhow.workspace = true
