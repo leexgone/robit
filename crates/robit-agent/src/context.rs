@@ -187,6 +187,37 @@ pub fn estimate_messages_tokens_with_margin(
 
 /// Estimate tokens for a single message's content.
 fn estimate_message_content_tokens(msg: &ChatCompletionRequestMessage) -> usize {
+    use async_openai::types::chat::ChatCompletionRequestUserMessageContentPart;
+
+    // For user messages with multimodal (array) content, estimate each part
+    // separately. Image base64 data URLs must NOT be counted by string length:
+    // a 2K image is ~10MB of base64 but only ~1-2k tokens to the vision API.
+    // Counting the raw base64 wildly overestimates tokens and triggers endless
+    // truncation loops.
+    if let ChatCompletionRequestMessage::User(user_msg) = msg {
+        if let ChatCompletionRequestUserMessageContent::Array(parts) = &user_msg.content {
+            let mut total = 0;
+            for part in parts {
+                match part {
+                    ChatCompletionRequestUserMessageContentPart::Text(t) => {
+                        total += estimate_tokens(&t.text);
+                    }
+                    ChatCompletionRequestUserMessageContentPart::ImageUrl(_) => {
+                        // Vision models count image tokens by resolution,
+                        // typically ~765-2000 tokens per image. Use a
+                        // conservative flat estimate.
+                        total += 2000;
+                    }
+                    _ => {
+                        // InputAudio, File, etc. - not used in this codebase.
+                    }
+                }
+            }
+            return total;
+        }
+    }
+
+    // Fallback: text-only messages - estimate from the JSON serialization.
     match serde_json::to_string(msg) {
         Ok(json) => estimate_tokens(&json),
         Err(_) => 0,

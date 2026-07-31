@@ -1,6 +1,6 @@
 //! Media handling utilities: download, encode, etc.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose, Engine as _};
 use thiserror::Error;
@@ -64,4 +64,38 @@ pub async fn download_and_encode_base64(
 
     let base64 = general_purpose::STANDARD.encode(&bytes);
     Ok(format!("data:{};base64,{}", content_type, base64))
+}
+
+/// Read a local file and encode it as a base64 data URL.
+///
+/// The MIME type is inferred from the file extension. Returns a string like
+/// "data:image/png;base64,...".
+pub async fn encode_file_base64(path: &Path) -> Result<String, MediaError> {
+    let bytes = tokio::fs::read(path).await?;
+
+    if bytes.is_empty() {
+        return Err(MediaError::InvalidContent);
+    }
+
+    let mime_type = mime_from_extension(path);
+    let base64 = general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime_type, base64))
+}
+
+/// Infer a MIME type from the file extension.
+///
+/// Falls back to `application/octet-stream` for unknown extensions.
+fn mime_from_extension(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
 }

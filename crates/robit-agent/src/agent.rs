@@ -708,6 +708,7 @@ impl Agent {
                     session_id: session_id.clone(),
                     frontend: self.frontend.clone(),
                     extensions: self.extensions.clone(),
+                    supports_images: self.llm_client.supports_images(),
                 };
 
                 tracing::trace!(
@@ -738,6 +739,7 @@ impl Agent {
             let truncated_result = ToolResult {
                 content: self.context_manager.truncate_tool_output(&result.content),
                 is_error: result.is_error,
+                images: result.images.clone(),
             };
             if truncated_result.content.len() != raw_len {
                 tracing::trace!(
@@ -786,6 +788,42 @@ impl Agent {
                 .get_mut(session_id)
                 .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
             session.history.push(tool_msg);
+
+            // Inject images from the tool result as a multimodal user message.
+            // OpenAI protocol restricts tool message content to text, so images
+            // cannot travel in the tool result itself; we inject them in a
+            // separate user message right after the tool result.
+            if !truncated_result.images.is_empty() && self.llm_client.supports_images() {
+                let mut parts = vec![ChatCompletionRequestUserMessageContentPart::Text(
+                    ChatCompletionRequestMessageContentPartText {
+                        text: format!(
+                            "[工具返回的图片] {}",
+                            truncated_result
+                                .images
+                                .iter()
+                                .map(|i| i.label.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    },
+                )];
+                for img in &truncated_result.images {
+                    parts.push(ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                        ChatCompletionRequestMessageContentPartImage {
+                            image_url: ImageUrl {
+                                url: img.data_url.clone(),
+                                detail: None,
+                            },
+                        },
+                    ));
+                }
+                let image_msg = ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Array(parts),
+                    name: None,
+                });
+                session.history.push(image_msg);
+            }
+
             tracing::trace!(
                 "[tool] tool result appended to history: tool_call_id='{}', name='{}', history_len={}",
                 tc_info.id,

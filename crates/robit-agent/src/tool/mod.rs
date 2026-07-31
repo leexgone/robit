@@ -51,13 +51,30 @@ pub trait Tool: Send + Sync {
 // ToolResult
 // ============================================================================
 
+/// A single image attached to a tool result.
+///
+/// When a tool (e.g. `read` on an image file) produces images and the model
+/// supports image inputs, the agent injects them as a multimodal user message
+/// after the tool message (OpenAI protocol restricts tool message content to
+/// text, so images cannot travel in the tool result itself).
+#[derive(Debug, Clone)]
+pub struct ToolImage {
+    /// Base64 data URL, e.g. "data:image/png;base64,...".
+    pub data_url: String,
+    /// Human-readable label for log / fallback text.
+    pub label: String,
+}
+
 /// Result returned to the LLM after tool execution.
 #[derive(Debug, Clone)]
 pub struct ToolResult {
-    /// Text content — LLM will read this.
+    /// Text content - LLM will read this.
     pub content: String,
     /// Whether this is an error (LLM can see errors and adjust strategy).
     pub is_error: bool,
+    /// Images attached to this result (e.g. from `read` tool reading an image
+    /// file). Most tools leave this empty.
+    pub images: Vec<ToolImage>,
 }
 
 impl ToolResult {
@@ -65,6 +82,7 @@ impl ToolResult {
         Self {
             content: content.into(),
             is_error: false,
+            images: Vec::new(),
         }
     }
 
@@ -72,6 +90,7 @@ impl ToolResult {
         Self {
             content: content.into(),
             is_error: true,
+            images: Vec::new(),
         }
     }
 }
@@ -106,6 +125,9 @@ pub struct ToolContext {
     /// Chatbot platforms populate this; GUI/TUI leave it empty.
     /// Keys like "chatbot.platform_ext" map to Arc<dyn PlatformExt>.
     pub extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
+    /// Whether the configured LLM supports image inputs.
+    /// Tools (e.g. `read`) use this to decide whether to encode images.
+    pub supports_images: bool,
 }
 
 // ============================================================================

@@ -144,6 +144,7 @@ impl Tool for BashTool {
                 Ok(ToolResult {
                     content,
                     is_error: exit_code != 0,
+                    images: Vec::new(),
                 })
             }
             Ok(Err(e)) => {

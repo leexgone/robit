@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use robit_ai::config::{resolve_image_provider, RobitConfig};
+use robit_ai::config::{resolve_image_provider, resolve_profile, RobitConfig};
 
 use crate::image_gen::ImageGenClient;
 use crate::skill::{load_skills, Skill, SkillRegistry};
@@ -113,8 +113,15 @@ pub fn create_tools_from_config(
         .and_then(|c| c.max_output_bytes)
         .unwrap_or(51200);
 
+    // Whether the configured default model supports image inputs. The `read`
+    // tool uses this to decide whether to encode image files and to advertise
+    // image support in its description.
+    let supports_images = resolve_profile(config, None)
+        .map(|m| m.supports_images)
+        .unwrap_or(false);
+
     // Always register read, load_skill, memory, and history tools (required for basic functionality)
-    tools.register(ReadTool::new(max_lines, max_bytes));
+    tools.register(ReadTool::new(max_lines, max_bytes, supports_images));
     tools.register(LoadSkillTool::new(skill_registry));
     tools.register(MemorizeTool::new());
     tools.register(RecallTool::new());

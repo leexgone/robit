@@ -39,4 +39,4 @@ pub use storage::{
     MemoryType, MessageSearchFilter, MessageSearchResult,
 };
 pub use tool::load_skill::LoadSkillTool;
-pub use tool::{Tool, ToolCallInfo, ToolContext, ToolRegistry, ToolResult};
+pub use tool::{Tool, ToolCallInfo, ToolContext, ToolImage, ToolRegistry, ToolResult};
