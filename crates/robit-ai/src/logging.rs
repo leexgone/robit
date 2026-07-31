@@ -24,7 +24,7 @@ fn get_log_file_path(working_dir: &PathBuf) -> Result<PathBuf, Box<dyn std::erro
 
     // Format date as YYYY-MM-DD (UTC)
     let now = time::OffsetDateTime::now_utc();
-    let format = format_description::parse("[year]-[month]-[day]").unwrap();
+    let format = format_description::parse_borrowed::<3>("[year]-[month]-[day]").unwrap();
     let date = now.format(&format).unwrap();
     let log_file = logs_dir.join(format!("robit-{}.log", date));
 
