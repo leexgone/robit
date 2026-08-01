@@ -120,10 +120,13 @@ robit 使用统一配置文件 `config.toml`。加载顺序为：
 
 API Key 支持 `${ENV_VAR}` 环境变量替换。程序会自动尝试加载 `~/.robit/.env`。
 
+> **toml 注意**：`default_model`、`default_image_model` 等顶层键必须出现在任何 `[section]`（如 `[providers.*]`、`[app]`）**之前**。若把顶层键放在 `[[providers.*.models]]` 数组项之后，toml 会把它当作该 model 的字段，导致顶层读取不到而被忽略。
+
 最小配置示例：
 
 ```toml
 default_model = "deepseek/deepseek-chat"
+# default_image_model = "wanxiang/wan2.7-image"  # 可选，顶层键，启用 generate_image 工具
 
 [providers.deepseek]
 name = "DeepSeek"
@@ -155,6 +158,18 @@ token_safety_margin = 1.3
 compression_enabled = true
 compression_token_threshold = 5000
 max_tool_calls_per_turn = 30
+
+# 图片生成提供商配置（可选，用于 generate_image 工具）
+# [image_providers.wanxiang]
+# name = "通义万相"
+# base_url = "https://dashscope.aliyuncs.com/api/v1"
+# api_key = "${DASHSCOPE_API_KEY}"
+# protocol = "dashscope"   # dashscope | openai
+# mode = "async"           # sync | async（仅 dashscope 有效）
+#
+# [[image_providers.wanxiang.models]]
+# id = "wan2.7-image"
+# name = "万相2.7"
 
 # QQ Bot 配置（使用 robit-qq 时需要）
 [channels.qq_bot]
@@ -214,9 +229,11 @@ DEEPSEEK_API_KEY=your-api-key
 | `grep` | 搜索文件内容 |
 | `find` | 按模式查找文件 |
 | `ls` | 列出目录内容 |
+| `generate_image` | 文生图（异步执行；需配置 `image_providers` + `default_image_model`） |
+| `query_task` | 查询异步后台任务状态，始终启用 |
 | `load_skill` | 加载技能内容，始终启用 |
 
-`read` 和 `load_skill` 会始终注册。其他工具可通过 `[app].enabled_tools` 控制。
+`read`、`load_skill`、`query_task` 以及 memory/history 工具会始终注册。其他工具可通过 `[app].enabled_tools` 控制。`generate_image` 需配置 `image_providers` + `default_image_model`。
 
 ## 技能系统
 

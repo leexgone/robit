@@ -113,6 +113,8 @@
 ```toml
 # 默认模型（provider/model 格式）
 default_model = "deepseek/deepseek-chat"
+# 默认生图模型（可选，格式 "provider/model"，用于 generate_image 工具）
+default_image_model = "wanxiang/wan2.7-image-pro"
 
 # 提供商定义
 [providers.deepseek]
@@ -150,9 +152,7 @@ temperature = 0.7
 supports_images = true
 supports_tools = true
 
-# 图片生成配置（可选，用于 generate_image 工具）
-default_image_model = "wanxiang/wan2.7-image-pro"  # 默认生图模型，格式 "provider/model"
-
+# 图片生成提供商配置（可选，用于 generate_image 工具）
 [image_providers.wanxiang]              # 万相（DashScope 协议）
 name = "通义万相"
 base_url = "https://dashscope.aliyuncs.com/api/v1"  # 含 /api/v1 前缀，与对话模型 base_url 配置风格一致

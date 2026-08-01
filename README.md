@@ -120,10 +120,13 @@ robit uses a unified `config.toml` file. The lookup order is:
 
 API keys support `${ENV_VAR}` substitution. robit also attempts to load `~/.robit/.env` automatically.
 
+> **toml note**: top-level keys such as `default_model` and `default_image_model` must appear **before** any `[section]` (e.g. `[providers.*]`, `[app]`). Placing a top-level key after a `[[providers.*.models]]` array entry silently attaches it to that model instead of the root, and it will be ignored.
+
 Minimal configuration example:
 
 ```toml
 default_model = "deepseek/deepseek-chat"
+# default_image_model = "wanxiang/wan2.7-image"  # optional, top-level, enables generate_image
 
 [providers.deepseek]
 name = "DeepSeek"
@@ -155,6 +158,18 @@ token_safety_margin = 1.3
 compression_enabled = true
 compression_token_threshold = 5000
 max_tool_calls_per_turn = 30
+
+# Image generation providers (optional, used by the generate_image tool)
+# [image_providers.wanxiang]
+# name = "通义万相"
+# base_url = "https://dashscope.aliyuncs.com/api/v1"
+# api_key = "${DASHSCOPE_API_KEY}"
+# protocol = "dashscope"   # dashscope | openai
+# mode = "async"           # sync | async (dashscope only)
+#
+# [[image_providers.wanxiang.models]]
+# id = "wan2.7-image"
+# name = "万相2.7"
 
 # QQ Bot configuration (required when using robit-qq)
 [channels.qq_bot]
@@ -214,9 +229,11 @@ Built-in tools:
 | `grep` | Search file contents |
 | `find` | Find files by pattern |
 | `ls` | List directory contents |
+| `generate_image` | Generate images from text (async; requires `image_providers` + `default_image_model`) |
+| `query_task` | Query async background task status; always enabled |
 | `load_skill` | Load skill content; always enabled |
 
-`read` and `load_skill` are always registered. Other tools can be controlled through `[app].enabled_tools`.
+`read`, `load_skill`, `query_task`, and the memory/history tools are always registered. Other tools can be controlled through `[app].enabled_tools`. `generate_image` requires `image_providers` + `default_image_model` configuration.
 
 ## Skill System
 
