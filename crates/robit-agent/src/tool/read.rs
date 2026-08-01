@@ -84,6 +84,8 @@ impl ReadTool {
                     data_url,
                     label: filename,
                 }],
+                is_pending: false,
+                pending_task_id: None,
             },
             Err(e) => ToolResult::error(format!("Failed to read image: {}", e)),
         }

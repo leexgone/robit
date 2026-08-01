@@ -77,6 +77,16 @@ impl Frontend for GuiFrontend {
                 name,
                 description,
             },
+            AgentEvent::AsyncToolCompleted {
+                task_id,
+                tool_call_id,
+                result,
+            } => UiEvent::AsyncToolCompleted {
+                session_id: self.session_id.clone(),
+                task_id,
+                tool_call_id,
+                is_error: result.is_error,
+            },
         };
 
         let _ = self.event_tx.send(ui_event).await;

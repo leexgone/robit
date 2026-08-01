@@ -245,6 +245,17 @@ fn render_event(event: &AgentEvent) {
         AgentEvent::SkillTriggered { name, description } => {
             println!("\n[Skill] {} — {}", name, description);
         }
+        AgentEvent::AsyncToolCompleted {
+            task_id,
+            tool_call_id,
+            result,
+        } => {
+            println!(
+                "
+[Async task done] task_id={} tool_call_id={} is_error={}",
+                task_id, tool_call_id, result.is_error
+            );
+        }
     }
 }
 

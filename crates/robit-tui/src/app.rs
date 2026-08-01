@@ -171,6 +171,16 @@ impl App {
                 ));
                 self.auto_scroll = true;
             }
+            AgentEvent::AsyncToolCompleted {
+                task_id,
+                tool_call_id,
+                result,
+            } => {
+                // Minimal TUI handling: the agent wakes the LLM, whose reply
+                // arrives via TextDelta as usual. A dedicated task-progress
+                // panel is future work; for now the fields are just dropped.
+                let _ = (task_id, tool_call_id, result);
+            }
         }
     }
 

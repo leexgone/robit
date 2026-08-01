@@ -39,4 +39,7 @@ pub use storage::{
     MemoryType, MessageSearchFilter, MessageSearchResult,
 };
 pub use tool::load_skill::LoadSkillTool;
+pub use tool::async_runner::{AsyncTaskDone, AsyncTaskRunner, AsyncTaskWork};
+pub use tool::query_task::QueryTaskTool;
+pub use tool::task_registry::{AsyncTaskRecord, AsyncTaskStatus, TaskRegistry};
 pub use tool::{Tool, ToolCallInfo, ToolContext, ToolImage, ToolRegistry, ToolResult};

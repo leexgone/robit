@@ -253,6 +253,16 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             self.handle_stop_command(&chat_id).await;
             return;
         }
+        if trimmed_text.eq_ignore_ascii_case("/cancel")
+            || trimmed_text.to_lowercase().starts_with("/cancel ")
+        {
+            let arg = trimmed_text
+                .strip_prefix("/cancel")
+                .unwrap_or("")
+                .trim();
+            self.handle_cancel_command(&chat_id, arg).await;
+            return;
+        }
         if trimmed_text.eq_ignore_ascii_case("/new") {
             self.handle_new_command(&chat_id).await;
             return;
@@ -344,6 +354,36 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             let _ = self.platform_sender.send(chat_id, "⏹️ 已发送停止信号").await;
         } else {
             let _ = self.platform_sender.send(chat_id, "ℹ️ 当前没有活动的会话").await;
+        }
+    }
+
+    /// Handle /cancel command: cancel async background task(s).
+    ///
+    /// `/cancel` with no argument cancels all pending tasks; `/cancel <task_id>`
+    /// cancels a specific one.
+    async fn handle_cancel_command(&self, chat_id: &str, arg: &str) {
+        let agents = self.agents.lock().await;
+        if let Some(handle) = agents.get(chat_id) {
+            let msg = if arg.is_empty() {
+                let _ = handle
+                    .message_tx
+                    .send(robit_agent::event::FrontendMessage::Cancel)
+                    .await;
+                "⏹️ 已发送取消全部后台任务的信号".to_string()
+            } else {
+                let _ = handle
+                    .message_tx
+                    .send(robit_agent::event::FrontendMessage::CancelTask {
+                        task_id: arg.to_string(),
+                    })
+                    .await;
+                format!("⏹️ 已发送取消任务 {} 的信号", arg)
+            };
+            let _ = self.platform_sender.send(chat_id, &msg).await;
+        } else {
+            let _ = self.platform_sender
+                .send(chat_id, "ℹ️ 当前没有活动的会话")
+                .await;
         }
     }
 
@@ -501,6 +541,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 可用指令：
 - /clear - 清空当前对话上下文（仅内存中）
 - /stop - 停止当前执行
+- /cancel [task_id] - 取消后台任务（无参数取消全部）
 - /new - 创建新会话（旧会话归档）
 - /list - 列出所有历史会话
 - /switch <序号> - 切换到指定会话

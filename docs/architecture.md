@@ -262,6 +262,24 @@ impl ToolRegistry {
 { "path": "src/" }
 ```
 
+### 异步工具执行
+
+长耗时工具（如 `generate_image`、未来的视频生成/语音合成）通过异步机制避免阻塞 Agent 主循环。设计要点是工具**运行时自适应**决定是否异步——同一工具不同 provider/参数可走不同路径。
+
+**决策方**：工具在 `execute` 内部自行决定。例如 `generate_image` 依据 provider 协议：OpenAI 协议几秒返回可同步，DashScope async 模式耗时 30-60s 应异步。`Tool::supports_async()`（默认 `false`）仅作能力声明供前端 UI 提示，不改变运行时决策。
+
+**核心组件**：
+
+- `AsyncTaskRunner`（`ToolContext.async_runner`）：工具调 `submit(.., work, cancel_token)` 提交后台 task，立即返回 `task_id`，并返回 `ToolResult::pending(content, task_id)` 占位。后台完成/取消时经 `done` channel 通知 Agent。
+- `TaskRegistry`（`ToolContext.task_registry`）：跟踪任务状态（pending/completed/failed/cancelled）+ 结果摘要，供 `query_task` 工具查询。`Arc` 克隆进每个 `ToolContext`，故 `ToolRegistry` 跨 Agent 共享时仍按 Agent 隔离。
+- `CancellationToken`（`ToolContext.cancel_token`）：per-call 令牌。`submit` 内 `select!` 优先取消分支，drop work future（HTTP 请求取消安全）。
+
+**Agent 主循环**：`run()` 用 `tokio::select!` 同时监听用户消息（`message_rx`）与任务完成（`done_rx`）。turn 进行中 `done` 入队、turn 间处理；空闲时任务完成可直接唤醒 Agent。
+
+**结果回灌**：不修改原占位 tool message（LLM 可能已基于它回应），而是**追加一条 user 通知消息**到历史，随后 `run_agent_loop` 唤醒 LLM。图片结果以 multimodal user message 注入（与同步工具一致）。
+
+**取消**：`FrontendMessage::Cancel`（全部）/ `CancelTask { task_id }`（指定）；Agent `Drop` 时取消所有未完成任务（防会话过期后僵尸任务）。
+
 ### 安全确认机制
 
 确认机制和 Frontend trait 联动：

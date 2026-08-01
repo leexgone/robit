@@ -72,7 +72,8 @@
 | `grep` | 搜索文件内容 | 否 | 否 |
 | `find` | 按模式查找文件 | 否 | 否 |
 | `ls` | 列出目录内容 | 否 | 否 |
-| `generate_image` | 文生图，使用配置的 `default_image_model` 指定的模型（万相/OpenAI 兼容） | 否（需显式配置 `image_providers`） | 是 |
+| `generate_image` | 文生图（异步执行），使用配置的 `default_image_model` 指定的模型（万相/OpenAI 兼容） | 否（需显式配置 `image_providers`） | 是 |
+| `query_task` | 查询异步后台任务状态（如生图进度/结果） | 是 | 否 |
 
 ## 技能系统
 

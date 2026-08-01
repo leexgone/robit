@@ -272,13 +272,28 @@ impl Frontend for ChatbotFrontend {
                 }
             }
             AgentEvent::ToolCallResult { tool_call_id, ref result } => {
-                // Silent by design: tool outputs are internal; the user only
-                // sees the final text reply. Traced so we can confirm the
-                // result actually reached the frontend when diagnosing
-                // "no feedback" issues.
+                // Async task started: in manual mode (no progress hint was
+                // sent for this call) tell the user the task is running in the
+                // background. In auto-approve mode the ToolCallRequested hint
+                // already covered "working on it".
+                if result.is_pending && !self.auto_approve {
+                    let task_id = result.pending_task_id.as_deref().unwrap_or("?");
+                    let msg = format!(
+                        "🎨 后台任务已启动(task_id={}),完成后自动通知",
+                        task_id
+                    );
+                    if let Err(e) = self.platform_sender.send(&self.chat_id, &msg).await {
+                        tracing::warn!(
+                            "[chatbot] failed to send async-task hint: chat_id='{}', error={}",
+                            self.chat_id, e
+                        );
+                    }
+                }
+                // Tool outputs are internal; the user only sees the final text
+                // reply. Traced for diagnostics.
                 tracing::trace!(
-                    "[chatbot] ToolCallResult received (silent by design): chat_id='{}', tool_call_id='{}', is_error={}, content_len={}",
-                    self.chat_id, tool_call_id, result.is_error, result.content.len()
+                    "[chatbot] ToolCallResult received: chat_id='{}', tool_call_id='{}', is_pending={}, is_error={}, content_len={}",
+                    self.chat_id, tool_call_id, result.is_pending, result.is_error, result.content.len()
                 );
             }
             AgentEvent::TurnComplete => {
@@ -309,6 +324,19 @@ impl Frontend for ChatbotFrontend {
                 tracing::trace!(
                     "[chatbot] SkillTriggered received (silent by design): chat_id='{}', skill='{}'",
                     self.chat_id, name
+                );
+            }
+            AgentEvent::AsyncToolCompleted {
+                task_id,
+                tool_call_id,
+                result,
+            } => {
+                // Silent: the Agent wakes the LLM, whose reply is delivered
+                // via TextDelta and flushed to the chat as usual. Traced so
+                // completion is observable in logs.
+                tracing::trace!(
+                    "[chatbot] AsyncToolCompleted: chat_id='{}', task_id='{}', tool_call_id='{}', is_error={}",
+                    self.chat_id, task_id, tool_call_id, result.is_error
                 );
             }
         }

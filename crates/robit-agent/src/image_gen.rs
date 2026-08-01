@@ -142,6 +142,7 @@ pub struct GeneratedImage {
 // Client
 // ============================================================================
 
+#[derive(Clone)]
 pub struct ImageGenClient {
     provider: ResolvedImageProvider,
     http: reqwest::Client,

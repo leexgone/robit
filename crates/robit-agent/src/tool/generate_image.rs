@@ -12,6 +12,7 @@ use std::path::Path;
 use time::macros::format_description;
 use time::OffsetDateTime;
 
+use super::async_runner::AsyncTaskWork;
 use super::{resolve_path, Tool, ToolContext, ToolResult};
 use crate::error::Result;
 use crate::image_gen::{ImageGenClient, ImageGenRequest};
@@ -87,6 +88,10 @@ impl Tool for GenerateImageTool {
         true
     }
 
+    fn supports_async(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
         let parsed: GenerateImageArgs = match serde_json::from_value(args) {
             Ok(a) => a,
@@ -114,103 +119,131 @@ impl Tool for GenerateImageTool {
             .map(|s| s.to_string())
             .unwrap_or_else(default_filename);
 
-        // Build request and call the provider
-        let req = ImageGenRequest {
-            prompt: parsed.prompt.clone(),
-            n: Some(n),
-            extra_params: Value::Null,
-        };
+        // The actual generation + download can take 30-60s (or minutes for
+        // video), so it runs in a background task. We validate args above
+        // (cheap, gives immediate feedback on bad input) and move the heavy
+        // work into `work`, returning a pending placeholder.
+        let client = self.client.clone();
+        let working_dir = ctx.working_dir.clone();
+        let prompt = parsed.prompt.clone();
 
-        tracing::info!("[generate_image] requesting {} image(s)", n);
-
-        let images = match self.client.generate(&req).await {
-            Ok(imgs) => imgs,
-            Err(e) => {
-                tracing::warn!("[generate_image] image generation failed: {}", e);
-                let info = e.to_error_info();
-                let err_json = json!({
-                    "status": "failed",
-                    "error": {
-                        "kind": info.kind,
-                        "code": info.code,
-                        "message": info.message,
-                        "retryable": info.retryable,
-                    }
-                });
-                return Ok(ToolResult::error(
-                    serde_json::to_string_pretty(&err_json).unwrap_or_else(|_| err_json.to_string()),
-                ));
-            }
-        };
-
-        if images.is_empty() {
-            let err_json = json!({
-                "status": "failed",
-                "error": "Provider returned no images"
-            });
-            return Ok(ToolResult::error(
-                serde_json::to_string_pretty(&err_json).unwrap_or_else(|_| err_json.to_string()),
-            ));
-        }
-
-        // Download and save each image. All images are attempted even if some
-        // fail, so partial results are preserved.
-        let multi = images.len() > 1;
-        let mut results: Vec<Value> = Vec::with_capacity(images.len());
-        let mut success_count: usize = 0;
-
-        for (i, img) in images.iter().enumerate() {
-            let index = i + 1;
-            let filename = if multi {
-                format!("{}-{}.png", base_filename, index)
-            } else {
-                format!("{}.png", base_filename)
+        let work: AsyncTaskWork = Box::pin(async move {
+            let req = ImageGenRequest {
+                prompt,
+                n: Some(n),
+                extra_params: Value::Null,
             };
 
-            let saved_path = download_media(&img.url, Some(&filename), &save_dir).await;
-            match saved_path {
-                Ok(path) => {
-                    success_count += 1;
-                    results.push(json!({
-                        "index": index,
-                        "file": display_path(&path, &ctx.working_dir),
-                        "size": img.size.clone().unwrap_or_else(|| "unknown".to_string()),
-                        "url": img.url,
-                    }));
-                }
+            tracing::info!("[generate_image] requesting {} image(s) (background)", n);
+
+            let images = match client.generate(&req).await {
+                Ok(imgs) => imgs,
                 Err(e) => {
-                    results.push(json!({
-                        "index": index,
-                        "file": null,
-                        "size": img.size.clone().unwrap_or_else(|| "unknown".to_string()),
-                        "url": img.url,
-                        "error": format!("Download failed: {}", e),
-                    }));
+                    tracing::warn!("[generate_image] image generation failed: {}", e);
+                    let info = e.to_error_info();
+                    let err_json = json!({
+                        "status": "failed",
+                        "error": {
+                            "kind": info.kind,
+                            "code": info.code,
+                            "message": info.message,
+                            "retryable": info.retryable,
+                        }
+                    });
+                    return ToolResult::error(
+                        serde_json::to_string_pretty(&err_json)
+                            .unwrap_or_else(|_| err_json.to_string()),
+                    );
+                }
+            };
+
+            if images.is_empty() {
+                let err_json = json!({
+                    "status": "failed",
+                    "error": "Provider returned no images"
+                });
+                return ToolResult::error(
+                    serde_json::to_string_pretty(&err_json)
+                        .unwrap_or_else(|_| err_json.to_string()),
+                );
+            }
+
+            // Download and save each image. All images are attempted even if
+            // some fail, so partial results are preserved.
+            let multi = images.len() > 1;
+            let mut results: Vec<Value> = Vec::with_capacity(images.len());
+            let mut success_count: usize = 0;
+
+            for (i, img) in images.iter().enumerate() {
+                let index = i + 1;
+                let filename = if multi {
+                    format!("{}-{}.png", base_filename, index)
+                } else {
+                    format!("{}.png", base_filename)
+                };
+
+                let saved_path = download_media(&img.url, Some(&filename), &save_dir).await;
+                match saved_path {
+                    Ok(path) => {
+                        success_count += 1;
+                        results.push(json!({
+                            "index": index,
+                            "file": display_path(&path, &working_dir),
+                            "size": img.size.clone().unwrap_or_else(|| "unknown".to_string()),
+                            "url": img.url,
+                        }));
+                    }
+                    Err(e) => {
+                        results.push(json!({
+                            "index": index,
+                            "file": null,
+                            "size": img.size.clone().unwrap_or_else(|| "unknown".to_string()),
+                            "url": img.url,
+                            "error": format!("Download failed: {}", e),
+                        }));
+                    }
                 }
             }
-        }
 
-        let status = if success_count == images.len() {
-            "success"
-        } else {
-            "partial"
-        };
+            let status = if success_count == images.len() {
+                "success"
+            } else {
+                "partial"
+            };
 
-        let response = json!({
-            "status": status,
-            "generated_count": success_count,
-            "images": results,
+            let response = json!({
+                "status": status,
+                "generated_count": success_count,
+                "images": results,
+            });
+
+            let content = serde_json::to_string_pretty(&response)
+                .unwrap_or_else(|_| response.to_string());
+
+            if success_count == 0 {
+                // All downloads failed - report as error
+                ToolResult::error(content)
+            } else {
+                ToolResult::success(content)
+            }
         });
 
-        let content = serde_json::to_string_pretty(&response)
-            .unwrap_or_else(|_| response.to_string());
+        // Submit the background task and return a placeholder. The Agent tracks
+        // the task id and reinjects the final result when `work` completes.
+        let task_id = ctx.async_runner.submit(
+            ctx.tool_call_id.clone(),
+            ctx.session_id.clone(),
+            self.name().to_string(),
+            work,
+            ctx.cancel_token.clone(),
+        );
 
-        if success_count == 0 {
-            // All downloads failed - report as error
-            Ok(ToolResult::error(content))
-        } else {
-            Ok(ToolResult::success(content))
-        }
+        let placeholder = format!(
+            "图片生成中(异步任务 task_id={})。预计耗时 30-60 秒,完成后会自动通知结果。\
+             你可以继续其他工作,完成后我会收到通知并告知你。",
+            task_id
+        );
+        Ok(ToolResult::pending(placeholder, task_id))
     }
 }
 

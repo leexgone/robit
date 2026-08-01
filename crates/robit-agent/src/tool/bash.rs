@@ -145,6 +145,8 @@ impl Tool for BashTool {
                     content,
                     is_error: exit_code != 0,
                     images: Vec::new(),
+                    is_pending: false,
+                    pending_task_id: None,
                 })
             }
             Ok(Err(e)) => {

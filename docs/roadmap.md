@@ -55,7 +55,7 @@
 
 ### 工具系统增强
 
-- [ ] 工具异步执行机制
+- [x] 工具异步执行机制（首版：核心机制 + `generate_image` 异步化 + 取消 + `query_task` 查询）
   - **动机**：长耗时工具（`generate_image`、视频生成、语音合成）当前同步阻塞 Agent 主循环（`agent.rs` 的 `tools.execute().await`），前端在等待期间无进度反馈。万相生图通常耗时 30-60 秒，视频生成可达分钟级
   - **核心设计**：工具可返回"延迟结果"（pending），框架 `tokio::spawn` 后台 task 执行实际工作；主 Agent 拿到占位结果（如"图片生成中，task_id=xxx"）后可继续响应用户
   - 后台任务完成后通过 `AgentEvent` 异步通知前端 / 主 Agent，并支持查询任务状态与结果

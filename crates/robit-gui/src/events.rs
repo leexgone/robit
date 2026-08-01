@@ -35,6 +35,15 @@ pub enum UiEvent {
     },
     /// Session title was updated (auto-renamed or manual rename).
     SessionRenamed { session_id: String, title: String },
+    /// An async background task completed. The agent has already reinjected
+    /// the result and woken the LLM; the frontend may use this to update a
+    /// task-progress panel (currently best-effort / future work on the UI side).
+    AsyncToolCompleted {
+        session_id: String,
+        task_id: String,
+        tool_call_id: String,
+        is_error: bool,
+    },
 }
 
 /// Non-sensitive configuration exposed to the frontend.

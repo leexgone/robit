@@ -14,6 +14,7 @@ categories = ["command-line-utilities", "development-tools"]
 robit-ai = { workspace = true }
 async-openai.workspace = true
 tokio = { workspace = true, features = ["process"] }
+tokio-util.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

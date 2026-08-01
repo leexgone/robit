@@ -29,7 +29,10 @@ use crate::frontend::Frontend;
 use crate::media;
 use crate::prompt::PromptBuilder;
 use crate::skill::SkillRegistry;
-use crate::tool::{ToolCallInfo, ToolContext, ToolRegistry, ToolResult};
+use crate::tool::async_runner::{AsyncTaskDone, AsyncTaskRunner};
+use crate::tool::task_registry::{AsyncTaskRecord, AsyncTaskStatus, TaskRegistry};
+use crate::tool::{ToolCallInfo, ToolContext, ToolImage, ToolRegistry, ToolResult};
+use tokio_util::sync::CancellationToken;
 
 // ============================================================================
 // AgentSession
@@ -105,6 +108,23 @@ pub struct Agent {
     extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
     /// Pending truncation result that needs compression (handled at start of run loop).
     pending_truncation: Option<(SessionId, crate::context::TruncationResult)>,
+    /// Handle for tools to submit async background work. Cloned into every
+    /// ToolContext; the matching `done_rx` is drained in `run()`.
+    async_runner: AsyncTaskRunner,
+    /// Receiver for completed async tasks. `Option` so `run()` can `take()` it
+    /// into a local, avoiding borrowing `self` across the `select!` loop body.
+    done_rx: Option<mpsc::Receiver<AsyncTaskDone>>,
+    /// In-flight async tasks keyed by task_id, with their cancel tokens.
+    pending_tasks: HashMap<String, PendingTask>,
+    /// Shared registry of async task statuses, read by the `query_task` tool
+    /// via ToolContext. Cloned per ToolContext (shared `Arc`).
+    task_registry: TaskRegistry,
+}
+
+/// Bookkeeping for one in-flight async task.
+struct PendingTask {
+    cancel: CancellationToken,
+    tool_name: String,
 }
 
 impl Agent {
@@ -135,6 +155,10 @@ impl Agent {
         let mut sessions = HashMap::new();
         sessions.insert(session_id.clone(), session);
 
+        let (done_tx, done_rx) = mpsc::channel::<AsyncTaskDone>(32);
+        let async_runner = AsyncTaskRunner::new(done_tx);
+        let task_registry = TaskRegistry::new();
+
         Self {
             llm_client,
             tools,
@@ -146,6 +170,10 @@ impl Agent {
             auto_approve,
             extensions,
             pending_truncation: None,
+            async_runner,
+            done_rx: Some(done_rx),
+            pending_tasks: HashMap::new(),
+            task_registry,
         }
     }
 
@@ -212,6 +240,10 @@ impl Agent {
         let mut sessions = HashMap::new();
         sessions.insert(session_id.clone(), session);
 
+        let (done_tx, done_rx) = mpsc::channel::<AsyncTaskDone>(32);
+        let async_runner = AsyncTaskRunner::new(done_tx);
+        let task_registry = TaskRegistry::new();
+
         Self {
             llm_client,
             tools,
@@ -223,6 +255,10 @@ impl Agent {
             auto_approve,
             extensions,
             pending_truncation,
+            async_runner,
+            done_rx: Some(done_rx),
+            pending_tasks: HashMap::new(),
+            task_registry,
         }
     }
 
@@ -298,40 +334,61 @@ impl Agent {
             tracing::info!("No pending compression needed");
         }
 
-        while let Some(msg) = message_rx.recv().await {
-            match msg {
-                FrontendMessage::UserInput { text, attachments } => {
-                    if text == "/exit" || text == "/quit" {
-                        break;
-                    }
-                    if text == "/clear" {
-                        self.clear_session();
-                        let _ = self
-                            .frontend
-                            .on_event(AgentEvent::TextDelta(
-                                "\n[Conversation history cleared]\n".to_string(),
-                            ))
-                            .await;
-                        let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
-                        continue;
-                    }
+        // Take done_rx out of self so the select! loop can borrow it without
+        // borrowing all of `self` (which would conflict with the &mut self
+        // calls made inside the message branch).
+        let mut done_rx = self
+            .done_rx
+            .take()
+            .expect("done_rx is consumed exactly once in run()");
 
-                    // Check for skill trigger
-                    if let Some((skill, args)) = self.skills.match_trigger(&text) {
-                        let skill = skill.clone();
-                        self.run_skill_turn(&skill, &args).await;
-                        continue;
-                    }
+        loop {
+            tokio::select! {
+                msg = message_rx.recv() => {
+                    let Some(msg) = msg else { break; };
+                    match msg {
+                        FrontendMessage::UserInput { text, attachments } => {
+                            if text == "/exit" || text == "/quit" {
+                                break;
+                            }
+                            if text == "/clear" {
+                                self.clear_session();
+                                let _ = self
+                                    .frontend
+                                    .on_event(AgentEvent::TextDelta(
+                                        "\n[Conversation history cleared]\n".to_string(),
+                                    ))
+                                    .await;
+                                let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
+                                continue;
+                            }
 
-                    self.run_turn(&text, attachments).await;
+                            // Check for skill trigger
+                            if let Some((skill, args)) = self.skills.match_trigger(&text) {
+                                let skill = skill.clone();
+                                self.run_skill_turn(&skill, &args).await;
+                                continue;
+                            }
+
+                            self.run_turn(&text, attachments).await;
+                        }
+                        FrontendMessage::Cancel => {
+                            // Cancel all in-flight async tasks for this Agent.
+                            self.handle_cancel_all().await;
+                        }
+                        FrontendMessage::CancelTask { task_id } => {
+                            self.handle_cancel_task(&task_id).await;
+                        }
+                        FrontendMessage::ConfirmationResponse { .. } => {
+                            // Confirmation is handled via frontend.request_tool_confirmation()
+                            // within run_one_step. This variant is reserved for future use.
+                            tracing::warn!("Unexpected ConfirmationResponse outside tool confirmation");
+                        }
+                    }
                 }
-                FrontendMessage::Cancel => {
-                    tracing::info!("Cancel requested (MVP: no-op)");
-                }
-                FrontendMessage::ConfirmationResponse { .. } => {
-                    // Confirmation is handled via frontend.request_tool_confirmation()
-                    // within run_one_step. This variant is reserved for future async flow.
-                    tracing::warn!("Unexpected ConfirmationResponse outside tool confirmation");
+                done = done_rx.recv() => {
+                    let Some(done) = done else { break; };
+                    self.handle_async_done(done).await;
                 }
             }
         }
@@ -342,7 +399,6 @@ impl Agent {
     /// Execute a single turn: user input -> LLM call(s) -> tool execution(s) -> response.
     async fn run_turn(&mut self, user_input: &str, attachments: Vec<MediaAttachment>) {
         let session_id = self.default_session_id.clone();
-        let max_tool_calls = self.context_manager.max_tool_calls_per_turn;
 
         // Build user message first (to avoid borrow conflict)
         let user_message = self.build_user_message(user_input, &attachments).await;
@@ -352,16 +408,24 @@ impl Agent {
             session.history.push(user_message);
         }
 
-        // Run the agentic loop (may iterate if LLM calls tools)
+        // Run the agentic loop (may iterate if LLM calls tools).
+        self.run_agent_loop(&session_id).await;
+    }
+
+    /// Run the agentic loop: call LLM, execute tools, repeat until the LLM
+    /// produces a final response (no tool calls) or a safety limit is hit.
+    /// Shared by user-input turns and async-task-completion reinjection.
+    async fn run_agent_loop(&mut self, session_id: &SessionId) {
+        let max_tool_calls = self.context_manager.max_tool_calls_per_turn;
         let max_iterations = 20;
         let mut total_tool_calls = 0usize;
         for iteration in 0..max_iterations {
-            match self.run_one_step(&session_id).await {
+            match self.run_one_step(session_id).await {
+                Ok(0) => {
+                    let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
+                    return;
+                }
                 Ok(tool_call_count) => {
-                    if tool_call_count == 0 {
-                        let _ = self.frontend.on_event(AgentEvent::TurnComplete).await;
-                        return;
-                    }
                     total_tool_calls += tool_call_count;
 
                     // Check against per-turn tool call limit
@@ -703,12 +767,21 @@ impl Agent {
                 let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                     .unwrap_or(serde_json::Value::Null);
 
+                // Per-call cancellation token. Async tools pass a clone into
+                // `async_runner.submit`; if the tool goes async the Agent keeps
+                // this clone in `pending_tasks` so it can cancel the work later.
+                let cancel_token = CancellationToken::new();
+
                 let ctx = ToolContext {
                     working_dir: working_dir.clone(),
                     session_id: session_id.clone(),
+                    tool_call_id: tc.id.clone(),
                     frontend: self.frontend.clone(),
                     extensions: self.extensions.clone(),
                     supports_images: self.llm_client.supports_images(),
+                    async_runner: self.async_runner.clone(),
+                    cancel_token: cancel_token.clone(),
+                    task_registry: self.task_registry.clone(),
                 };
 
                 tracing::trace!(
@@ -718,12 +791,50 @@ impl Agent {
                 );
                 let result = self.tools.execute(&tc.function.name, args, &ctx).await;
                 tracing::trace!(
-                    "[tool] execution returned: tool_call_id='{}', name='{}', is_error={}, content_len={}",
+                    "[tool] execution returned: tool_call_id='{}', name='{}', is_pending={}, is_error={}, content_len={}",
                     tc_info.id,
                     tc_info.name,
+                    result.is_pending,
                     result.is_error,
                     result.content.len()
                 );
+
+                // If the tool went async, register the task so it can be
+                // tracked and cancelled. The placeholder content is still added
+                // to history below (as the tool message) so the LLM can keep
+                // working while the task runs.
+                if result.is_pending {
+                    if let Some(tid) = &result.pending_task_id {
+                        tracing::info!(
+                            "[async] task submitted: task_id={}, tool={}, tool_call_id={}",
+                            tid,
+                            tc.function.name,
+                            tc.id
+                        );
+                        self.pending_tasks.insert(
+                            tid.clone(),
+                            PendingTask {
+                                cancel: cancel_token,
+                                tool_name: tc.function.name.clone(),
+                            },
+                        );
+                        self.task_registry.register(AsyncTaskRecord {
+                            task_id: tid.clone(),
+                            tool_name: tc.function.name.clone(),
+                            tool_call_id: tc.id.clone(),
+                            session_id: session_id.clone(),
+                            status: AsyncTaskStatus::Pending,
+                            started_at: std::time::Instant::now(),
+                            result_summary: None,
+                        });
+                    } else {
+                        tracing::warn!(
+                            "[async] tool {} returned is_pending without pending_task_id",
+                            tc.function.name
+                        );
+                    }
+                }
+
                 result
             } else {
                 tracing::trace!(
@@ -740,6 +851,8 @@ impl Agent {
                 content: self.context_manager.truncate_tool_output(&result.content),
                 is_error: result.is_error,
                 images: result.images.clone(),
+                is_pending: result.is_pending,
+                pending_task_id: result.pending_task_id.clone(),
             };
             if truncated_result.content.len() != raw_len {
                 tracing::trace!(
@@ -793,35 +906,10 @@ impl Agent {
             // OpenAI protocol restricts tool message content to text, so images
             // cannot travel in the tool result itself; we inject them in a
             // separate user message right after the tool result.
-            if !truncated_result.images.is_empty() && self.llm_client.supports_images() {
-                let mut parts = vec![ChatCompletionRequestUserMessageContentPart::Text(
-                    ChatCompletionRequestMessageContentPartText {
-                        text: format!(
-                            "[工具返回的图片] {}",
-                            truncated_result
-                                .images
-                                .iter()
-                                .map(|i| i.label.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    },
-                )];
-                for img in &truncated_result.images {
-                    parts.push(ChatCompletionRequestUserMessageContentPart::ImageUrl(
-                        ChatCompletionRequestMessageContentPartImage {
-                            image_url: ImageUrl {
-                                url: img.data_url.clone(),
-                                detail: None,
-                            },
-                        },
-                    ));
+            if self.llm_client.supports_images() {
+                if let Some(image_msg) = build_image_user_message(&truncated_result.images) {
+                    session.history.push(image_msg);
                 }
-                let image_msg = ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                    content: ChatCompletionRequestUserMessageContent::Array(parts),
-                    name: None,
-                });
-                session.history.push(image_msg);
             }
 
             tracing::trace!(
@@ -1031,7 +1119,133 @@ impl Agent {
         }
     }
 
+    /// Handle a completed async background task: update tracking, notify the
+    /// frontend, reinject the result into history, and wake the LLM.
+    async fn handle_async_done(&mut self, done: AsyncTaskDone) {
+        tracing::info!(
+            "[async] task done: task_id={}, tool={}, session={}, cancelled={}, is_error={}",
+            done.task_id,
+            done.tool_name,
+            done.session_id,
+            done.cancelled,
+            done.result.is_error
+        );
+
+        // No longer in flight.
+        self.pending_tasks.remove(&done.task_id);
+
+        // Update the registry with final status + a result summary.
+        let status = if done.cancelled {
+            AsyncTaskStatus::Cancelled
+        } else if done.result.is_error {
+            AsyncTaskStatus::Failed
+        } else {
+            AsyncTaskStatus::Completed
+        };
+        let summary = summarize_result(&done.result.content);
+        self.task_registry
+            .update(&done.task_id, status, Some(summary));
+
+        // Notify the frontend (TUI/GUI update task panels; chatbot usually
+        // relies on the subsequent LLM reply delivered via TextDelta).
+        let _ = self
+            .frontend
+            .on_event(AgentEvent::AsyncToolCompleted {
+                task_id: done.task_id.clone(),
+                tool_call_id: done.tool_call_id.clone(),
+                result: done.result.clone(),
+            })
+            .await;
+
+        // Reinject into the owning session. If the session is gone (e.g. the
+        // chatbot expired this Agent), drop the result - side effects like
+        // saved files already happened.
+        let session_id = done.session_id.clone();
+        if !self.sessions.contains_key(&session_id) {
+            tracing::warn!(
+                "[async] task {} finished but session {} not found; dropping result",
+                done.task_id,
+                session_id
+            );
+            return;
+        }
+
+        // Append a user-role notification. We do NOT mutate the original
+        // placeholder tool message: the LLM may have already acted on it, and
+        // rewriting history would break consistency.
+        let notice = format!(
+            "[后台任务完成通知] task_id={} (工具: {})\n{}",
+            done.task_id, done.tool_name, done.result.content
+        );
+        if let Some(session) = self.sessions.get_mut(&session_id) {
+            session.history.push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessage {
+                    content: notice.into(),
+                    name: None,
+                },
+            ));
+
+            // Inject result images as a multimodal user message (same pattern
+            // as sync tool results).
+            if self.llm_client.supports_images() {
+                if let Some(image_msg) = build_image_user_message(&done.result.images) {
+                    session.history.push(image_msg);
+                }
+            }
+        }
+
+        // Wake the LLM to process the notification.
+        self.run_agent_loop(&session_id).await;
     }
+
+    /// Cancel a specific async task by id. The spawned task emits a cancelled
+    /// `done` which flows through `handle_async_done` to update status.
+    async fn handle_cancel_task(&mut self, task_id: &str) {
+        match self.pending_tasks.remove(task_id) {
+            Some(pending) => {
+                tracing::info!(
+                    "[async] cancelling task {} (tool={})",
+                    task_id,
+                    pending.tool_name
+                );
+                pending.cancel.cancel();
+            }
+            None => {
+                tracing::warn!("[async] cancel request for unknown task {}", task_id);
+            }
+        }
+    }
+
+    /// Cancel all in-flight async tasks for this Agent.
+    async fn handle_cancel_all(&mut self) {
+        let count = self.pending_tasks.len();
+        if count == 0 {
+            tracing::info!("[async] Cancel requested, no pending tasks");
+            return;
+        }
+        tracing::info!("[async] cancelling all {} pending task(s)", count);
+        for (_, pending) in self.pending_tasks.drain() {
+            pending.cancel.cancel();
+        }
+    }
+}
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        // Cancel any still-running async tasks so they don't outlive the Agent
+        // (e.g. when a chatbot session expires and the Agent task is dropped).
+        let count = self.pending_tasks.len();
+        if count > 0 {
+            tracing::info!(
+                "[async] Agent dropped, cancelling {} pending task(s)",
+                count
+            );
+            for (_, pending) in self.pending_tasks.drain() {
+                pending.cancel.cancel();
+            }
+        }
+    }
+}
 
 // ============================================================================
 // Summary generation (free function to avoid borrow conflicts)
@@ -1255,5 +1469,52 @@ fn truncate_for_log(s: &str, max_chars: usize) -> String {
     } else {
         let preview: String = s.chars().take(max_chars).collect();
         format!("{}... ({} chars total)", preview, char_count)
+    }
+}
+
+/// Build a multimodal user message carrying tool-result images, or `None` if
+/// there are no images. Shared by sync tool results (`run_one_step`) and async
+/// task-completion reinjection (`handle_async_done`).
+fn build_image_user_message(images: &[ToolImage]) -> Option<ChatCompletionRequestMessage> {
+    if images.is_empty() {
+        return None;
+    }
+    let mut parts = vec![ChatCompletionRequestUserMessageContentPart::Text(
+        ChatCompletionRequestMessageContentPartText {
+            text: format!(
+                "[工具返回的图片] {}",
+                images
+                    .iter()
+                    .map(|i| i.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        },
+    )];
+    for img in images {
+        parts.push(ChatCompletionRequestUserMessageContentPart::ImageUrl(
+            ChatCompletionRequestMessageContentPartImage {
+                image_url: ImageUrl {
+                    url: img.data_url.clone(),
+                    detail: None,
+                },
+            },
+        ));
+    }
+    Some(ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+        content: ChatCompletionRequestUserMessageContent::Array(parts),
+        name: None,
+    }))
+}
+
+/// Truncate a task result to a bounded summary for the task registry.
+fn summarize_result(content: &str) -> String {
+    const MAX: usize = 500;
+    let char_count = content.chars().count();
+    if char_count <= MAX {
+        content.to_string()
+    } else {
+        let truncated: String = content.chars().take(MAX).collect();
+        format!("{}... (truncated, {} chars total)", truncated, char_count)
     }
 }

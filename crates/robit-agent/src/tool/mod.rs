@@ -11,6 +11,9 @@ pub mod find;
 pub mod grep;
 pub mod memory;
 pub mod search_history;
+pub mod async_runner;
+pub mod task_registry;
+pub mod query_task;
 
 use async_trait::async_trait;
 use robit_ai::ChatCompletionTools;
@@ -19,10 +22,13 @@ use std::collections::HashMap;
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::Result;
 use crate::event::SessionId;
 use crate::frontend::Frontend;
+use async_runner::AsyncTaskRunner;
+use task_registry::TaskRegistry;
 
 // ============================================================================
 // Tool trait
@@ -45,6 +51,19 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with parsed arguments. Returns ToolResult for LLM consumption.
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult>;
+
+    /// Whether this tool is capable of running asynchronously (returning a
+    /// pending placeholder and finishing its work in the background).
+    ///
+    /// This is **advisory only** - used by frontends/Agent for UI hints (e.g.
+    /// showing a "task in progress" affordance). Whether a *given invocation*
+    /// actually runs async is decided at runtime inside `execute` (e.g. based
+    /// on the provider protocol or input size), by calling
+    /// `ctx.async_runner.submit(..)` and returning `ToolResult::pending(..)`.
+    /// Tools that never run async should leave the default `false`.
+    fn supports_async(&self) -> bool {
+        false
+    }
 }
 
 // ============================================================================
@@ -75,6 +94,16 @@ pub struct ToolResult {
     /// Images attached to this result (e.g. from `read` tool reading an image
     /// file). Most tools leave this empty.
     pub images: Vec<ToolImage>,
+    /// `true` when this is a *placeholder* for an async task: `content` tells
+    /// the LLM the work is in progress, and the real result is reinjected
+    /// later (by the Agent) when the background task finishes. The Agent uses
+    /// this flag to emit `AsyncToolStarted` instead of treating the call as
+    /// finished. The placeholder content is still added to history as the tool
+    /// message so the LLM can continue other work while waiting.
+    pub is_pending: bool,
+    /// Task id of the background task, set iff `is_pending`. Used by the Agent
+    /// to track/cancel the task and by the frontend to correlate progress.
+    pub pending_task_id: Option<String>,
 }
 
 impl ToolResult {
@@ -83,6 +112,8 @@ impl ToolResult {
             content: content.into(),
             is_error: false,
             images: Vec::new(),
+            is_pending: false,
+            pending_task_id: None,
         }
     }
 
@@ -91,6 +122,20 @@ impl ToolResult {
             content: content.into(),
             is_error: true,
             images: Vec::new(),
+            is_pending: false,
+            pending_task_id: None,
+        }
+    }
+
+    /// Build a pending placeholder for an async task. `content` should tell the
+    /// LLM what is happening and the `task_id` it can reference later.
+    pub fn pending(content: impl Into<String>, task_id: String) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+            images: Vec::new(),
+            is_pending: true,
+            pending_task_id: Some(task_id),
         }
     }
 }
@@ -119,6 +164,9 @@ pub struct ToolContext {
     pub working_dir: PathBuf,
     /// Current session ID.
     pub session_id: SessionId,
+    /// The tool call id this execution was triggered by. Needed by async tools
+    /// to correlate their background task with the originating call.
+    pub tool_call_id: String,
     /// Frontend for user interaction (e.g., asking for input during tool execution).
     pub frontend: Arc<dyn Frontend>,
     /// Platform-specific extensions, keyed by extension ID.
@@ -128,6 +176,18 @@ pub struct ToolContext {
     /// Whether the configured LLM supports image inputs.
     /// Tools (e.g. `read`) use this to decide whether to encode images.
     pub supports_images: bool,
+    /// Handle for submitting async background work. A tool that decides (at
+    /// runtime) a call should run async calls `async_runner.submit(..)` and
+    /// returns `ToolResult::pending(..)`. Cheap to clone.
+    pub async_runner: AsyncTaskRunner,
+    /// Cancellation token for this tool call. Async tools pass a clone into
+    /// `async_runner.submit` so the Agent can cancel the background work.
+    /// Sync tools ignore it.
+    pub cancel_token: CancellationToken,
+    /// Shared registry tracking all async tasks for the current Agent. The
+    /// `query_task` tool reads this; async tools register themselves here via
+    /// the Agent when they submit. Cheap to clone (shared `Arc`).
+    pub task_registry: TaskRegistry,
 }
 
 // ============================================================================
@@ -254,6 +314,18 @@ impl ToolRegistry {
     /// Get references to all tools (for prompt building).
     pub fn tools(&self) -> Vec<&dyn Tool> {
         self.tools.values().map(|t| t.as_ref()).collect()
+    }
+
+    /// Names of tools that declare async capability (`supports_async() == true`).
+    /// Advisory: frontends use this for UI hints (e.g. a progress affordance).
+    /// Whether an invocation actually runs async is still decided at runtime
+    /// inside `execute`.
+    pub fn async_capable_tools(&self) -> Vec<&str> {
+        self.tools
+            .values()
+            .filter(|t| t.supports_async())
+            .map(|t| t.name())
+            .collect()
     }
 }
 

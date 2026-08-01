@@ -72,6 +72,20 @@ pub enum AgentEvent {
 
     /// A skill was triggered. Frontend can display this as a system notice.
     SkillTriggered { name: String, description: String },
+
+    /// An async background task finished (success, failure, or cancellation).
+    /// `result` is the final outcome, already reinjected into the conversation
+    /// as a system-notification message, and the LLM is being woken to act on
+    /// it. Frontends use this to update task-progress UI; no further action is
+    /// required for the conversation itself.
+    ///
+    /// Task *start* is signalled by the regular `ToolCallResult` event whose
+    /// `result.is_pending` is `true` (with `result.pending_task_id` set).
+    AsyncToolCompleted {
+        task_id: String,
+        tool_call_id: String,
+        result: ToolResult,
+    },
 }
 
 /// Messages sent from Frontend to Agent.
@@ -91,6 +105,9 @@ pub enum FrontendMessage {
         tool_call_id: String,
         approved: bool,
     },
+
+    /// User requested cancellation of a specific async background task.
+    CancelTask { task_id: String },
 }
 
 // Keep backward compatibility: from String to UserInput with no attachments.

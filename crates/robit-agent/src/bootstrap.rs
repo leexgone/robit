@@ -18,6 +18,7 @@ use crate::tool::grep::GrepTool;
 use crate::tool::load_skill::LoadSkillTool;
 use crate::tool::ls::LsTool;
 use crate::tool::memory::{ForgetTool, ListMemoriesTool, MemorizeTool, RecallTool};
+use crate::tool::query_task::QueryTaskTool;
 use crate::tool::read::ReadTool;
 use crate::tool::search_history::SearchHistoryTool;
 use crate::tool::write::WriteTool;
@@ -120,7 +121,8 @@ pub fn create_tools_from_config(
         .map(|m| m.supports_images)
         .unwrap_or(false);
 
-    // Always register read, load_skill, memory, and history tools (required for basic functionality)
+    // Always register read, load_skill, memory, history, and query_task tools
+    // (required for basic functionality / async task visibility)
     tools.register(ReadTool::new(max_lines, max_bytes, supports_images));
     tools.register(LoadSkillTool::new(skill_registry));
     tools.register(MemorizeTool::new());
@@ -128,6 +130,7 @@ pub fn create_tools_from_config(
     tools.register(ForgetTool::new());
     tools.register(ListMemoriesTool::new());
     tools.register(SearchHistoryTool::new());
+    tools.register(QueryTaskTool::new());
 
     // Try to build the image generation client. Returns None when no image
     // providers are configured (the tool is simply not registered in that case).
@@ -148,6 +151,7 @@ pub fn create_tools_from_config(
                     "forget" => {} // already registered
                     "list_memories" => {} // already registered
                     "search_history" => {} // already registered
+                    "query_task" => {} // already registered
                     "bash" => tools.register(BashTool::new(max_bytes)),
                     "write" => tools.register(WriteTool::new()),
                     "edit" => tools.register(EditTool::new()),
