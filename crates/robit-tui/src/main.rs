@@ -173,17 +173,21 @@ async fn run_event_loop(
     agent_handle: tokio::task::JoinHandle<()>,
 ) -> Result<()> {
     let mut event_stream = EventStream::new();
-    let tick_rate = std::time::Duration::from_millis(100);
-    let mut tick_interval = tokio::time::interval(tick_rate);
+    // The tick keeps the loop alive for future animations (e.g. a busy
+    // spinner); it deliberately does not trigger a redraw by itself — frames
+    // are drawn on demand, when state actually changed.
+    let mut tick_interval = tokio::time::interval(std::time::Duration::from_millis(100));
+    tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    terminal.draw(|f| ui::draw(f, app))?;
+    let mut needs_draw = true;
 
     loop {
         tokio::select! {
-            // Crossterm events (keyboard, resize)
+            // Crossterm events (keyboard, mouse, resize)
             maybe_event = event_stream.next() => {
                 if let Some(Ok(event)) = maybe_event {
                     handle_crossterm_event(app, event, message_tx).await;
+                    needs_draw = true;
                 }
             }
 
@@ -192,6 +196,8 @@ async fn run_event_loop(
                 match maybe_event {
                     Some(event) => {
                         app.handle_agent_event(event);
+                        drain_agent_events(app, event_rx);
+                        needs_draw = true;
                     }
                     None => {
                         app.should_quit = true;
@@ -202,28 +208,67 @@ async fn run_event_loop(
             // Confirmation requests from Agent
             maybe_req = confirm_rx.recv() => {
                 if let Some(req) = maybe_req {
-                    set_tool_awaiting(app, &req.tool_info.id);
+                    set_tool_status_by_id(
+                        app,
+                        &req.tool_info.id,
+                        crate::app::ToolStatus::AwaitingConfirmation,
+                    );
                     app.input_mode = InputMode::Confirmation {
-                        _tool_call_id: req.tool_info.id,
+                        tool_call_id: req.tool_info.id,
                         responder: Some(req.responder),
                     };
+                    needs_draw = true;
                 }
             }
 
-            // Tick for redraw
             _ = tick_interval.tick() => {}
         }
-
-        // Redraw
-        terminal.draw(|f| ui::draw(f, app))?;
 
         if app.should_quit {
             agent_handle.abort();
             break;
         }
+
+        // Redraw only when something changed (ratatui still diffs the buffer,
+        // but this avoids rebuilding/rendering it every tick).
+        if needs_draw {
+            terminal.draw(|f| ui::draw(f, app))?;
+            needs_draw = false;
+        }
     }
 
     Ok(())
+}
+
+/// Batch-process all queued agent events so we redraw once per burst rather
+/// than once per event (streaming sends one `TextDelta` per token).
+fn drain_agent_events(app: &mut App, event_rx: &mut mpsc::Receiver<AgentEvent>) {
+    loop {
+        match event_rx.try_recv() {
+            Ok(event) => app.handle_agent_event(event),
+            Err(mpsc::error::TryRecvError::Empty) => break,
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                app.should_quit = true;
+                break;
+            }
+        }
+    }
+}
+
+/// Change a tool card's status by id (also invalidates its cached rendering).
+fn set_tool_status_by_id(app: &mut App, tool_call_id: &str, new_status: crate::app::ToolStatus) {
+    let idx = app.conversation.iter().position(|entry| match entry {
+        crate::app::ConversationEntry::ToolCard { tool_call_id: id, .. } => id == tool_call_id,
+        _ => false,
+    });
+    if let Some(idx) = idx {
+        if let crate::app::ConversationEntry::ToolCard { status, .. } =
+            &mut app.conversation[idx]
+        {
+            *status = new_status;
+        }
+        app.render_cache.invalidate(idx);
+    }
 }
 
 async fn handle_crossterm_event(
@@ -240,24 +285,40 @@ async fn handle_crossterm_event(
             }
 
             // Check for pending confirmation
-            if let InputMode::Confirmation { responder, .. } = &mut app.input_mode {
-                match key.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        if let Some(tx) = responder.take() {
-                            let _ = tx.send(true);
+            if matches!(app.input_mode, InputMode::Confirmation { .. }) {
+                let mut decision: Option<(bool, String)> = None;
+                if let InputMode::Confirmation {
+                    tool_call_id,
+                    responder,
+                } = &mut app.input_mode
+                {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            if let Some(tx) = responder.take() {
+                                let _ = tx.send(true);
+                            }
+                            decision = Some((true, tool_call_id.clone()));
                         }
-                        // Update tool card status
-                        update_last_awaiting_tool(app, true);
-                        app.input_mode = InputMode::Normal;
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') => {
-                        if let Some(tx) = responder.take() {
-                            let _ = tx.send(false);
+                        KeyCode::Char('n') | KeyCode::Char('N') => {
+                            if let Some(tx) = responder.take() {
+                                let _ = tx.send(false);
+                            }
+                            decision = Some((false, tool_call_id.clone()));
                         }
-                        update_last_awaiting_tool(app, false);
-                        app.input_mode = InputMode::Normal;
+                        _ => {}
                     }
-                    _ => {}
+                }
+                if let Some((approved, id)) = decision {
+                    if approved {
+                        // Immediate feedback: show the card as running. The
+                        // final Success/Failed status arrives via ToolCallResult.
+                        set_tool_status_by_id(app, &id, crate::app::ToolStatus::Running);
+                    } else {
+                        // Remember the rejection so the (error) result that the
+                        // agent sends back is displayed as "Rejected", not "Failed".
+                        app.rejected_tool_ids.insert(id);
+                    }
+                    app.input_mode = InputMode::Normal;
                 }
                 return;
             }
@@ -276,13 +337,13 @@ async fn handle_crossterm_event(
                     if app.input.multi_line {
                         app.input.insert_newline();
                     } else if let Some(text) = app.input.take() {
-                        app.handle_user_input(text, message_tx);
+                        app.handle_user_input(text, message_tx).await;
                     }
                 }
                 (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
                     // Ctrl+J = send in multi-line mode
                     if let Some(text) = app.input.take() {
-                        app.handle_user_input(text, message_tx);
+                        app.handle_user_input(text, message_tx).await;
                     }
                 }
                 (KeyCode::Tab, _) => {
@@ -303,12 +364,10 @@ async fn handle_crossterm_event(
                 }
                 (KeyCode::Down, _) => {
                     if app.scroll_mode || app.input.multi_line {
-                        // Scroll conversation down
-                        if app.scroll_offset > 0 {
-                            app.scroll_offset -= 1;
-                            if app.scroll_offset == 0 {
-                                app.auto_scroll = true;
-                            }
+                        // Move toward the latest content (offset-from-bottom shrinks).
+                        app.scroll_offset = app.scroll_offset.saturating_sub(1);
+                        if app.scroll_offset == 0 {
+                            app.auto_scroll = true;
                         }
                     } else {
                         app.input.history_next();
@@ -324,10 +383,9 @@ async fn handle_crossterm_event(
                     app.scroll_offset = app.scroll_offset.saturating_add(10);
                 }
                 (KeyCode::PageDown, _) => {
-                    if app.scroll_offset > 10 {
-                        app.scroll_offset -= 10;
-                    } else {
-                        app.scroll_offset = 0;
+                    // Move toward the latest content.
+                    app.scroll_offset = app.scroll_offset.saturating_sub(10);
+                    if app.scroll_offset == 0 {
                         app.auto_scroll = true;
                     }
                 }
@@ -340,21 +398,17 @@ async fn handle_crossterm_event(
         }
         Event::Mouse(me) => {
             // Always scroll the conversation pane — independent of scroll_mode.
-            // Direction swapped for Windows: wheel up = show content below (down),
-            // wheel down = show content above (up).
+            // scroll_offset is the distance from the bottom: wheel up moves
+            // away from the latest content (into history), wheel down moves
+            // back toward it.
             match me.kind {
-                MouseEventKind::ScrollDown => {
+                MouseEventKind::ScrollUp => {
                     app.auto_scroll = false;
                     app.scroll_offset = app.scroll_offset.saturating_add(3);
                 }
-                MouseEventKind::ScrollUp => {
-                    if app.scroll_offset >= 3 {
-                        app.scroll_offset -= 3;
-                        if app.scroll_offset == 0 {
-                            app.auto_scroll = true;
-                        }
-                    } else if app.scroll_offset > 0 {
-                        app.scroll_offset = 0;
+                MouseEventKind::ScrollDown => {
+                    app.scroll_offset = app.scroll_offset.saturating_sub(3);
+                    if app.scroll_offset == 0 {
                         app.auto_scroll = true;
                     }
                 }
@@ -364,27 +418,4 @@ async fn handle_crossterm_event(
         _ => {}
     }
 
-}
-
-/// Update the last AwaitingConfirmation tool card based on user response.
-fn update_last_awaiting_tool(_app: &App, _approved: bool) {
-    // The Agent will send ToolCallResult after executing (or being rejected),
-    // which will update the status. We don't need to do anything here.
-}
-
-/// Set a tool card's status to AwaitingConfirmation.
-fn set_tool_awaiting(app: &mut App, tool_call_id: &str) {
-    for entry in app.conversation.iter_mut().rev() {
-        if let crate::app::ConversationEntry::ToolCard {
-            tool_call_id: id,
-            status,
-            ..
-        } = entry
-        {
-            if id == tool_call_id {
-                *status = crate::app::ToolStatus::AwaitingConfirmation;
-                return;
-            }
-        }
-    }
 }

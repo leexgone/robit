@@ -76,35 +76,10 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
                     style_stack.pop();
                 }
                 TagEnd::CodeBlock => {
-                    if !code_lines.is_empty() {
-                        let header = if code_lang.is_empty() {
-                            "┌─ code ──────────────────────────────".to_string()
-                        } else {
-                            format!(
-                                "┌─ {} {}─{}",
-                                code_lang,
-                                "─".repeat(2),
-                                "─".repeat(30_usize.saturating_sub(code_lang.len()))
-                            )
-                        };
-                        lines.push(Line::from(Span::styled(
-                            header,
-                            Style::default().fg(Color::DarkGray),
-                        )));
-                        for cl in &code_lines {
-                            lines.push(Line::from(Span::styled(
-                                format!("│ {}", cl),
-                                Style::default().fg(Color::Gray),
-                            )));
-                        }
-                        lines.push(Line::from(Span::styled(
-                            "└────────────────────────────────────────",
-                            Style::default().fg(Color::DarkGray),
-                        )));
-                        lines.push(Line::from(""));
-                    }
+                    emit_code_block(&mut lines, &code_lang, &code_lines);
                     in_code_block = false;
                     code_lang.clear();
+                    code_lines.clear();
                 }
                 TagEnd::Strong | TagEnd::Emphasis => {
                     style_stack.pop();
@@ -144,6 +119,12 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
         }
     }
 
+    // Flush a code block still open at end of input — happens while the
+    // assistant is streaming a fenced block that has no closing ``` yet.
+    if in_code_block {
+        emit_code_block(&mut lines, &code_lang, &code_lines);
+    }
+
     // Flush remaining content
     if !current_line.is_empty() {
         lines.push(Line::from(current_line));
@@ -159,4 +140,36 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+/// Render accumulated code-block lines into a bordered box.
+fn emit_code_block(lines: &mut Vec<Line<'static>>, lang: &str, code_lines: &[String]) {
+    if code_lines.is_empty() {
+        return;
+    }
+    let header = if lang.is_empty() {
+        "┌─ code ──────────────────────────────".to_string()
+    } else {
+        format!(
+            "┌─ {} {}─{}",
+            lang,
+            "─".repeat(2),
+            "─".repeat(30_usize.saturating_sub(lang.len()))
+        )
+    };
+    lines.push(Line::from(Span::styled(
+        header,
+        Style::default().fg(Color::DarkGray),
+    )));
+    for cl in code_lines {
+        lines.push(Line::from(Span::styled(
+            format!("│ {}", cl),
+            Style::default().fg(Color::Gray),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "└────────────────────────────────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
 }

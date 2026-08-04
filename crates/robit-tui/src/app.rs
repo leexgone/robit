@@ -1,5 +1,6 @@
 //! App state — conversation model and event handling.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -48,7 +49,7 @@ pub enum InputMode {
     Normal,
     /// Waiting for Y/N confirmation.
     Confirmation {
-        _tool_call_id: String,
+        tool_call_id: String,
         responder: Option<tokio::sync::oneshot::Sender<bool>>,
     },
 }
@@ -78,13 +79,22 @@ pub struct App {
     pub current_assistant_text: String,
     pub input: InputEditor,
     pub input_mode: InputMode,
+    /// Distance from the bottom of the conversation, in visual (wrapped)
+    /// lines. `0` means pinned to the latest content.
     pub scroll_offset: usize,
+    /// Whether the view follows the bottom of the conversation. New content
+    /// never forces this on — it is controlled by user actions only.
     pub auto_scroll: bool,
     pub scroll_mode: bool,
     pub status: StatusInfo,
     pub is_agent_busy: bool,
     pub should_quit: bool,
     pub skills: Arc<SkillRegistry>,
+    /// Tool call IDs the user rejected; used to show [`ToolStatus::Rejected`]
+    /// when the agent reports the (error) result back.
+    pub rejected_tool_ids: HashSet<String>,
+    /// Rendered-line cache for committed conversation entries.
+    pub render_cache: crate::ui::RenderCache,
 }
 
 impl App {
@@ -113,6 +123,8 @@ impl App {
             is_agent_busy: false,
             should_quit: false,
             skills,
+            rejected_tool_ids: HashSet::new(),
+            render_cache: crate::ui::RenderCache::default(),
         }
     }
 
@@ -125,12 +137,16 @@ impl App {
     }
 
     /// Handle an incoming agent event, updating the UI state.
+    ///
+    /// Note: events intentionally do **not** touch `auto_scroll` (sticky
+    /// bottom). The view only follows the bottom when the user is already at
+    /// the bottom; scrolling away to read history is never undone by new
+    /// content arriving.
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::TextDelta(text) => {
                 self.is_agent_busy = true;
                 self.current_assistant_text.push_str(&text);
-                self.auto_scroll = true;
             }
             AgentEvent::ToolCallRequested {
                 tool_call_id,
@@ -145,14 +161,12 @@ impl App {
                     arguments,
                     status: ToolStatus::Pending,
                 });
-                self.auto_scroll = true;
             }
             AgentEvent::ToolCallResult {
                 tool_call_id,
                 result,
             } => {
                 self.update_tool_status(&tool_call_id, result);
-                self.auto_scroll = true;
             }
             AgentEvent::TurnComplete => {
                 self.commit_assistant_text();
@@ -163,13 +177,11 @@ impl App {
                 self.conversation
                     .push(ConversationEntry::Error(format!("{}", e)));
                 self.is_agent_busy = false;
-                self.auto_scroll = true;
             }
             AgentEvent::SkillTriggered { name, description } => {
                 self.conversation.push(ConversationEntry::SystemNotice(
                     format!("Skill: {} — {}", name, description),
                 ));
-                self.auto_scroll = true;
             }
             AgentEvent::AsyncToolCompleted {
                 task_id,
@@ -185,55 +197,62 @@ impl App {
     }
 
     fn update_tool_status(&mut self, tool_call_id: &str, result: robit_agent::ToolResult) {
-        for entry in self.conversation.iter_mut().rev() {
-            if let ConversationEntry::ToolCard {
-                tool_call_id: id,
-                status,
-                ..
-            } = entry
-            {
-                if id == tool_call_id {
-                    *status = if result.is_error {
-                        ToolStatus::Failed(result.content)
-                    } else {
-                        ToolStatus::Success(result.content)
-                    };
-                    return;
-                }
+        let rejected = self.rejected_tool_ids.remove(tool_call_id);
+        let idx = self.conversation.iter().position(|entry| match entry {
+            ConversationEntry::ToolCard { tool_call_id: id, .. } => id == tool_call_id,
+            _ => false,
+        });
+        if let Some(idx) = idx {
+            let new_status = if rejected {
+                ToolStatus::Rejected
+            } else if result.is_error {
+                ToolStatus::Failed(result.content)
+            } else {
+                ToolStatus::Success(result.content)
+            };
+            if let ConversationEntry::ToolCard { status, .. } = &mut self.conversation[idx] {
+                *status = new_status;
             }
+            self.render_cache.invalidate(idx);
         }
     }
 
-    /// Toggle scroll mode on/off.
+    /// Toggle scroll mode on/off. Leaving scroll mode returns to the latest
+    /// position.
     pub fn toggle_scroll_mode(&mut self) {
         self.scroll_mode = !self.scroll_mode;
         if self.scroll_mode {
             self.auto_scroll = false;
-        } else if self.scroll_offset == 0 {
+        } else {
+            self.scroll_offset = 0;
             self.auto_scroll = true;
         }
     }
 
     /// Process user input text (slash commands or send to agent).
-    pub fn handle_user_input(
+    pub async fn handle_user_input(
         &mut self,
         text: String,
         message_tx: &mpsc::Sender<FrontendMessage>,
     ) {
         if text.starts_with('/') {
-            self.handle_slash_command(&text, message_tx);
+            self.handle_slash_command(&text, message_tx).await;
         } else {
             self.conversation
                 .push(ConversationEntry::UserMessage(text.clone()));
-            let tx = message_tx.clone();
-            tokio::spawn(async move {
-                let _ = tx.send(FrontendMessage::UserInput { text, attachments: vec![] }).await;
-            });
+            // The user's own message always re-pins the view to the bottom.
+            self.scroll_offset = 0;
             self.auto_scroll = true;
+            let _ = message_tx
+                .send(FrontendMessage::UserInput {
+                    text,
+                    attachments: vec![],
+                })
+                .await;
         }
     }
 
-    fn handle_slash_command(
+    async fn handle_slash_command(
         &mut self,
         cmd: &str,
         message_tx: &mpsc::Sender<FrontendMessage>,
@@ -246,10 +265,15 @@ impl App {
             "/clear" => {
                 self.conversation.clear();
                 self.current_assistant_text.clear();
-                let tx = message_tx.clone();
-                tokio::spawn(async move {
-                    let _ = tx.send(FrontendMessage::UserInput { text: "/clear".to_string(), attachments: vec![] }).await;
-                });
+                self.rejected_tool_ids.clear();
+                self.scroll_offset = 0;
+                self.auto_scroll = true;
+                let _ = message_tx
+                    .send(FrontendMessage::UserInput {
+                        text: "/clear".to_string(),
+                        attachments: vec![],
+                    })
+                    .await;
                 self.conversation
                     .push(ConversationEntry::SystemNotice("Conversation history cleared".to_string()));
             }
@@ -315,11 +339,12 @@ impl App {
                     self.conversation.push(ConversationEntry::SystemNotice(
                         format!("Triggered skill: {} — {}", skill.frontmatter.name, skill.frontmatter.description),
                     ));
-                    let tx = message_tx.clone();
-                    let cmd = cmd.to_string();
-                    tokio::spawn(async move {
-                        let _ = tx.send(FrontendMessage::UserInput { text: cmd, attachments: vec![] }).await;
-                    });
+                    let _ = message_tx
+                        .send(FrontendMessage::UserInput {
+                            text: cmd.to_string(),
+                            attachments: vec![],
+                        })
+                        .await;
                 } else {
                     self.conversation.push(ConversationEntry::Error(format!(
                         "Unknown command: {}",

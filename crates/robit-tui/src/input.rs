@@ -25,7 +25,6 @@ impl InputEditor {
         &self.content
     }
 
-    #[allow(dead_code)]
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -142,30 +141,6 @@ impl InputEditor {
     pub fn clear(&mut self) {
         self.content.clear();
         self.cursor = 0;
-    }
-
-    /// Compute the visual cursor column (offset within the current line).
-    pub fn cursor_col(&self) -> u16 {
-        use unicode_width::UnicodeWidthStr;
-        let line_start = self.content[..self.cursor]
-            .rfind('\n')
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        UnicodeWidthStr::width(&self.content[line_start..self.cursor]) as u16
-    }
-
-    /// Compute the visual cursor row (0-based line number within the input).
-    pub fn cursor_row(&self) -> u16 {
-        self.content[..self.cursor].chars().filter(|&c| c == '\n').count() as u16
-    }
-
-    /// Count total lines in the input.
-    pub fn line_count(&self) -> usize {
-        if self.content.is_empty() {
-            1
-        } else {
-            self.content.chars().filter(|&c| c == '\n').count() + 1
-        }
     }
 }
 
