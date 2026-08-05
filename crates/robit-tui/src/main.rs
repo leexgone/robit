@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use anyhow::Result;
-use crossterm::cursor::EnableBlinking;
+use crossterm::cursor::{EnableBlinking, SetCursorStyle};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -125,9 +125,15 @@ fn main() -> Result<()> {
     stdout.execute(EnterAlternateScreen)?;
     stdout.execute(EnableMouseCapture)?;
     // Raw mode / alternate screen can leave the cursor steady; explicitly
-    // re-enable blinking (DECSET 12, keeps the user's cursor shape).
+    // re-enable blinking. Two sequences for coverage:
+    //   - DECSET 12 keeps the user's cursor shape on terminals that honor it
+    //     (Windows Terminal, xterm, ...);
+    //   - DECSCUSR BlinkingBlock is the widely-honored fallback — notably
+    //     xterm.js (VSCode's integrated terminal) ignores DECSET 12 but
+    //     applies DECSCUSR.
     // Not undone on exit — blinking is the terminal default.
     stdout.execute(EnableBlinking)?;
+    stdout.execute(SetCursorStyle::BlinkingBlock)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -330,13 +336,15 @@ async fn handle_crossterm_event(
 
             // Normal input mode
             match (key.code, key.modifiers) {
-                (KeyCode::Char('c'), KeyModifiers::CONTROL)
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                    // Ctrl+C = quit the application
+                    app.should_quit = true;
+                }
+                (KeyCode::Char('d'), KeyModifiers::CONTROL)
                     if app.is_agent_busy =>
                 {
+                    // Ctrl+D = cancel the in-flight operation
                     let _ = message_tx.send(FrontendMessage::Cancel).await;
-                }
-                (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                    app.should_quit = true;
                 }
                 (KeyCode::Enter, _) => {
                     if app.input.multi_line {

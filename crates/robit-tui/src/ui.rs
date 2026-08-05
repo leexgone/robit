@@ -649,7 +649,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(border_color))
         .title_bottom(Line::from(Span::styled(
             format!(
-                " {}Enter Send | Tab Multi-line | F8 Scroll | Ctrl+C Cancel | Ctrl+D Exit{}",
+                " {}Enter Send | Tab Multi-line | F8 Scroll | Ctrl+D Cancel | Ctrl+C Exit{}",
                 mode_indicator, ""
             ),
             Style::default().fg(Color::DarkGray),
