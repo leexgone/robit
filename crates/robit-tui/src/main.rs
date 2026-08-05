@@ -340,11 +340,13 @@ async fn handle_crossterm_event(
                     // Ctrl+C = quit the application
                     app.should_quit = true;
                 }
-                (KeyCode::Char('d'), KeyModifiers::CONTROL)
-                    if app.is_agent_busy =>
-                {
-                    // Ctrl+D = cancel the in-flight operation
-                    let _ = message_tx.send(FrontendMessage::Cancel).await;
+                (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                    // Ctrl+D = cancel the in-flight operation. The key is
+                    // always consumed (even when idle) so `d` never leaks
+                    // into the input box.
+                    if app.is_agent_busy {
+                        let _ = message_tx.send(FrontendMessage::Cancel).await;
+                    }
                 }
                 (KeyCode::Enter, _) => {
                     if app.input.multi_line {
@@ -402,7 +404,17 @@ async fn handle_crossterm_event(
                         app.auto_scroll = true;
                     }
                 }
-                (KeyCode::Char(c), _) => app.input.insert_char(c),
+                // Plain characters (Shift included, for capitals). Any
+                // Ctrl/Alt combo not explicitly handled above is consumed
+                // without inserting, so shortcuts never leak text into the
+                // input box. AltGr (Ctrl+Alt) still inserts for
+                // international keyboard layouts.
+                (KeyCode::Char(c), m)
+                    if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        || m.contains(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    app.input.insert_char(c)
+                }
                 _ => {}
             }
         }
