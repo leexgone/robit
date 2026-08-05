@@ -343,7 +343,14 @@ fn draw_conversation(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(visible), area);
 
     if total > visible_height {
-        let mut state = ScrollbarState::new(total)
+        // ratatui's Scrollbar treats `position` as a cursor index in
+        // `0..content_length`, with the thumb flush at the end only when
+        // position == content_length - 1. Passing the number of scroll stops
+        // (total - viewport + 1) as content_length makes `scroll` fit exactly
+        // that range, and the math reduces to a proportional mapping:
+        //   thumb_len   = viewport / total * track
+        //   thumb_start = scroll   / total * track
+        let mut state = ScrollbarState::new(total - visible_height + 1)
             .position(scroll)
             .viewport_content_length(visible_height);
         f.render_stateful_widget(

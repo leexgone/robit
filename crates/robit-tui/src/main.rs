@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use anyhow::Result;
+use crossterm::cursor::EnableBlinking;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -123,6 +124,10 @@ fn main() -> Result<()> {
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
     stdout.execute(EnableMouseCapture)?;
+    // Raw mode / alternate screen can leave the cursor steady; explicitly
+    // re-enable blinking (DECSET 12, keeps the user's cursor shape).
+    // Not undone on exit — blinking is the terminal default.
+    stdout.execute(EnableBlinking)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
