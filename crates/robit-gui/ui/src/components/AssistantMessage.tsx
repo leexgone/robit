@@ -1,9 +1,10 @@
-import { Bot, ChevronDown, ChevronRight } from "lucide-react";
+import { Bot, ChevronDown, ChevronRight, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { memo, useState, useMemo } from "react";
+import { memo, useState, useMemo, useRef, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 interface AssistantMessageProps {
   content: string;
@@ -156,9 +157,15 @@ function AssistantMessageComponent({ content, isStreaming }: AssistantMessagePro
                     return <hr className="my-4 border-border" {...props} />;
                   },
 
-                  // 图片
-                  img({ src, alt, ...props }) {
-                    return <img src={src} alt={alt} className="max-w-full rounded-md my-2" loading="lazy" {...props} />;
+                  // 图片 — 解析相对路径并加载本地图片
+                  img({ src, alt }) {
+                    return (
+                      <LocalImage
+                        src={src}
+                        alt={alt}
+                        className="max-w-full rounded-md my-2"
+                      />
+                    );
                   },
 
                   // 加粗
@@ -293,6 +300,285 @@ function truncateContent(content: string): string {
   }
 
   return result + "\n\n[... content truncated - click Expand to see full message ...]";
+}
+
+/**
+ * Resolves relative image paths to displayable URLs.
+ * Uses a Rust command to read the local file and return a base64 data URL,
+ * converted to a blob URL for browser-native caching.
+ * Click to open a full-screen image viewer modal with zoom + pan.
+ */
+interface LocalImageProps {
+  src?: string;
+  alt?: string;
+  className?: string;
+}
+
+function LocalImage({ src, alt, className }: LocalImageProps) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const blobUrlRef = useRef<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const modalBlobRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img || !src) return;
+
+    // If modal is open with the current blob URL, transfer ownership to modal
+    // so the thumbnail can get a fresh blob URL without breaking the modal.
+    const currentBlob = blobUrlRef.current;
+    if (modalOpen && modalBlobRef.current === currentBlob) {
+      blobUrlRef.current = null;
+    } else {
+      blobUrlRef.current = null;
+      if (currentBlob) URL.revokeObjectURL(currentBlob);
+    }
+
+    // Pass through data URLs, http(s), blob URLs as-is
+    if (/^(https?:|data:|blob:)/.test(src)) {
+      img.src = src;
+      return () => {};
+    }
+
+    let cancelled = false;
+
+    invoke<string>("read_image_file", { imagePath: src.replace(/\\/g, "/") })
+      .then((dataUrl) => {
+        if (cancelled) return;
+        const byteString = atob(dataUrl.split(",")[1]);
+        const mimeMatch = dataUrl.match(/data:([^;]+)/);
+        const mime = mimeMatch ? mimeMatch[1] : "image/png";
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) {
+          ia[i] = byteString.charCodeAt(i);
+        }
+        const blob = new Blob([ab], { type: mime });
+        const url = URL.createObjectURL(blob);
+        if (!cancelled) {
+          blobUrlRef.current = url;
+          img.src = url;
+        } else {
+          URL.revokeObjectURL(url);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) img.src = "";
+      });
+
+    return () => { cancelled = true; };
+  }, [src, modalOpen]);
+
+  const handleClick = () => {
+    const blobUrl = blobUrlRef.current;
+    if (blobUrl) {
+      modalBlobRef.current = blobUrl;
+      blobUrlRef.current = null;
+      setModalOpen(true);
+    }
+  };
+
+  const handleCloseModal = () => {
+    setModalOpen(false);
+    if (modalBlobRef.current && modalBlobRef.current !== blobUrlRef.current) {
+      URL.revokeObjectURL(modalBlobRef.current);
+    }
+    modalBlobRef.current = null;
+  };
+
+  return (
+    <>
+      <img
+        ref={imgRef}
+        alt={alt}
+        className={className}
+        loading="lazy"
+        onClick={handleClick}
+        style={{ cursor: "zoom-in" }}
+      />
+      {modalOpen && modalBlobRef.current && (
+        <ImageModal src={modalBlobRef.current} alt={alt} onClose={handleCloseModal} />
+      )}
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  ImageModal — full-screen viewer with wheel-zoom + drag-pan         */
+/* ------------------------------------------------------------------ */
+
+function ImageModal({ src, alt, onClose }: { src: string; alt?: string; onClose: () => void }) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  // Transform state stored in refs to avoid re-rendering on every frame
+  const transformRef = useRef({ x: 0, y: 0, scale: 1 });
+
+  // Drag tracking
+  const dragRef = useRef({ isDragging: false, startX: 0, startY: 0, moved: false });
+
+  // Pinch tracking (touch)
+  const pinchRef = useRef({ isPinching: false, startDist: 0, startScale: 1 });
+
+  // Apply CSS transform to the <img> directly (no re-render)
+  const applyTransform = () => {
+    const el = imgRef.current;
+    if (!el) return;
+    const { x, y, scale } = transformRef.current;
+    el.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+  };
+
+  // Clamp scale to [MIN, MAX]
+  const MIN_SCALE = 0.1;
+  const MAX_SCALE = 10;
+  const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+
+  /* ---- Wheel zoom ---- */
+  const handleWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const t = transformRef.current;
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    t.scale = clampScale(t.scale * delta);
+    applyTransform();
+  };
+
+  /* ---- Mouse drag ---- */
+  const onMouseDown = (e: React.MouseEvent) => {
+    // Left button only
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const t = transformRef.current;
+    dragRef.current = { isDragging: true, startX: e.clientX - t.x, startY: e.clientY - t.y, moved: false };
+  };
+
+  const onMouseMove = (e: React.MouseEvent) => {
+    const d = dragRef.current;
+    if (!d.isDragging) return;
+    d.moved = true;
+    const t = transformRef.current;
+    t.x = e.clientX - d.startX;
+    t.y = e.clientY - d.startY;
+    applyTransform();
+  };
+
+  const onMouseUp = () => {
+    dragRef.current.isDragging = false;
+  };
+
+  /* ---- Touch: single-finger pan, two-finger pinch ---- */
+  const getTouchDist = (touches: React.TouchList) => {
+    if (touches.length < 2) return 0;
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  };
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const d = getTouchDist(e.touches);
+      pinchRef.current = { isPinching: true, startDist: d, startScale: transformRef.current.scale };
+    } else if (e.touches.length === 1) {
+      const t = transformRef.current;
+      dragRef.current = { isDragging: true, startX: e.touches[0].clientX - t.x, startY: e.touches[0].clientY - t.y, moved: false };
+    }
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchRef.current.isPinching) {
+      e.preventDefault();
+      const d = getTouchDist(e.touches);
+      const ratio = d / pinchRef.current.startDist;
+      transformRef.current.scale = clampScale(pinchRef.current.startScale * ratio);
+      applyTransform();
+    } else if (e.touches.length === 1) {
+      const d = dragRef.current;
+      if (!d.isDragging) return;
+      d.moved = true;
+      const t = transformRef.current;
+      t.x = e.touches[0].clientX - d.startX;
+      t.y = e.touches[0].clientY - d.startY;
+      applyTransform();
+    }
+  };
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) pinchRef.current.isPinching = false;
+    if (e.touches.length === 0) dragRef.current.isDragging = false;
+  };
+
+  /* ---- Keyboard ---- */
+  useEffect(() => {
+    const el = overlayRef.current;
+    if (!el) return;
+
+    // Wheel listener (must be non-passive to call preventDefault)
+    el.addEventListener("wheel", handleWheel, { passive: false });
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      el.removeEventListener("wheel", handleWheel);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onClose]);
+
+  // Click on overlay background → close (but not on image itself or close button)
+  const handleOverlayClick = (e: React.MouseEvent) => {
+    // If user was dragging the image, don't close
+    if (dragRef.current.moved) {
+      dragRef.current.moved = false;
+      return;
+    }
+    if (e.target === overlayRef.current) onClose();
+  };
+
+  return (
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 overflow-hidden"
+      onMouseDown={handleOverlayClick}
+    >
+      {/* Close button */}
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 z-10 rounded-full bg-black/60 p-2 text-white/80 hover:bg-black/80 hover:text-white transition-colors"
+        aria-label="Close"
+      >
+        <X className="h-5 w-5" />
+      </button>
+
+      {/* Zoom hint */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 text-xs text-white/50 pointer-events-none select-none">
+        Scroll to zoom · Drag to pan · Esc to close
+      </div>
+
+      {/* Image — handles drag + pinch */}
+      <img
+        ref={imgRef}
+        src={src}
+        alt={alt}
+        className="object-contain select-none"
+        style={{
+          transform: "translate(0px, 0px) scale(1)",
+          willChange: "transform",
+          maxWidth: "92vw",
+          maxHeight: "92vh",
+        }}
+        draggable={false}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseUp}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+      />
+    </div>
+  );
 }
 
 // Export memoized component

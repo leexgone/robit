@@ -75,6 +75,7 @@ fn main() {
             commands::get_messages,
             commands::confirm_tool,
             commands::get_config,
+            commands::read_image_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

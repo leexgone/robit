@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+
+use base64::Engine;
 use robit_agent::event::{FrontendMessage, new_session_id};
 use tauri::{AppHandle, Emitter, State};
 
@@ -264,4 +267,40 @@ pub async fn get_config(
     state: State<'_, AppState>,
 ) -> Result<ConfigInfo, String> {
     Ok(state.config_info())
+}
+
+/// Read a local image file and return it as a base64 data URL.
+/// `image_path` is the relative path from the working directory (e.g. "images/foo.png").
+#[tauri::command]
+pub async fn read_image_file(
+    state: State<'_, AppState>,
+    image_path: String,
+) -> Result<String, String> {
+    // Reject path traversal attempts
+    if image_path.contains("..") {
+        return Err("Invalid image path".to_string());
+    }
+
+    let abs_path: PathBuf = state.working_dir.join(&image_path);
+    let bytes =
+        tokio::fs::read(&abs_path)
+            .await
+            .map_err(|e| format!("Failed to read image: {}", e))?;
+
+    let mime = match abs_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        _ => "image/png",
+    };
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime, encoded))
 }
