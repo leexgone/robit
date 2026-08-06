@@ -50,6 +50,8 @@ pub enum UiEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct ConfigInfo {
     pub model: String,
+    /// Image generation model ID (e.g. "wan2.7-image-pro"), if configured.
+    pub image_model: Option<String>,
     pub version: String,
     pub tools_enabled: usize,
     pub tools_total: usize,

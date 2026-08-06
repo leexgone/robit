@@ -1,10 +1,23 @@
 import { Bot, Folder } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { ThemeToggle } from "./ThemeToggle";
+import type { ConfigInfo } from "@/lib/types";
 
 function formatDisplayPath(path?: string): string {
   if (!path) return "";
   return path.replace(/^\\\\\?\\/, "");
+}
+
+function formatModelDisplay(config: ConfigInfo | null | undefined): string {
+  if (!config?.model) return "Loading...";
+  if (config.image_model) return `${config.model} / ${config.image_model}`;
+  return config.model;
+}
+
+function formatModelTooltip(config: ConfigInfo | null | undefined): string {
+  if (!config?.model) return "";
+  if (config.image_model) return `Chat: ${config.model}\nImage: ${config.image_model}`;
+  return config.model;
 }
 
 function formatListTooltip(label: string, items?: string[]): string {
@@ -37,7 +50,9 @@ export function StatusBar() {
           </span>
         </div>
         <span className="text-border shrink-0">│</span>
-        <span className="truncate max-w-[18vw]" title={config?.model || ""}>{config?.model || "Loading..."}</span>
+        <span className="truncate max-w-[22vw]" title={formatModelTooltip(config)}>
+          {formatModelDisplay(config)}
+        </span>
         <span className="text-border shrink-0">│</span>
         <span
           className="shrink-0"

@@ -19,6 +19,7 @@ export interface MessageData {
 
 export interface ConfigInfo {
   model: string;
+  image_model?: string;
   version: string;
   tools_enabled: number;
   tools_total: number;
