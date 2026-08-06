@@ -8,10 +8,14 @@ function formatDisplayPath(path?: string): string {
   return path.replace(/^\\\\\?\\/, "");
 }
 
+function modelName(full: string): string {
+  return full.includes("/") ? full.split("/").pop()! : full;
+}
+
 function formatModelDisplay(config: ConfigInfo | null | undefined): string {
   if (!config?.model) return "Loading...";
-  if (config.image_model) return `${config.model} / ${config.image_model}`;
-  return config.model;
+  if (config.image_model) return `${modelName(config.model)} / ${config.image_model}`;
+  return modelName(config.model);
 }
 
 function formatModelTooltip(config: ConfigInfo | null | undefined): string {
