@@ -100,7 +100,18 @@ impl AsyncTaskRunner {
             };
             // Agent gone -> drop result. `send` is async but the channel is
             // bounded; use a blocking-style await (spawned task can wait).
-            let _ = done_tx.send(done).await;
+            if let Err(send_err) = done_tx.send(done).await {
+                // Extract fields from the returned value for logging.
+                // Must convert error to string before destructuring (partial move).
+                let err_msg = send_err.to_string();
+                let lost = send_err.0;
+                tracing::error!(
+                    "[async] FAILED to deliver task result to Agent (Agent likely exited): \
+                     task_id={}, tool={}, session={}, cancelled={}, error={}. \
+                     The task result is permanently lost.",
+                    lost.task_id, lost.tool_name, lost.session_id, lost.cancelled, err_msg
+                );
+            }
         });
 
         task_id

@@ -216,6 +216,10 @@ impl Agent {
             "Agent::with_history: after adding system prompt, session history length = {}",
             session.history.len()
         );
+        // Sanitize history: remove image_url parts if the model doesn't support images.
+        // This prevents 400 errors from APIs that only accept text content.
+        let supports_images = llm_client.supports_images();
+        sanitize_history_for_model(&mut session.history, supports_images);
         // Apply context truncation before starting
         let truncation_result = context_manager.maybe_truncate(&mut session.history);
         if truncation_result.rounds_removed > 0 {
@@ -391,6 +395,52 @@ impl Agent {
                     self.handle_async_done(done).await;
                 }
             }
+        }
+
+        // ── Drain phase: cancel pending async tasks and collect their results ──
+        // Without this, `done_rx` is dropped when `self` goes out of scope,
+        // causing any in-flight async tasks (e.g. image generation) to have
+        // their results silently lost. We cancel first (fast), then give
+        // tasks a brief window to deliver their final status through done_rx.
+        if !self.pending_tasks.is_empty() {
+            let remaining = self.pending_tasks.len();
+            tracing::warn!(
+                "[async] Agent exiting with {} pending task(s), cancelling and draining...",
+                remaining
+            );
+            // Cancel all pending tasks so they finish quickly.
+            for (_, pending) in self.pending_tasks.drain() {
+                pending.cancel.cancel();
+            }
+            // Collect results from the done channel. Each task should respond
+            // to cancellation within seconds; use a bounded window per task.
+            let drain_deadline = tokio::time::Instant::now()
+                + tokio::time::Duration::from_secs(5);
+            while tokio::time::Instant::now() < drain_deadline {
+                match tokio::time::timeout(
+                    tokio::time::Duration::from_millis(500),
+                    done_rx.recv(),
+                )
+                .await
+                {
+                    Ok(Some(done)) => {
+                        tracing::info!(
+                            "[async] drained result after shutdown: task_id={}, tool={}, cancelled={}",
+                            done.task_id, done.tool_name, done.cancelled
+                        );
+                        self.handle_async_done(done).await;
+                    }
+                    Ok(None) => {
+                        // All senders dropped — no more results coming.
+                        tracing::debug!("[async] done_tx closed during drain");
+                        break;
+                    }
+                    Err(_) => {
+                        // Per-iteration timeout — loop back to check deadline.
+                    }
+                }
+            }
+            tracing::info!("[async] drain phase complete");
         }
 
         tracing::info!("Agent stopped");
@@ -1162,10 +1212,12 @@ impl Agent {
         // saved files already happened.
         let session_id = done.session_id.clone();
         if !self.sessions.contains_key(&session_id) {
-            tracing::warn!(
-                "[async] task {} finished but session {} not found; dropping result",
-                done.task_id,
-                session_id
+            tracing::error!(
+                "[async] task {} (tool={}) finished but session {} not found; dropping result. \
+                 This means the Agent exited or the session was cleaned up before the task completed. \
+                 Result: {} chars, is_error={}, cancelled={}",
+                done.task_id, done.tool_name, session_id,
+                done.result.content.len(), done.result.is_error, done.cancelled
             );
             return;
         }
@@ -1505,6 +1557,59 @@ fn build_image_user_message(images: &[ToolImage]) -> Option<ChatCompletionReques
         content: ChatCompletionRequestUserMessageContent::Array(parts),
         name: None,
     }))
+}
+
+/// Sanitize session history for models that don't support image inputs.
+///
+/// When the current model has `supports_images = false`, any `image_url`
+/// content parts in user messages are incompatible with the API and will
+/// cause a 400 error. This function downgrades multimodal `Array` content
+/// to plain `Text` by concatenating the text parts and discarding image
+/// parts. Non-array (plain text) messages are left unchanged.
+fn sanitize_history_for_model(
+    history: &mut Vec<ChatCompletionRequestMessage>,
+    supports_images: bool,
+) {
+    if supports_images {
+        return;
+    }
+
+    let mut sanitized_count = 0usize;
+    for msg in history.iter_mut() {
+        if let ChatCompletionRequestMessage::User(user_msg) = msg {
+            if let ChatCompletionRequestUserMessageContent::Array(parts) = &user_msg.content {
+                // Check if this message actually contains image parts
+                let has_image = parts
+                    .iter()
+                    .any(|p| matches!(p, ChatCompletionRequestUserMessageContentPart::ImageUrl(_)));
+                if has_image {
+                    // Concatenate all text parts, skip image parts
+                    let text: String = parts
+                        .iter()
+                        .filter_map(|p| {
+                            if let ChatCompletionRequestUserMessageContentPart::Text(t) = p {
+                                Some(t.text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+
+                    user_msg.content = ChatCompletionRequestUserMessageContent::Text(text);
+                    sanitized_count += 1;
+                }
+            }
+        }
+    }
+
+    if sanitized_count > 0 {
+        tracing::info!(
+            "sanitize_history_for_model: downgraded {} message(s) with image_url to text \
+             (model does not support images)",
+            sanitized_count
+        );
+    }
 }
 
 /// Truncate a task result to a bounded summary for the task registry.

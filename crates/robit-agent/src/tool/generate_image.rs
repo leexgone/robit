@@ -139,7 +139,11 @@ impl Tool for GenerateImageTool {
             let images = match client.generate(&req).await {
                 Ok(imgs) => imgs,
                 Err(e) => {
-                    tracing::warn!("[generate_image] image generation failed: {}", e);
+                    tracing::error!(
+                        "[generate_image] image generation failed: {}. \
+                         The error will be reported to the Agent as a task result.",
+                        e
+                    );
                     let info = e.to_error_info();
                     let err_json = json!({
                         "status": "failed",

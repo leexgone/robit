@@ -20,5 +20,14 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    chunkSizeWarningLimit: 600, // Tauri app loads locally; 525KB is fine (161KB gzipped)
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Split syntax highlighter into its own chunk
+          "syntax-highlighter": ["react-syntax-highlighter"],
+        },
+      },
+    },
   },
 });

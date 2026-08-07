@@ -207,11 +207,14 @@ impl ImageGenClient {
         {
             Ok(inner) => inner,
             Err(_) => {
-                tracing::warn!(
-                    "[image_gen] generate timed out after {}s (protocol={:?}, mode={:?})",
+                tracing::error!(
+                    "[image_gen] generate timed out after {}s (protocol={:?}, mode={:?}, provider={}, model={}). \
+                     The background task result will be delivered to the Agent as an error.",
                     timeout_secs,
                     self.provider.protocol,
-                    self.provider.mode
+                    self.provider.mode,
+                    self.provider.provider_name,
+                    self.provider.model_id
                 );
                 Err(ImageGenError::Timeout(timeout_secs))
             }
@@ -407,8 +410,14 @@ impl ImageGenClient {
                     ));
                 }
                 // PENDING / RUNNING -> keep polling
-                _ => {
-                    tracing::debug!("[image_gen] task status: {:?}", task_status);
+                Some(status) => {
+                    tracing::info!("[image_gen] task {} still running (status={})", poll_url, status);
+                }
+                None => {
+                    tracing::warn!(
+                        "[image_gen] poll response missing output.task_status (body: {})",
+                        truncate_str(&text, 500)
+                    );
                 }
             }
         }
