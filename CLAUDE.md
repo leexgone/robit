@@ -224,6 +224,35 @@ approve = ["确认", "同意", "yes", "y", "approve", "ok", "允许"]
 reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
 ```
 
+## 发版流程
+
+发布通过推送 `v*` 标签触发 `.github/workflows/release.yml`，自动构建 `robit`（TUI）、`robit-qq`、`robit-gui`（Tauri）三平台产物并挂到 GitHub Release。
+
+### 版本号
+
+- 全仓库统一版本，所有 crate 用 `version.workspace = true`，遵循[语义化版本](https://semver.org/lang/zh-CN/)（bug 修复 patch、新功能 minor、不兼容 major）。
+- bump 版本时**三处都要改**（第 2 处最易漏）：
+  1. 根 `Cargo.toml` 中 `[workspace.package]` 的 `version`
+  2. 根 `Cargo.toml` 中 `[workspace.dependencies]` 里 3 个内部 crate 的 `version`（`robit-ai` / `robit-agent` / `robit-chatbot`）
+  3. 运行 `cargo check` 让 `Cargo.lock` 同步更新（各 workspace 成员的版本号）
+- 各 crate 的 `Cargo.toml` 用 `robit-xxx.workspace = true` 引用内部依赖，不要硬编码版本。
+
+### 步骤
+
+1. 改版本号（上述三处）+ `cargo check` 更新 `Cargo.lock`。
+2. 更新 `CHANGELOG.md`：把 `[Unreleased]` 下积累的变更归入新版本条目。
+3. 提交：`chore(release): bump version to X.Y.Z`（版本号 + `Cargo.lock` + `CHANGELOG.md` 一起）。
+4. `git push origin main`。
+5. 打 annotated tag 并推送（触发 CI）：`git tag -a vX.Y.Z -m "Release vX.Y.Z"`，再 `git push origin vX.Y.Z`。
+6. CI（`release.yml`）构建产物并创建 GitHub Release。用 `gh release create/edit vX.Y.Z --notes-file <file>` 补充 release notes（内容取自 `CHANGELOG.md` 对应条目）。
+7. 确认 CI 通过、产物齐全后再通知部署。
+
+### 产物命名
+
+- `robit-{linux,windows,macos}-x86_64.{tar.gz,zip}` — TUI CLI
+- `robit-qq-{linux,windows,macos}-x86_64.{tar.gz,zip}` — QQ Bot（Ubuntu 部署用 `robit-qq-linux-x86_64.tar.gz`）
+- GUI 安装包：`.AppImage` / `.deb` / `.rpm` / `.dmg` / `.msi` / `.exe`
+
 ## 文档存储
 
 开发相关文档存储在`docs/`目录下
