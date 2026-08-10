@@ -19,6 +19,7 @@ robit-chatbot = { workspace = true }
 robit-agent = { workspace = true }
 robit-ai = { workspace = true }
 tokio = { workspace = true, features = ["net", "signal"] }
+tokio-util.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true

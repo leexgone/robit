@@ -26,6 +26,7 @@ use robit_chatbot::adapter::{
     SendResult, SenderInfo, UploadResult,
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
@@ -129,6 +130,12 @@ impl QqPlatformAdapter {
     /// This is the constructor used in place of `PlatformAdapter::connect` when
     /// we already own the config (avoids the `Self::Config` indirection).
     /// `shutdown` is notified on Ctrl+C to let background tasks exit gracefully.
+    ///
+    /// The first connection is established synchronously so bad config (wrong
+    /// app_id/secret, unreachable gateway) surfaces immediately. A background
+    /// supervisor then owns the connection lifecycle and transparently
+    /// reconnects on gateway rotations (roughly every ~30 min) without
+    /// dropping the adapter or the agents held by the `ChatbotManager`.
     pub async fn connect(config: QqConfig, shutdown: Arc<tokio::sync::Notify>) -> Result<Arc<Self>> {
         let http = reqwest::Client::new();
         let caps = PlatformCaps::qq();
@@ -149,17 +156,35 @@ impl QqPlatformAdapter {
             msg_seq: Mutex::new(0),
         });
 
-        adapter.establish_connection(shutdown).await?;
+        let conn_cancel = CancellationToken::new();
+        let tasks = adapter
+            .establish_connection(shutdown.clone(), conn_cancel.clone())
+            .await?;
+
+        // Supervisor owns all subsequent reconnects. As long as it can
+        // re-establish the WebSocket, the adapter - and the agents held by the
+        // ChatbotManager - survive across QQ gateway rotations, which
+        // previously killed the whole process along with every in-flight async
+        // task (e.g. image generation).
+        let supervisor = Arc::clone(&adapter);
+        tokio::spawn(async move {
+            supervisor_loop(supervisor, tasks, conn_cancel, shutdown).await;
+        });
+
         Ok(adapter)
     }
 
     /// Open the WebSocket, complete the Hello → Identify handshake, and spawn
-    /// the heartbeat + dispatch background tasks. The `shutdown` notify is
-    /// checked by both tasks so they exit gracefully on Ctrl+C.
+    /// the heartbeat + dispatch background tasks. `conn_cancel` lets the
+    /// supervisor stop both tasks when it tears the connection down for a
+    /// reconnect; `shutdown` lets them exit on Ctrl+C. Neither task emits
+    /// `Disconnected` - the supervisor owns reconnect, so the manager/agents
+    /// stay alive across gateway rotations.
     async fn establish_connection(
         self: &Arc<Self>,
         shutdown: Arc<tokio::sync::Notify>,
-    ) -> Result<()> {
+        conn_cancel: CancellationToken,
+    ) -> Result<ConnectionTasks> {
         info!("Connecting to QQ gateway: {}", self.config.gateway_url());
         let (ws_stream, _response) = tokio_tungstenite::connect_async(self.config.gateway_url())
             .await
@@ -207,10 +232,10 @@ impl QqPlatformAdapter {
         // 3. Store the write half and spawn the heartbeat + dispatch tasks.
         *self.ws_tx.lock().await = Some(write);
 
-        spawn_heartbeat(Arc::clone(self), shutdown.clone());
-        spawn_dispatch(Arc::clone(self), read, shutdown);
+        let heartbeat = spawn_heartbeat(Arc::clone(self), conn_cancel.clone(), shutdown.clone());
+        let dispatch = spawn_dispatch(Arc::clone(self), read, conn_cancel, shutdown);
 
-        Ok(())
+        Ok(ConnectionTasks { dispatch, heartbeat })
     }
 
     /// Fetch (and cache) an app access token, returning a fresh one.
@@ -552,146 +577,285 @@ fn resolve_upload_endpoint(base: &str, chat_id: &str) -> Result<(String, bool)> 
     )))
 }
 
-/// Spawn the periodic heartbeat task. Checks `shutdown` so it exits
-/// gracefully on Ctrl+C.
-fn spawn_heartbeat(adapter: Arc<QqPlatformAdapter>, shutdown: Arc<tokio::sync::Notify>) {
+/// Bookkeeping for the two background tasks of one WebSocket connection.
+struct ConnectionTasks {
+    dispatch: tokio::task::JoinHandle<()>,
+    heartbeat: tokio::task::JoinHandle<()>,
+}
+
+/// Action returned by frame processing: keep going, or drop the connection
+/// (the supervisor will reconnect).
+#[derive(Clone, Copy)]
+enum FrameAction {
+    Continue,
+    Reconnect,
+}
+
+/// Background reconnect supervisor: owns the connection lifecycle after the
+/// initial [`QqPlatformAdapter::connect`]. When either the dispatch or
+/// heartbeat task of the current connection ends (routine QQ gateway rotation
+/// every ~30 min, network blip, send/read failure, server-requested
+/// reconnect), it cancels the other task and re-establishes the WebSocket
+/// with bounded backoff. The adapter - and the agents held by the
+/// `ChatbotManager` - stay alive across reconnects; only `shutdown` (Ctrl+C)
+/// stops the supervisor.
+async fn supervisor_loop(
+    adapter: Arc<QqPlatformAdapter>,
+    mut tasks: ConnectionTasks,
+    mut conn_cancel: CancellationToken,
+    shutdown: Arc<tokio::sync::Notify>,
+) {
+    let mut establish_failures: u32 = 0;
+    loop {
+        // Wait for either connection task to end, or for shutdown. When one
+        // task ends the connection is considered lost (the other is likely
+        // already failing or about to).
+        tokio::select! {
+            res = &mut tasks.dispatch => match res {
+                Ok(()) => debug!("Dispatch task ended"),
+                Err(e) => warn!("Dispatch task panicked: {}", e),
+            },
+            res = &mut tasks.heartbeat => match res {
+                Ok(()) => debug!("Heartbeat task ended"),
+                Err(e) => warn!("Heartbeat task panicked: {}", e),
+            },
+            _ = shutdown.notified() => {
+                debug!("Supervisor received shutdown signal");
+                conn_cancel.cancel();
+                let _ = tasks.dispatch.await;
+                let _ = tasks.heartbeat.await;
+                return;
+            }
+        }
+
+        // A task ended: stop the other, release the stale writer so no
+        // heartbeats are sent on the dead socket while we reconnect.
+        conn_cancel.cancel();
+        let _ = tasks.dispatch.await;
+        let _ = tasks.heartbeat.await;
+        *adapter.ws_tx.lock().await = None;
+
+        // Brief pause before reconnecting (avoids a hot loop if the gateway
+        // drops us the instant we connect).
+        if sleep_or_shutdown(Duration::from_secs(1), &shutdown).await {
+            return;
+        }
+
+        // Re-establish, retrying with backoff until success or shutdown.
+        loop {
+            conn_cancel = CancellationToken::new();
+            match adapter
+                .establish_connection(shutdown.clone(), conn_cancel.clone())
+                .await
+            {
+                Ok(new_tasks) => {
+                    establish_failures = 0;
+                    info!("Reconnected to QQ gateway");
+                    tasks = new_tasks;
+                    break; // back to outer loop: wait for this connection
+                }
+                Err(e) => {
+                    establish_failures = establish_failures.saturating_add(1);
+                    let backoff = reconnect_backoff(establish_failures);
+                    warn!(
+                        "Reconnect attempt #{} failed: {}, retrying in {:?}",
+                        establish_failures, e, backoff
+                    );
+                    if sleep_or_shutdown(backoff, &shutdown).await {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Sleep for `dur`, returning early (`true`) if `shutdown` is notified.
+async fn sleep_or_shutdown(dur: Duration, shutdown: &Arc<tokio::sync::Notify>) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(dur) => false,
+        _ = shutdown.notified() => true,
+    }
+}
+
+/// Exponential backoff after `failures` consecutive establish failures:
+/// 1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
+fn reconnect_backoff(failures: u32) -> Duration {
+    let secs = 1u64 << failures.saturating_sub(1).min(5);
+    Duration::from_secs(secs.min(30))
+}
+
+/// Spawn the periodic heartbeat task. Exits (handing control back to the
+/// supervisor) on `conn_cancel`, `shutdown`, or a heartbeat send failure
+/// (which means the connection is dead). Unlike the old version it does NOT
+/// emit `Disconnected` - the supervisor detects the task ending and
+/// reconnects, so the manager/agents are never torn down.
+fn spawn_heartbeat(
+    adapter: Arc<QqPlatformAdapter>,
+    conn_cancel: CancellationToken,
+    shutdown: Arc<tokio::sync::Notify>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let interval = *adapter.heartbeat_interval.read().await;
             tokio::select! {
-                _ = tokio::time::sleep(interval) => {}
+                _ = conn_cancel.cancelled() => {
+                    debug!("Heartbeat task cancelled");
+                    return;
+                }
                 _ = shutdown.notified() => {
                     debug!("Heartbeat task received shutdown signal");
                     return;
                 }
+                _ = tokio::time::sleep(interval) => {}
             }
-
-            let last_seq = *adapter.last_seq.lock().await;
-            let heartbeat = GatewayPayload::heartbeat(last_seq);
-            let payload = match serde_json::to_string(&heartbeat) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!("Failed to serialize heartbeat: {}", e);
-                    continue;
-                }
-            };
-            let mut ws_tx = adapter.ws_tx.lock().await;
-            if let Some(write) = ws_tx.as_mut() {
-                if let Err(e) = write.send(Message::Text(payload.into())).await {
-                    warn!("Heartbeat send failed: {}", e);
-                    let _ = adapter
-                        .event_tx
-                        .send(PlatformEvent::Disconnected)
-                        .await;
-                    return;
-                }
-            } else {
-                warn!("Heartbeat: no WS writer (disconnected)");
+            if let Err(e) = send_heartbeat(&adapter).await {
+                warn!("Heartbeat send failed, dropping connection: {}", e);
                 return;
             }
         }
-    });
+    })
+}
+
+/// Send a heartbeat (op=1) carrying the last sequence number. Returns `Err`
+/// if the send fails or there is no writer (connection is dead).
+async fn send_heartbeat(adapter: &QqPlatformAdapter) -> std::result::Result<(), String> {
+    let last_seq = *adapter.last_seq.lock().await;
+    let heartbeat = GatewayPayload::heartbeat(last_seq);
+    let payload = serde_json::to_string(&heartbeat).map_err(|e| e.to_string())?;
+    let mut ws_tx = adapter.ws_tx.lock().await;
+    match ws_tx.as_mut() {
+        Some(write) => write
+            .send(Message::Text(payload.into()))
+            .await
+            .map_err(|e| e.to_string()),
+        None => Err("no WS writer (disconnected)".to_string()),
+    }
 }
 
 /// Spawn the dispatch task: reads WS frames, converts dispatch events to
-/// [`PlatformEvent`], and forwards them to the event channel. Checks
-/// `shutdown` so it exits gracefully on Ctrl+C.
+/// [`PlatformEvent`], and forwards them to the event channel. Exits (handing
+/// control back to the supervisor) on `conn_cancel`, `shutdown`, a WS read
+/// error/close, or a server-requested reconnect. Does NOT emit `Disconnected`.
 fn spawn_dispatch(
     adapter: Arc<QqPlatformAdapter>,
-    mut read: impl futures_util::Stream<Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin + Send + 'static,
+    mut read: impl futures_util::Stream<
+        Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>,
+    > + Unpin
+    + Send
+    + 'static,
+    conn_cancel: CancellationToken,
     shutdown: Arc<tokio::sync::Notify>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                frame = read.next() => {
-                    let msg = match frame {
-                        Some(Ok(m)) => m,
-                        Some(Err(e)) => {
-                            warn!("WS read error: {}", e);
-                            let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
-                            return;
-                        }
-                        None => {
-                            info!("QQ dispatch stream ended");
-                            let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
-                            return;
-                        }
-                    };
-                    let text = match msg {
-                        Message::Text(t) => t.to_string(),
-                        Message::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
-                        Message::Close(_) => {
-                            info!("QQ WebSocket closed by server");
-                            let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
-                            return;
-                        }
-                        _ => continue,
-                    };
-
-                    let payload: GatewayPayload = match serde_json::from_str(&text) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            debug!("Skipping non-JSON WS frame: {}", e);
-                            continue;
-                        }
-                    };
-
-                    match payload.op {
-                        op::HEARTBEAT_ACK => {}
-                        op::RECONNECT => {
-                            warn!("Server requested reconnect");
-                            let _ = adapter.event_tx.send(PlatformEvent::Disconnected).await;
-                            return;
-                        }
-                        op::DISPATCH => {
-                            if let Some(seq) = payload.s {
-                                *adapter.last_seq.lock().await = Some(seq);
-                            }
-                            let event_name = payload.t.as_deref().unwrap_or("");
-                            match event_name {
-                                event_type::READY => {
-                                    info!("QQ bot is ready");
-                                    if let Some(d) = payload.d {
-                                        if let Some(sid) = d.get("session_id").and_then(|v| v.as_str()) {
-                                            *adapter.session_id.lock().await = Some(sid.to_string());
-                                        }
-                                    }
-                                }
-                                event_type::C2C_MESSAGE_CREATE
-                                | event_type::GROUP_AT_MESSAGE_CREATE => {
-                                    if let Some(d) = payload.d {
-                                        if let Ok(ev) = serde_json::from_value::<MessageEvent>(d) {
-                                            // Record the inbound msg_id for replies, then forward.
-                                            if let Some(chat_id) = chat_id_for_event(event_name, &ev) {
-                                                adapter.record_inbound(&chat_id, &ev.id);
-                                            }
-                                            if let Some(platform_ev) =
-                                                build_platform_event(event_name, &ev)
-                                            {
-                                                let _ = adapter.event_tx.send(platform_ev).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    debug!("Ignoring dispatch event: {}", event_name);
-                                }
-                            }
-                        }
-                        _ => {
-                            debug!("Unhandled op {}: {:?}", payload.op, payload.t);
-                        }
-                    }
-                } // end of frame match
+                _ = conn_cancel.cancelled() => {
+                    debug!("Dispatch task cancelled");
+                    return;
+                }
                 _ = shutdown.notified() => {
                     debug!("Dispatch task received shutdown signal");
                     return;
                 }
-            } // end of tokio::select!
-        } // end of loop
-        // Unreachable: loop exits via return in all branches above.
-    });
+                frame = read.next() => {
+                    let msg = match frame {
+                        Some(Ok(m)) => m,
+                        Some(Err(e)) => {
+                            warn!("WS read error, dropping connection: {}", e);
+                            return;
+                        }
+                        None => {
+                            info!("QQ dispatch stream ended");
+                            return;
+                        }
+                    };
+                    match process_frame(&adapter, msg).await {
+                        FrameAction::Continue => {}
+                        FrameAction::Reconnect => return,
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Process a single WebSocket frame. Returns whether the connection should be
+/// dropped so the supervisor can reconnect.
+async fn process_frame(adapter: &QqPlatformAdapter, msg: Message) -> FrameAction {
+    let text = match msg {
+        Message::Text(t) => t.to_string(),
+        Message::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
+        Message::Close(_) => {
+            info!("QQ WebSocket closed by server");
+            return FrameAction::Reconnect;
+        }
+        _ => return FrameAction::Continue,
+    };
+
+    let payload: GatewayPayload = match serde_json::from_str(&text) {
+        Ok(p) => p,
+        Err(e) => {
+            debug!("Skipping non-JSON WS frame: {}", e);
+            return FrameAction::Continue;
+        }
+    };
+
+    match payload.op {
+        op::HEARTBEAT_ACK => FrameAction::Continue,
+        op::RECONNECT => {
+            warn!("Server requested reconnect");
+            FrameAction::Reconnect
+        }
+        op::INVALID_SESSION => {
+            // Session no longer valid: clear it so the next establish does a
+            // fresh Identify. (We always Identify today; this keeps session_id
+            // honest for a future Resume path.)
+            warn!("Invalid session, will re-identify");
+            *adapter.session_id.lock().await = None;
+            FrameAction::Reconnect
+        }
+        op::DISPATCH => {
+            if let Some(seq) = payload.s {
+                *adapter.last_seq.lock().await = Some(seq);
+            }
+            let event_name = payload.t.as_deref().unwrap_or("");
+            match event_name {
+                event_type::READY => {
+                    info!("QQ bot is ready");
+                    if let Some(d) = payload.d {
+                        if let Some(sid) = d.get("session_id").and_then(|v| v.as_str()) {
+                            *adapter.session_id.lock().await = Some(sid.to_string());
+                        }
+                    }
+                }
+                event_type::RESUMED => {
+                    debug!("Session resumed event");
+                }
+                event_type::C2C_MESSAGE_CREATE | event_type::GROUP_AT_MESSAGE_CREATE => {
+                    if let Some(d) = payload.d {
+                        if let Ok(ev) = serde_json::from_value::<MessageEvent>(d) {
+                            // Record the inbound msg_id for replies, then forward.
+                            if let Some(chat_id) = chat_id_for_event(event_name, &ev) {
+                                adapter.record_inbound(&chat_id, &ev.id);
+                            }
+                            if let Some(platform_ev) = build_platform_event(event_name, &ev) {
+                                let _ = adapter.event_tx.send(platform_ev).await;
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    debug!("Ignoring dispatch event: {}", event_name);
+                }
+            }
+            FrameAction::Continue
+        }
+        _ => {
+            debug!("Unhandled op {}: {:?}", payload.op, payload.t);
+            FrameAction::Continue
+        }
+    }
 }
 
 /// Compute the platform `chat_id` for a QQ message event.
@@ -764,6 +928,18 @@ mod tests {
             app_secret: "secret".into(),
             sandbox: false,
         }
+    }
+
+    #[test]
+    fn reconnect_backoff_grows_then_caps() {
+        assert_eq!(reconnect_backoff(1), Duration::from_secs(1));
+        assert_eq!(reconnect_backoff(2), Duration::from_secs(2));
+        assert_eq!(reconnect_backoff(3), Duration::from_secs(4));
+        assert_eq!(reconnect_backoff(4), Duration::from_secs(8));
+        assert_eq!(reconnect_backoff(5), Duration::from_secs(16));
+        // 1 << 5 = 32s, capped at 30s.
+        assert_eq!(reconnect_backoff(6), Duration::from_secs(30));
+        assert_eq!(reconnect_backoff(100), Duration::from_secs(30));
     }
 
     #[test]

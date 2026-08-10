@@ -4084,6 +4084,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "tokio-util",
  "toml 1.1.4+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
