@@ -224,18 +224,6 @@ approve = ["确认", "同意", "yes", "y", "approve", "ok", "允许"]
 reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
 ```
 
-## 文档索引
+## 文档存储
 
-| 文档 | 内容 |
-| ------ | ------ |
-| [`docs/architecture.md`](docs/architecture.md) | Agent 运行时、Frontend trait、会话管理、工具系统、技能系统、提示词系统、TUI 交互设计、上下文管理、错误处理策略 |
-| [`docs/protocol.md`](docs/protocol.md) | 消息数据结构、Agent 事件定义 |
-| [`docs/llm-config.md`](docs/llm-config.md) | ~~LLM 提供商配置结构~~（已过时，已统一为 `robit.toml`） |
-| [`docs/roadmap.md`](docs/roadmap.md) | 构建路线图（4 个阶段） |
-| [`docs/specs/2026-05-28-robit-ai-design.md`](docs/specs/2026-05-28-robit-ai-design.md) | 阶段 1 设计规格（`robit-ai` LLM API 层） |
-| [`docs/plans/phase2-implementation.md`](docs/plans/phase2-implementation.md) | 阶段 2 实现计划（`robit-agent` Agent 运行时） |
-| [`docs/plans/config-unification.md`](docs/plans/config-unification.md) | 配置统一计划（`robit.toml` 取代 `llms.toml` + `settings.toml`） |
-| [`docs/superpowers/specs/2026-06-10-robit-gui-design.md`](docs/superpowers/specs/2026-06-10-robit-gui-design.md) | robit-gui 设计规格（桌面 GUI 前端） |
-| [`docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md`](docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md) | robit-chatbot & robit-qq 设计规格（多会话 Bot 基座 + QQ Bot 接入） |
-| [`docs/superpowers/plans/2026-06-10-robit-gui-implementation.md`](docs/superpowers/plans/2026-06-10-robit-gui-implementation.md) | robit-gui 实现计划 |
-| [`docs/superpowers/2026-06-11-robit-gui-progress.md`](docs/superpowers/2026-06-11-robit-gui-progress.md) | robit-gui 开发进度记录 |
+开发相关文档存储在`docs/`目录下
