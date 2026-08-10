@@ -14,9 +14,11 @@
 //! dropped (HTTP requests etc. are cancellation-safe).
 
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 
 use futures_util::future::BoxFuture;
+use futures_util::FutureExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -84,10 +86,31 @@ impl AsyncTaskRunner {
             // Favor cancellation: if cancelled while still running, return a
             // cancelled result instead of the work's outcome. Dropping `work`
             // cancels any in-flight HTTP requests it holds.
+            //
+            // `work` is wrapped in `AssertUnwindSafe(...).catch_unwind()` so a
+            // panic inside the tool's background future is converted into an
+            // error result and delivered to the Agent, instead of aborting the
+            // task silently. Without this, a panicking task would never reach
+            // `done_tx.send`, leaving a permanently-pending task (query_task
+            // stuck, no notification). (Requires panic=unwind, the default;
+            // panic=abort would still terminate the process.)
             let (result, cancelled) = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => (ToolResult::error(cancelled_msg), true),
-                r = work => (r, false),
+                r = AssertUnwindSafe(work).catch_unwind() => match r {
+                    Ok(tool_result) => (tool_result, false),
+                    Err(panic_payload) => {
+                        let msg = panic_payload_to_string(&panic_payload);
+                        tracing::error!(
+                            "[async] background task panicked: task_id={}, tool={}, session={}, panic={}",
+                            tid, tool_name, session_id, msg
+                        );
+                        (
+                            ToolResult::error(format!("异步任务执行时发生 panic: {}", msg)),
+                            false,
+                        )
+                    }
+                },
             };
 
             let done = AsyncTaskDone {
@@ -115,6 +138,21 @@ impl AsyncTaskRunner {
         });
 
         task_id
+    }
+}
+
+/// Best-effort message extraction from a panic payload.
+///
+/// `panic!("literal")` yields `&'static str`; `panic!("{}", x)` yields `String`.
+/// Anything else falls back to a generic placeholder so the log line is still
+/// useful.
+fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
     }
 }
 
@@ -196,5 +234,51 @@ mod tests {
         assert!(results[0].result.is_error);
         assert!(results[0].result.content.contains("已取消"));
         assert!(results[0].cancelled);
+    }
+
+    #[tokio::test]
+    async fn panicking_work_delivers_error_result() {
+        // A panicking work future must NOT leave the task pending forever.
+        // The panic should be caught, logged, and delivered as an error result
+        // (cancelled=false) so the Agent can report failure to the LLM.
+        let (tx, rx) = mpsc::channel(8);
+        let runner = AsyncTaskRunner::new(tx);
+        let task_id = runner.submit(
+            "tc3".into(),
+            "sess".into(),
+            "test_tool".into(),
+            Box::pin(async {
+                panic!("boom from inside work");
+            }),
+            CancellationToken::new(),
+        );
+
+        let results = recv_n(&Mutex::new(rx), 1).await;
+        assert_eq!(results.len(), 1, "panic should still deliver a result");
+        assert_eq!(results[0].task_id, task_id);
+        assert!(results[0].result.is_error);
+        assert!(
+            results[0].result.content.contains("panic"),
+            "content was: {}",
+            results[0].result.content
+        );
+        assert!(
+            results[0].result.content.contains("boom from inside work"),
+            "content was: {}",
+            results[0].result.content
+        );
+        assert!(!results[0].cancelled);
+    }
+
+    #[test]
+    fn panic_payload_to_string_handles_common_payloads() {
+        let s: Box<dyn std::any::Any + Send> = Box::new("static literal");
+        assert_eq!(panic_payload_to_string(&s), "static literal");
+
+        let s: Box<dyn std::any::Any + Send> = Box::new("owned".to_string());
+        assert_eq!(panic_payload_to_string(&s), "owned");
+
+        let s: Box<dyn std::any::Any + Send> = Box::new(42i32);
+        assert_eq!(panic_payload_to_string(&s), "<non-string panic payload>");
     }
 }

@@ -604,7 +604,10 @@ fn truncate_str(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}... (truncated, {} bytes total)", &s[..max], s.len())
+        // Cut at the last char boundary at or before `max` so multi-byte
+        // (e.g. CJK) response bodies don't panic on a mid-char slice.
+        let cut = s.floor_char_boundary(max);
+        format!("{}... (truncated, {} bytes total)", &s[..cut], s.len())
     }
 }
 
@@ -642,6 +645,22 @@ mod tests {
         let result = truncate_str("abcdefghijklmnopqrstuvwxyz", 10);
         assert!(result.starts_with("abcdefghij"));
         assert!(result.contains("truncated"));
+    }
+
+    #[test]
+    fn test_truncate_str_multibyte_boundary() {
+        // 1000 CJK chars (3 bytes each) = 3000 bytes. Cutting at byte 2000
+        // lands mid-character (2000 is not a multiple of 3) and would panic
+        // on a naive `&s[..2000]` slice (the exact crash from the field: byte
+        // 2000 inside '着').
+        let s: String = "着".repeat(1000);
+        assert_eq!(s.len(), 3000);
+        let result = truncate_str(&s, 2000);
+        // floor_char_boundary(2000) = 1998 = 3 * 666 chars.
+        assert!(result.starts_with(&"着".repeat(666)));
+        assert!(!result.starts_with(&"着".repeat(667)));
+        assert!(result.contains("truncated"));
+        assert!(result.contains("3000 bytes total"));
     }
 
     #[test]
