@@ -8,6 +8,19 @@
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-08-11
+
+### Added
+
+- **robit-ai**：日志改用本地时间。时间戳和每日日志文件名（`robit-YYYY-MM-DD.log`）按系统本地时区输出（如 `2026-08-11T10:19:01.790373+08:00`、本地午夜切文件），取不到本地偏移时回退 UTC。
+- **robit-ai**：新增 `app.log_retention_days` 配置（默认 14 天）。启动时扫描日志目录，删除超过保留期的 `robit-*.log`；`0` 禁用清理。此前日志按天生成但永不删除、无限累积。
+- **robit-ai**：安装 panic hook，将 panic 信息经 `tracing::error!` 写入日志文件再链到默认 stderr hook。此前 detached 运行的二进制（nohup/systemd 下的 robit-qq 等）panic 只进 stderr，日志文件无痕迹，故障表现为无声停滞。
+
+### Fixed
+
+- **robit-qq**：修复重连 supervisor 的 `JoinHandle polled after completion` panic。`tokio::select!` 消费了先结束任务的 JoinHandle 后又 re-await 同一个句柄触发 panic；panic 只进 stderr，supervisor 静默死亡，导致每次 ~30 分钟网关轮换后不再重连、机器人掉线（"该机器人未连接服务"）。改为只 await 未被消费的另一个句柄。
+- **robit-gui**：GUI 产物名长期停在 `Robit_0.1.1_*`。移除 `tauri.conf.json` 中硬编码的 `version` 字段，Tauri 改从 Cargo.toml（经 `CARGO_PKG_VERSION` 跟随 workspace）读版本，产物名与运行时版本显示均正确。
+
 ## [0.1.17] - 2026-08-10
 
 ### Fixed
@@ -18,5 +31,6 @@
 
 > 上述后两条共同导致了「万象生图请求被拦截无响应、智能体得不到超时提醒」的现场现象：截断 panic 发生在异步生图任务里，而该任务无 panic 兜底，于是静默死掉、永不回报。
 
-[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/leexgone/robit/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/leexgone/robit/compare/v0.1.16...v0.1.17
