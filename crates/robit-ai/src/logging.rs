@@ -86,6 +86,61 @@ fn build_filter(
     filter
 }
 
+/// Install a panic hook that records panics through the tracing subscriber
+/// (so they land in the log file) before chaining to the previous hook (which
+/// prints to stderr).
+///
+/// Without this, a panic in a spawned task goes to stderr only. A binary run
+/// detached (e.g. the robit-qq server under nohup/systemd with stderr in a
+/// separate file) then leaves no trace in the tracing log, and the failure
+/// looks like an unexplained silent stall. This is exactly what masked the QQ
+/// gateway supervisor panic ("JoinHandle polled after completion"): it
+/// appeared in err.log (stderr) but never in the tracing log, so the server
+/// silently lost its QQ connection after every ~30-min gateway rotation.
+///
+/// Must be called AFTER the tracing subscriber is initialized, otherwise the
+/// `tracing::error!` is dropped (no subscriber). The hook chains to whatever
+/// hook was installed before it, so an existing hook still runs - e.g. the TUI
+/// installs its terminal-restore hook after `init_logging_silent`, so its
+/// `take_hook` captures this one and the chain becomes: TUI restore -> tracing
+/// log -> default stderr.
+fn install_panic_hook() {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Best-effort message extraction. `panic!("literal")` yields `&'static str`,
+        // `panic!("{}", x)` yields `String`; anything else falls back to a placeholder
+        // so the log line is still useful.
+        let payload_msg: String = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic payload>".to_string()
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        let thread_name = std::thread::current().name().unwrap_or("<unnamed>").to_string();
+
+        // The default target is the module path (`robit_ai::logging`), which
+        // the `robit_ai` EnvFilter directive (always added by `build_filter`)
+        // matches, so this passes the filter in every config. `error!` is used
+        // because a panic is always severe, and error >= any configured level
+        // except `off`.
+        tracing::error!(
+            "thread '{}' panicked at {}: {}",
+            thread_name,
+            location,
+            payload_msg
+        );
+
+        // Chain to the previous hook (default: stderr) so existing behavior is
+        // preserved.
+        previous_hook(info);
+    }));
+}
+
 /// Initialize logging with optional app config and a target crate name.
 ///
 /// Priority order:
@@ -160,6 +215,9 @@ pub fn init_logging(
         // Console-only logging (default)
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
+
+    // Install after the subscriber is set up so panics are captured in the log.
+    install_panic_hook();
 }
 
 /// Initialize logging but discard console output (for TUI mode).
@@ -224,4 +282,7 @@ pub fn init_logging_silent(
             .with_writer(std::io::sink)
             .init();
     }
+
+    // Install after the subscriber is set up so panics are captured in the log.
+    install_panic_hook();
 }
