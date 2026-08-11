@@ -591,6 +591,16 @@ enum FrameAction {
     Reconnect,
 }
 
+/// Which connection task ended first in the supervisor's `select!`. The
+/// `select!` consumes the JoinHandle of whichever task fires, so the
+/// supervisor must await only the *other* task afterwards - re-polling the
+/// consumed handle panics ("JoinHandle polled after completion").
+#[derive(Clone, Copy)]
+enum TaskEnded {
+    Dispatch,
+    Heartbeat,
+}
+
 /// Background reconnect supervisor: owns the connection lifecycle after the
 /// initial [`QqPlatformAdapter::connect`]. When either the dispatch or
 /// heartbeat task of the current connection ends (routine QQ gateway rotation
@@ -609,30 +619,51 @@ async fn supervisor_loop(
     loop {
         // Wait for either connection task to end, or for shutdown. When one
         // task ends the connection is considered lost (the other is likely
-        // already failing or about to).
-        tokio::select! {
-            res = &mut tasks.dispatch => match res {
-                Ok(()) => debug!("Dispatch task ended"),
-                Err(e) => warn!("Dispatch task panicked: {}", e),
-            },
-            res = &mut tasks.heartbeat => match res {
-                Ok(()) => debug!("Heartbeat task ended"),
-                Err(e) => warn!("Heartbeat task panicked: {}", e),
-            },
+        // already failing or about to). `select!` consumes the JoinHandle of
+        // whichever task fires, so below we await only the *other* one:
+        // re-polling the consumed handle panics ("JoinHandle polled after
+        // completion"), which used to silently kill the supervisor (the panic
+        // went to stderr, not the tracing log) and left QQ offline after every
+        // ~30-min gateway rotation.
+        let ended = tokio::select! {
+            res = &mut tasks.dispatch => {
+                match res {
+                    Ok(()) => debug!("Dispatch task ended"),
+                    Err(e) => warn!("Dispatch task panicked: {}", e),
+                }
+                TaskEnded::Dispatch
+            }
+            res = &mut tasks.heartbeat => {
+                match res {
+                    Ok(()) => debug!("Heartbeat task ended"),
+                    Err(e) => warn!("Heartbeat task panicked: {}", e),
+                }
+                TaskEnded::Heartbeat
+            }
             _ = shutdown.notified() => {
                 debug!("Supervisor received shutdown signal");
                 conn_cancel.cancel();
+                // Neither handle was consumed (the shutdown branch fired), so
+                // awaiting both is safe.
                 let _ = tasks.dispatch.await;
                 let _ = tasks.heartbeat.await;
                 return;
             }
-        }
+        };
 
         // A task ended: stop the other, release the stale writer so no
         // heartbeats are sent on the dead socket while we reconnect.
         conn_cancel.cancel();
-        let _ = tasks.dispatch.await;
-        let _ = tasks.heartbeat.await;
+        // Await only the task that did NOT fire above - the fired JoinHandle
+        // was already consumed by `select!`.
+        match ended {
+            TaskEnded::Dispatch => {
+                let _ = tasks.heartbeat.await;
+            }
+            TaskEnded::Heartbeat => {
+                let _ = tasks.dispatch.await;
+            }
+        }
         *adapter.ws_tx.lock().await = None;
 
         // Brief pause before reconnecting (avoids a hot loop if the gateway
