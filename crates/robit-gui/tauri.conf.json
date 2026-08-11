@@ -1,7 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-docs-v2/main/src/content/docs/_schema/config.schema.json",
   "productName": "Robit",
-  "version": "0.1.1",
   "identifier": "com.robitgui.app",
   "build": {
     "frontendDist": "ui/dist",

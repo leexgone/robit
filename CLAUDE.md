@@ -236,6 +236,7 @@ reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
   2. 根 `Cargo.toml` 中 `[workspace.dependencies]` 里 3 个内部 crate 的 `version`（`robit-ai` / `robit-agent` / `robit-chatbot`）
   3. 运行 `cargo check` 让 `Cargo.lock` 同步更新（各 workspace 成员的版本号）
 - 各 crate 的 `Cargo.toml` 用 `robit-xxx.workspace = true` 引用内部依赖，不要硬编码版本。
+- `crates/robit-gui/tauri.conf.json` **不要**写 `version` 字段：Tauri 会自动从 Cargo.toml 读版本（经 `CARGO_PKG_VERSION` 跟随 workspace），GUI 产物名（`Robit_X.Y.Z_*`）与运行时版本显示均由此而来。曾因硬编码 `0.1.1` 导致产物名长期停在 `Robit_0.1.1_*`，切勿加回。
 
 ### 步骤
 
