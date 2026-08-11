@@ -57,7 +57,7 @@ async-openai = { version = "0.41", features = ["chat-completion"] }
 
 # 日志
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
 
 # 错误处理
 thiserror = "2"
@@ -69,7 +69,7 @@ dotenvy = "0.15"
 uuid = { version = "1.23", features = ["v4"] }
 globset = "0.4"
 regex = "1"
-time = { version = "0.3", features = ["formatting", "macros"] }
+time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
 rusqlite = { version = "0.40", features = ["bundled", "bundled-full"] }
 fs2 = "0.4"
 

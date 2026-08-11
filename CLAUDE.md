@@ -183,6 +183,8 @@ name = "DALL-E 3"
 # 应用配置
 [app]
 log_level = "DEBUG"
+log_file = true                        # 可选，是否写入日志文件（默认 false）。启用后写入 .robit/logs/robit-YYYY-MM-DD.log（按本地日期轮转，时间戳为本地时间）
+log_retention_days = 14                # 可选，历史日志保留天数（默认 14）。启动时删除超过 N 天的 robit-*.log；0 表示禁用清理（保留全部）
 max_steps = 10
 enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]  # 可选，启用的工具列表。不配置时启用所有工具；read 和 load_skill 始终启用
 auto_approve = false                   # 可选，是否自动批准所有工具调用（默认 false）

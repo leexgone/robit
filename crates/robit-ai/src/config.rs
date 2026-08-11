@@ -176,6 +176,10 @@ pub struct AppConfig {
     pub log_level: Option<String>,
     /// Whether to log to file (default: false).
     pub log_file: Option<bool>,
+    /// Days of daily log files to keep. On startup, `robit-YYYY-MM-DD.log`
+    /// files older than this are deleted. `None` = default 14 days; `Some(0)`
+    /// disables cleanup (keep all). Only `robit-*.log` files are touched.
+    pub log_retention_days: Option<u32>,
     pub max_steps: Option<usize>,
     pub enabled_tools: Option<Vec<String>>,
     pub enabled_skills: Option<Vec<String>>,

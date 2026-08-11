@@ -2,33 +2,122 @@
 //!
 //! Provides a unified way to initialize logging with support for:
 //! - Config file `app.log_level` setting
-//! - Config file `app.log_file` setting (log to file, daily rotation)
+//! - Config file `app.log_file` setting (log to file, daily rotation, local time)
+//! - Local-time timestamps and log file names (falls back to UTC if the system
+//!   offset can't be determined)
+//! - Config file `app.log_retention_days` setting (delete old `robit-*.log`
+//!   files on startup; default 14 days, `0` disables)
 //! - Environment variable `RUST_LOG` (takes precedence)
 //! - Sensible defaults for third-party crates
 
 use crate::config::AppConfig;
 use std::fs::OpenOptions;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 use time::format_description;
+use time::UtcOffset;
+use tracing_subscriber::fmt::time::OffsetTime;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{filter::Directive, EnvFilter};
 
 /// Get the log file path: {working_dir}/.robit/logs/robit-YYYY-MM-DD.log
 ///
-/// Creates the directory if it doesn't exist.
-fn get_log_file_path(working_dir: &PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
+/// Creates the directory if it doesn't exist. The date uses `offset` (local
+/// time by default) so the file rolls at local midnight, not UTC midnight.
+fn get_log_file_path(
+    working_dir: &PathBuf,
+    offset: UtcOffset,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let logs_dir = working_dir.join(".robit").join("logs");
 
     // Create logs directory if it doesn't exist
     std::fs::create_dir_all(&logs_dir)?;
 
-    // Format date as YYYY-MM-DD (UTC)
-    let now = time::OffsetDateTime::now_utc();
+    // Format date as YYYY-MM-DD (local time)
+    let now = time::OffsetDateTime::now_utc().to_offset(offset);
     let format = format_description::parse_borrowed::<3>("[year]-[month]-[day]").unwrap();
     let date = now.format(&format).unwrap();
     let log_file = logs_dir.join(format!("robit-{}.log", date));
 
     Ok(log_file)
+}
+
+/// Determine the system's local UTC offset for log timestamps and file naming.
+///
+/// Falls back to UTC (with a stderr warning) if the offset can't be determined.
+/// In `time` 0.3.37+ this works on any thread: Unix uses the reentrant
+/// `localtime_r`, Windows uses `SystemTimeToTzSpecificLocalTime` - both
+/// thread-safe - so it's safe to call even after the tokio runtime starts.
+fn local_utc_offset() -> UtcOffset {
+    match UtcOffset::current_local_offset() {
+        Ok(offset) => offset,
+        Err(_) => {
+            eprintln!(
+                "Could not determine local time offset; log timestamps will be UTC."
+            );
+            UtcOffset::UTC
+        }
+    }
+}
+
+/// Build a tracing timer that stamps events with local time. The format matches
+/// the prior default (`YYYY-MM-DDTHH:MM:SS.ffffff`) but carries the local
+/// offset (e.g. `+08:00`) instead of `Z`. The format description is parsed
+/// once at init from a `&'static str` literal, so the result is `'static` -
+/// no leak needed.
+fn local_timer(
+    offset: UtcOffset,
+) -> OffsetTime<format_description::FormatDescriptionV3<'static>> {
+    let format = format_description::parse_borrowed::<3>(
+        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6][offset_hour sign:mandatory]:[offset_minute]",
+    )
+    .expect("hardcoded log timestamp format is valid");
+    OffsetTime::new(offset, format)
+}
+
+/// Delete `robit-YYYY-MM-DD.log` files whose modification time is older than
+/// `retention_days` days. Best-effort: unreadable entries and deletion
+/// failures are logged via `tracing::warn!` and skipped. `retention_days == 0`
+/// disables cleanup. Only files matching `robit-*.log` are considered, so
+/// `err.log` and other files are left untouched. Called once at startup.
+fn cleanup_old_logs(logs_dir: &Path, retention_days: u32) {
+    if retention_days == 0 {
+        return;
+    }
+    let cutoff = SystemTime::now() - Duration::from_secs(retention_days as u64 * 86_400);
+    let entries = match std::fs::read_dir(logs_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("Failed to scan log dir for cleanup: {}", e);
+            return;
+        }
+    };
+    let mut removed = 0u32;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("robit-") && name.ends_with(".log")) {
+            continue;
+        }
+        let modified = match entry.metadata().and_then(|m| m.modified()) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if modified < cutoff {
+            if let Err(e) = std::fs::remove_file(entry.path()) {
+                tracing::warn!("Failed to delete old log {}: {}", name, e);
+            } else {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!(
+            "Cleaned up {} old log file(s) (retention {} days).",
+            removed,
+            retention_days
+        );
+    }
 }
 
 /// Build the EnvFilter from config and defaults.
@@ -164,12 +253,17 @@ pub fn init_logging(
 ) {
     let filter = build_filter(app_config, target_crate, additional_directives);
 
+    // Local time offset, used for both the timestamp format and the daily log
+    // file name. Falls back to UTC if undeterminable.
+    let offset = local_utc_offset();
+    let timer = local_timer(offset);
+
     // Check if file logging is enabled
     let log_file_enabled = app_config.and_then(|c| c.log_file).unwrap_or(false);
 
     if log_file_enabled {
         // Log to both console and file
-        match get_log_file_path(working_dir) {
+        match get_log_file_path(working_dir, offset) {
             Ok(log_path) => {
                 match OpenOptions::new()
                     .create(true)
@@ -182,11 +276,13 @@ pub fn init_logging(
                         // Create layers
                         let console_layer = tracing_subscriber::fmt::layer()
                             .with_writer(std::io::stdout)
+                            .with_timer(timer.clone())
                             .with_filter(filter.clone());
 
                         let file_layer = tracing_subscriber::fmt::layer()
                             .with_writer(file_writer)
                             .with_ansi(false)
+                            .with_timer(timer.clone())
                             .with_filter(filter);
 
                         // Combine layers
@@ -197,23 +293,40 @@ pub fn init_logging(
                         registry.init();
 
                         tracing::info!("Logging to file: {}", log_path.display());
+
+                        // Best-effort cleanup of old daily log files.
+                        let retention = app_config
+                            .and_then(|c| c.log_retention_days)
+                            .unwrap_or(14);
+                        if let Some(dir) = log_path.parent() {
+                            cleanup_old_logs(dir, retention);
+                        }
                     }
                     Err(e) => {
                         // Fallback to console-only logging
                         eprintln!("Failed to open log file: {}. Falling back to console-only logging.", e);
-                        tracing_subscriber::fmt().with_env_filter(filter).init();
+                        tracing_subscriber::fmt()
+                            .with_env_filter(filter)
+                            .with_timer(timer.clone())
+                            .init();
                     }
                 }
             }
             Err(e) => {
                 // Fallback to console-only logging
                 eprintln!("Failed to prepare log path: {}. Falling back to console-only logging.", e);
-                tracing_subscriber::fmt().with_env_filter(filter).init();
+                tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_timer(timer.clone())
+                    .init();
             }
         }
     } else {
         // Console-only logging (default)
-        tracing_subscriber::fmt().with_env_filter(filter).init();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_timer(timer.clone())
+            .init();
     }
 
     // Install after the subscriber is set up so panics are captured in the log.
@@ -234,11 +347,14 @@ pub fn init_logging_silent(
 ) {
     let filter = build_filter(app_config, target_crate, additional_directives);
 
+    let offset = local_utc_offset();
+    let timer = local_timer(offset);
+
     let log_file_enabled = app_config.and_then(|c| c.log_file).unwrap_or(false);
 
     if log_file_enabled {
         // TUI mode: no console output, but write to file if enabled.
-        match get_log_file_path(working_dir) {
+        match get_log_file_path(working_dir, offset) {
             Ok(log_path) => match OpenOptions::new().create(true).append(true).open(&log_path) {
                 Ok(file) => {
                     let file_writer =
@@ -250,8 +366,17 @@ pub fn init_logging_silent(
                         .with_env_filter(filter)
                         .with_writer(file_writer)
                         .with_ansi(false)
+                        .with_timer(timer.clone())
                         .init();
                     tracing::info!("Logging to file: {}", log_path.display());
+
+                    // Best-effort cleanup of old daily log files.
+                    let retention = app_config
+                        .and_then(|c| c.log_retention_days)
+                        .unwrap_or(14);
+                    if let Some(dir) = log_path.parent() {
+                        cleanup_old_logs(dir, retention);
+                    }
                 }
                 Err(e) => {
                     eprintln!(
@@ -261,6 +386,7 @@ pub fn init_logging_silent(
                     tracing_subscriber::fmt()
                         .with_env_filter(filter)
                         .with_writer(std::io::sink)
+                        .with_timer(timer.clone())
                         .init();
                 }
             },
@@ -272,6 +398,7 @@ pub fn init_logging_silent(
                 tracing_subscriber::fmt()
                     .with_env_filter(filter)
                     .with_writer(std::io::sink)
+                    .with_timer(timer.clone())
                     .init();
             }
         }
@@ -280,9 +407,52 @@ pub fn init_logging_silent(
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::sink)
+            .with_timer(timer.clone())
             .init();
     }
 
     // Install after the subscriber is set up so panics are captured in the log.
     install_panic_hook();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `cleanup_old_logs` must delete only old `robit-*.log` files: keep recent
+    /// robit logs, and leave non-matching files (e.g. `err.log`) untouched
+    /// regardless of age. `retention_days == 0` disables cleanup entirely.
+    #[test]
+    fn cleanup_old_logs_deletes_old_keeps_recent_and_ignores_others() {
+        let dir = std::env::temp_dir().join(format!("robit-log-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // mtime far in the past => older than any reasonable retention window.
+        let ancient = SystemTime::now() - Duration::from_secs(60 * 86_400); // 60 days ago
+
+        let write_with_mtime = |name: &str, mtime: SystemTime| {
+            let path = dir.join(name);
+            let f = std::fs::File::create(&path).unwrap();
+            f.set_modified(mtime).unwrap();
+            path
+        };
+
+        let old = write_with_mtime("robit-2000-01-01.log", ancient); // should be deleted
+        let recent = write_with_mtime("robit-2099-01-01.log", SystemTime::now()); // keep
+        let other = write_with_mtime("err.log", ancient); // untouched (non-robit)
+
+        cleanup_old_logs(&dir, 14);
+
+        assert!(!old.exists(), "old robit-*.log should be deleted");
+        assert!(recent.exists(), "recent robit-*.log should be kept");
+        assert!(other.exists(), "non-robit file should be untouched");
+
+        // retention_days == 0 disables cleanup: even ancient files survive.
+        let old2 = write_with_mtime("robit-2001-01-01.log", ancient);
+        cleanup_old_logs(&dir, 0);
+        assert!(old2.exists(), "retention_days=0 should disable cleanup");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
