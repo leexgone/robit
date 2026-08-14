@@ -107,9 +107,10 @@ pub fn prepare_markdown_for_platform(text: &str, features: &MarkdownFeatures) ->
             }
             Event::Start(Tag::Item) => {
                 ctx.indent(&mut output);
-                match ctx.list_stack.last() {
+                match ctx.list_stack.last_mut() {
                     Some(ListKind::Ordered(n)) => {
                         output.push_str(&format!("{}. ", n));
+                        *n += 1;
                     }
                     _ => output.push_str("- "),
                 }
@@ -425,5 +426,14 @@ mod tests {
         f.bold = true;
         let out = prepare_markdown_for_platform("# Title", &f);
         assert!(out.contains("**Title**"));
+    }
+
+    #[test]
+    fn ordered_list_increments() {
+        let f = MarkdownFeatures::default();
+        let out = prepare_markdown_for_platform("1. first\n2. second\n3. third\n", &f);
+        assert!(out.contains("1. first"), "expected '1. first' in: {out}");
+        assert!(out.contains("2. second"), "expected '2. second' in: {out}");
+        assert!(out.contains("3. third"), "expected '3. third' in: {out}");
     }
 }
