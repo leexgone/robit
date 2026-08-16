@@ -644,16 +644,21 @@ pub fn get_messages(conn: &Connection, session_id: &str) -> SqliteResult<Vec<Mes
     rows.collect()
 }
 
-/// Update a tool message with result.
+/// Update a tool message with its result.
+///
+/// `content` replaces the message content (initially the call arguments,
+/// replaced by the actual tool output once available) so that restored
+/// history carries the real result. `tool_info` is the UI-facing JSON state.
 pub fn update_tool_message(
     conn: &Connection,
     session_id: &str,
     tool_call_id: &str,
+    content: &str,
     tool_info: &str,
 ) -> SqliteResult<()> {
     conn.execute(
-        "UPDATE messages SET tool_info = ?1 WHERE session_id = ?2 AND tool_call_id = ?3",
-        params![tool_info, session_id, tool_call_id],
+        "UPDATE messages SET content = ?1, tool_info = ?2 WHERE session_id = ?3 AND tool_call_id = ?4",
+        params![content, tool_info, session_id, tool_call_id],
     )?;
     Ok(())
 }
@@ -889,8 +894,8 @@ pub fn load_chat_messages(
                 };
 
                 if is_valid {
-                    tracing::debug!(
-                        "  Message {}: role={}, content_len={}",
+                    tracing::trace!(
+                        "load_chat_messages:   message {}: role={}, content_len={}",
                         idx,
                         msg.role,
                         msg.content.len()
@@ -1349,12 +1354,14 @@ mod tests {
             "output": "done"
         })
         .to_string();
-        update_tool_message(&conn, "session-tool", "tool-1", &updated).unwrap();
+        update_tool_message(&conn, "session-tool", "tool-1", "done", &updated).unwrap();
 
         let messages = get_messages(&conn, "session-tool").unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tool_name.as_deref(), Some("bash"));
         assert_eq!(messages[0].tool_call_id.as_deref(), Some("tool-1"));
+        // content is replaced with the actual tool output on update
+        assert_eq!(messages[0].content, "done");
         assert_eq!(messages[0].tool_info.as_ref().unwrap()["status"], "success");
         assert_eq!(messages[0].tool_info.as_ref().unwrap()["output"], "done");
     }

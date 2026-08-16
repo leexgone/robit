@@ -103,10 +103,26 @@ const MessageItem = memo(function MessageItem({ msg, pendingConfirms }: MessageI
     return <MemoizedUserMessage content={msg.content} />;
   }
   if (msg.role === "assistant") {
+    // Assistant rows persisted with tool_calls have empty content (they only
+    // exist to keep the OpenAI-protocol assistant/tool pairing valid when the
+    // session is restored). Don't render them as empty bubbles.
+    if (!msg.content) {
+      return null;
+    }
     return <MemoizedAssistantMessage content={msg.content} />;
   }
   if (msg.role === "tool" && currentToolInfo) {
     return <MemoizedToolCard info={currentToolInfo} />;
+  }
+  if (msg.role === "system") {
+    // System messages (e.g., errors) displayed as muted notifications
+    return (
+      <div className="flex justify-center py-2">
+        <div className="text-xs text-muted-foreground bg-muted/50 rounded-full px-4 py-2">
+          {msg.content}
+        </div>
+      </div>
+    );
   }
   return null;
 });

@@ -163,7 +163,10 @@ impl ImageGenClient {
     /// The number returned may be less than the requested `n` (e.g. due to
     /// content filtering); it is always taken from the API response.
     pub async fn generate(&self, req: &ImageGenRequest) -> Result<Vec<GeneratedImage>, ImageGenError> {
-        tracing::info!(
+        // Connection details are diagnostic only (the provider is already
+        // announced at startup by bootstrap), and the masked api_key should
+        // not sit at INFO level.
+        tracing::debug!(
             "[image_gen] generate: protocol={:?}, mode={:?}, provider={}, model={}, base_url={}, api_key={}",
             self.provider.protocol,
             self.provider.mode,
@@ -342,7 +345,9 @@ impl ImageGenClient {
             })?
             .to_string();
 
-        tracing::info!("[image_gen] async task submitted: {}", task_id);
+        // The Agent already logs "[async] task submitted" at INFO with the
+        // same task_id; keep this at debug to avoid duplication.
+        tracing::debug!("[image_gen] async task submitted: {}", task_id);
 
         let poll_url = format!(
             "{}/tasks/{}",
@@ -401,7 +406,8 @@ impl ImageGenClient {
             let task_status = json.pointer("/output/task_status").and_then(|v| v.as_str());
             match task_status {
                 Some("SUCCEEDED") => {
-                    tracing::info!("[image_gen] async task succeeded");
+                    // The Agent logs "[async] task done" at INFO; keep this at debug.
+                    tracing::debug!("[image_gen] async task succeeded");
                     return Ok(json);
                 }
                 Some("FAILED") | Some("CANCELED") | Some("UNKNOWN") => {
@@ -409,9 +415,11 @@ impl ImageGenClient {
                         task_status.unwrap_or("UNKNOWN").to_string(),
                     ));
                 }
-                // PENDING / RUNNING -> keep polling
+                // PENDING / RUNNING -> keep polling. Fires every poll interval
+                // (seconds) and the poll response line above already carries
+                // the status, so keep at trace.
                 Some(status) => {
-                    tracing::info!("[image_gen] task {} still running (status={})", poll_url, status);
+                    tracing::trace!("[image_gen] task {} still running (status={})", poll_url, status);
                 }
                 None => {
                     tracing::warn!(

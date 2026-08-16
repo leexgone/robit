@@ -78,7 +78,7 @@
 ### 体验优化
 
 - [ ] 代码高亮（引入 `syntect`）
-- [ ] Token 精确计数（引入 `tiktoken-rs`）
+- [x] Token 校准计数（API `usage.prompt_tokens` 回填 + 增量估算，零新依赖）
 - [ ] `/model` 指令完善（支持 `provider/model` 和 `model_id` 切换）
 - [ ] 对话历史持久化（保存到 `~/.robit/sessions/`）
 - [ ] 多会话管理完善

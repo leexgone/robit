@@ -339,6 +339,49 @@ impl ContextManager {
         truncate_output(content, self.max_output_lines, self.max_output_bytes)
     }
 
+    /// Hybrid token estimation: precise API anchor + incremental estimation.
+    ///
+    /// When `last_known_prompt_tokens` is `Some` and history hasn't been truncated
+    /// (i.e. `messages.len() >= snapshot_message_count`), uses the API-reported
+    /// `prompt_tokens` as an exact baseline and adds estimated tokens for only
+    /// the new messages appended since the snapshot. This is far more accurate
+    /// than full heuristic estimation because the baseline is from the model's
+    /// own tokenizer.
+    ///
+    /// Falls back to full heuristic estimation with `token_safety_margin` when:
+    /// - No calibration data yet (first call, before any API response)
+    /// - History was truncated/compressed (messages.len() < snapshot)
+    pub fn estimate_context_tokens(
+        &self,
+        messages: &[ChatCompletionRequestMessage],
+        last_known_prompt_tokens: Option<u32>,
+        snapshot_message_count: usize,
+    ) -> usize {
+        match last_known_prompt_tokens {
+            Some(known) if messages.len() >= snapshot_message_count => {
+                // Precise baseline + incremental estimate for new messages only.
+                // No safety_margin needed: the baseline is exact, and incremental
+                // error is small (only 1-3 new messages).
+                let delta = estimate_messages_tokens(&messages[snapshot_message_count..]);
+                let total = known as usize + delta;
+                tracing::trace!(
+                    "estimate_context_tokens: calibrated (baseline={}, snapshot={}, new={}, delta={}, total={})",
+                    known, snapshot_message_count, messages.len() - snapshot_message_count, delta, total
+                );
+                total
+            }
+            _ => {
+                // Fallback: full heuristic estimation with safety margin
+                let estimated = estimate_messages_tokens_with_margin(messages, self.token_safety_margin);
+                tracing::trace!(
+                    "estimate_context_tokens: fallback heuristic ({} messages, {} tokens with {:.1}x margin)",
+                    messages.len(), estimated, self.token_safety_margin
+                );
+                estimated
+            }
+        }
+    }
+
     /// Check if history needs truncation and perform it if necessary.
     /// Returns `TruncationResult` with removed messages for async compression.
     ///
@@ -353,15 +396,17 @@ impl ContextManager {
     pub fn maybe_truncate(
         &self,
         messages: &mut Vec<ChatCompletionRequestMessage>,
+        last_known_prompt_tokens: Option<u32>,
+        snapshot_message_count: usize,
     ) -> TruncationResult {
-        let estimated = estimate_messages_tokens_with_margin(messages, self.token_safety_margin);
+        let estimated = self.estimate_context_tokens(messages, last_known_prompt_tokens, snapshot_message_count);
         let threshold = self.truncation_threshold();
 
-        tracing::debug!("maybe_truncate: initial message count = {}, estimated tokens = {}, threshold = {}",
-            messages.len(), estimated, threshold);
-
         if estimated <= threshold {
-            tracing::debug!("maybe_truncate: No truncation needed ({} <= {})", estimated, threshold);
+            // The overwhelmingly common path — keep at trace to avoid log spam
+            // (this check runs twice per agent step).
+            tracing::trace!("maybe_truncate: no truncation needed ({} messages, {} <= {} tokens)",
+                messages.len(), estimated, threshold);
             return TruncationResult {
                 rounds_removed: 0,
                 messages_removed: 0,
@@ -1135,7 +1180,7 @@ mod tests {
 
         let config = make_test_config();
         let manager = ContextManager::new(Some(65536), Some(&config));
-        let result = manager.maybe_truncate(&mut messages);
+        let result = manager.maybe_truncate(&mut messages, None, 0);
 
         assert_eq!(result.rounds_removed, 0);
         assert!(!result.needs_compression);
@@ -1158,7 +1203,7 @@ mod tests {
 
         // Use small context window to force aggressive truncation
         let manager = ContextManager::new(Some(5000), Some(&config));
-        let result = manager.maybe_truncate(&mut messages);
+        let result = manager.maybe_truncate(&mut messages, None, 0);
 
         // Should have removed some rounds...
         assert!(
@@ -1197,7 +1242,7 @@ mod tests {
         // With 65536 context, truncation threshold = 45875
         // 8 rounds * ~2000 chars each ≈ much less than 45875, so no truncation
         let manager = ContextManager::new(Some(65536), Some(&config));
-        let result = manager.maybe_truncate(&mut messages);
+        let result = manager.maybe_truncate(&mut messages, None, 0);
         assert_eq!(
             result.rounds_removed, 0,
             "Should not truncate small messages in large window"
@@ -1206,7 +1251,7 @@ mod tests {
         // With 8000 context, truncation threshold = 5600
         let manager2 = ContextManager::new(Some(8000), Some(&config));
         let mut messages2 = messages.clone();
-        let result2 = manager2.maybe_truncate(&mut messages2);
+        let result2 = manager2.maybe_truncate(&mut messages2, None, 0);
         assert!(
             result2.rounds_removed > 0,
             "Should truncate when exceeding small window"
@@ -1232,7 +1277,7 @@ mod tests {
 
         let mut msgs_low = messages.clone();
         let manager_low = ContextManager::new(Some(8000), Some(&config_low));
-        let result_low = manager_low.maybe_truncate(&mut msgs_low);
+        let result_low = manager_low.maybe_truncate(&mut msgs_low, None, 0);
 
         // With margin 2.0 (very conservative), truncation more likely triggers
         let mut config_high = make_test_config();
@@ -1242,7 +1287,7 @@ mod tests {
 
         let mut msgs_high = messages.clone();
         let manager_high = ContextManager::new(Some(8000), Some(&config_high));
-        let result_high = manager_high.maybe_truncate(&mut msgs_high);
+        let result_high = manager_high.maybe_truncate(&mut msgs_high, None, 0);
 
         // Higher margin should result in >= rounds removed
         assert!(
@@ -1271,7 +1316,7 @@ mod tests {
         config.min_keep_rounds = Some(1);
 
         let manager = ContextManager::new(Some(5000), Some(&config));
-        let result = manager.maybe_truncate(&mut messages);
+        let result = manager.maybe_truncate(&mut messages, None, 0);
 
         assert!(result.rounds_removed > 0);
         assert!(
@@ -1375,7 +1420,7 @@ mod tests {
         ];
         let config = make_test_config();
         let manager = ContextManager::new(Some(65536), Some(&config));
-        let result = manager.maybe_truncate(&mut messages);
+        let result = manager.maybe_truncate(&mut messages, None, 0);
 
         assert_eq!(result.rounds_removed, 0);
         assert!(!result.needs_compression);
@@ -1397,7 +1442,7 @@ mod tests {
         config.compression_token_threshold = Some(100); // low threshold
 
         let manager = ContextManager::new(Some(8000), Some(&config));
-        let result = manager.maybe_truncate(&mut messages);
+        let result = manager.maybe_truncate(&mut messages, None, 0);
 
         assert_eq!(result.action, TruncationAction::NewSegment);
         assert!(result.needs_compression);
@@ -1424,7 +1469,7 @@ mod tests {
         config.compression_token_threshold = Some(100);
 
         let manager = ContextManager::new(Some(8000), Some(&config));
-        let result = manager.maybe_truncate(&mut messages);
+        let result = manager.maybe_truncate(&mut messages, None, 0);
 
         // Legacy mode removes as many rounds as needed to go below threshold,
         // which for 20 rounds of 2000 chars in an 8000-token window is more than 3.
@@ -1467,7 +1512,7 @@ mod tests {
             "Test setup error: should be over threshold, est={}, threshold={}",
             estimated, manager.truncation_threshold());
 
-        let result = manager.maybe_truncate(&mut messages);
+        let result = manager.maybe_truncate(&mut messages, None, 0);
 
         // With full rounds < min_keep + rounds_per_summary, and segments > max,
         // try_new_segment returns None, try_merge_segments should run
@@ -1509,7 +1554,7 @@ mod tests {
         // First call may do NewSegment, so call a few times to reach discard
         let mut did_discard = false;
         for _ in 0..5 {
-            let result = manager.maybe_truncate(&mut messages);
+            let result = manager.maybe_truncate(&mut messages, None, 0);
             if result.rounds_removed == 0 && result.messages_removed > 0 && !result.needs_compression {
                 // Likely a discard
                 if find_discard_notice_pos(&messages).is_some() {
@@ -1549,7 +1594,7 @@ mod tests {
         config.compression_token_threshold = Some(100);
 
         let manager = ContextManager::new(Some(8000), Some(&config));
-        let result = manager.maybe_truncate(&mut messages);
+        let result = manager.maybe_truncate(&mut messages, None, 0);
 
         // Should not crash; legacy notice is treated as a summary segment
         assert!(result.messages_removed > 0 || result.rounds_removed > 0);
@@ -1579,7 +1624,7 @@ mod tests {
 
         // Trigger a few discards
         for _ in 0..3 {
-            let _ = manager.maybe_truncate(&mut messages);
+            let _ = manager.maybe_truncate(&mut messages, None, 0);
         }
 
         // Count discard notices — should be at most 1
@@ -1613,7 +1658,7 @@ mod tests {
         let mut did_merge = false;
 
         for round in 0..10 {
-            let result = manager.maybe_truncate(&mut messages);
+            let result = manager.maybe_truncate(&mut messages, None, 0);
 
             let seg_count = messages.iter().filter(|m| is_summary_segment(m)).count();
 
@@ -1645,5 +1690,115 @@ mod tests {
         // With 20 rounds and a small window, we should see at least new segments
         assert!(did_new_segment, "Should have created at least one new summary segment");
         let _ = did_merge;
+    }
+
+    // ==========================================================================
+    // Token calibration (estimate_context_tokens) tests
+    // ==========================================================================
+
+    #[test]
+    fn test_estimate_context_tokens_fallback_no_calibration() {
+        let messages = vec![
+            make_system_message("You are a helpful assistant"),
+            make_user_message("Hello world"),
+        ];
+        let config = make_test_config();
+        let manager = ContextManager::new(Some(65536), Some(&config));
+
+        // No calibration data → fallback to heuristic with safety margin
+        let result = manager.estimate_context_tokens(&messages, None, 0);
+        let expected = estimate_messages_tokens_with_margin(&messages, 1.3);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_estimate_context_tokens_calibrated_exact_match() {
+        let messages = vec![
+            make_system_message("sys"),
+            make_user_message("hello"),
+        ];
+        let config = make_test_config();
+        let manager = ContextManager::new(Some(65536), Some(&config));
+
+        // Calibration matches current history length exactly
+        let result = manager.estimate_context_tokens(&messages, Some(100), 2);
+        // No new messages → delta = 0, total = 100
+        assert_eq!(result, 100);
+    }
+
+    #[test]
+    fn test_estimate_context_tokens_calibrated_with_new_messages() {
+        let mut messages = vec![
+            make_system_message("sys"),
+            make_user_message("hello"),
+        ];
+        let config = make_test_config();
+        let manager = ContextManager::new(Some(65536), Some(&config));
+
+        // Calibration snapshot was at 2 messages with 100 tokens.
+        // Now we have 3 messages (1 new).
+        messages.push(make_user_message("world"));
+        let result = manager.estimate_context_tokens(&messages, Some(100), 2);
+
+        // result = 100 (baseline) + estimate(1 new message)
+        let new_msg_tokens = estimate_messages_tokens(&messages[2..]);
+        assert_eq!(result, 100 + new_msg_tokens);
+        // Key property: calibrated uses the API baseline, NOT the heuristic.
+        // The heuristic+margin may be larger or smaller depending on content.
+        let heuristic = estimate_messages_tokens_with_margin(&messages, 1.3);
+        // Just verify they're different (calibrated != heuristic for arbitrary baseline)
+        // and that calibrated correctly adds the delta
+        assert!(new_msg_tokens > 0, "New message should have non-zero token estimate");
+        let _ = heuristic; // heuristic comparison is content-dependent, not asserted
+    }
+
+    #[test]
+    fn test_estimate_context_tokens_stale_snapshot_falls_back() {
+        let messages = vec![
+            make_system_message("sys"),
+            make_user_message("hello"),
+        ];
+        let config = make_test_config();
+        let manager = ContextManager::new(Some(65536), Some(&config));
+
+        // Snapshot was at 5 messages, but we only have 2 → history was truncated
+        let result = manager.estimate_context_tokens(&messages, Some(100), 5);
+        // Should fallback to heuristic because messages.len() < snapshot
+        let expected = estimate_messages_tokens_with_margin(&messages, 1.3);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_maybe_truncate_with_calibration_avoids_premature_truncation() {
+        // Build messages that are near threshold by heuristic but clearly under by calibration
+        let mut messages = vec![make_system_message("sys")];
+        for i in 0..5 {
+            let content = format!("User {}: {}", i, "x".repeat(500));
+            messages.push(make_user_message(&content));
+        }
+
+        let mut config = make_test_config();
+        config.min_keep_rounds = Some(3);
+
+        // Use small window so heuristic+margin would trigger truncation
+        let manager = ContextManager::new(Some(3000), Some(&config));
+
+        // Without calibration: heuristic likely triggers truncation
+        let mut msgs_no_cal = messages.clone();
+        let result_no_cal = manager.maybe_truncate(&mut msgs_no_cal, None, 0);
+
+        // With calibration: API says we're at exactly 500 tokens (well under 3000*0.7=2100)
+        let mut msgs_cal = messages.clone();
+        let result_cal = manager.maybe_truncate(&mut msgs_cal, Some(500), messages.len());
+
+        // Calibrated should NOT truncate (500 < 2100 threshold)
+        assert_eq!(result_cal.rounds_removed, 0,
+            "Calibrated estimation should not trigger premature truncation");
+
+        // Log for visibility (the no-cal case may or may not truncate depending on exact heuristic)
+        tracing::debug!(
+            "no_cal: rounds_removed={}, cal: rounds_removed={}",
+            result_no_cal.rounds_removed, result_cal.rounds_removed
+        );
     }
 }

@@ -353,7 +353,35 @@ impl AppState {
                                             "requires_confirm": requires_confirm,
                                         });
                                         let tool_info_str = serde_json::to_string(&tool_info).unwrap_or_default();
+                                        // Persist an assistant message carrying the tool_calls so
+                                        // restored history keeps the assistant/tool pairing required
+                                        // by the OpenAI protocol (providers reject orphaned tool
+                                        // messages with a 400 error). The shape of the "tool_calls"
+                                        // array matches ChatCompletionMessageToolCall serialization,
+                                        // which storage::message_to_chat_message parses back.
+                                        let assistant_tool_info = serde_json::json!({
+                                            "tool_calls": [
+                                                {
+                                                    "id": tool_call_id,
+                                                    "function": {
+                                                        "name": name,
+                                                        "arguments": arguments,
+                                                    }
+                                                }
+                                            ]
+                                        });
+                                        let assistant_tool_info_str =
+                                            serde_json::to_string(&assistant_tool_info).unwrap_or_default();
                                         let db = db_clone.lock().await;
+                                        let _ = crate::db::insert_message(
+                                            &db,
+                                            &sid_clone,
+                                            "assistant",
+                                            "",
+                                            None,
+                                            Some(tool_call_id),
+                                            Some(&assistant_tool_info_str),
+                                        );
                                         let _ = crate::db::insert_message(
                                             &db,
                                             &sid_clone,
@@ -364,6 +392,7 @@ impl AppState {
                                             Some(&tool_info_str),
                                         );
                                         let _ = crate::db::touch_session(&db, &sid_clone);
+                                        drop(db);
                                         let _ = app_handle_clone.emit("agent-event", &event);
                                     }
                                     crate::events::UiEvent::ToolCallResult {
@@ -409,12 +438,17 @@ impl AppState {
                                             })
                                         };
                                         let tool_info_str = serde_json::to_string(&tool_info).unwrap_or_default();
+                                        // Also replace the message content with the actual output
+                                        // (it was initially the call arguments) so restored history
+                                        // carries real tool results.
                                         let _ = crate::db::update_tool_message(
                                             &db,
                                             &sid_clone,
                                             tool_call_id,
+                                            content,
                                             &tool_info_str,
                                         );
+                                        drop(db);
                                         let _ = app_handle_clone.emit("agent-event", &event);
                                     }
                                     crate::events::UiEvent::TurnComplete { .. } => {

@@ -263,12 +263,21 @@ impl ToolRegistry {
         args: Value,
         ctx: &ToolContext,
     ) -> ToolResult {
-        tracing::info!("ToolRegistry.execute called: name='{}', args={:?}", name, args);
-        tracing::debug!("Available tools: {:?}", self.tool_names());
+        // Truncate args for logging: tool arguments (e.g. `write` file
+        // content) can be huge and would flood the log.
+        let args_str = args.to_string();
+        let args_preview: String = {
+            let chars: String = args_str.chars().take(120).collect();
+            if args_str.chars().count() > 120 {
+                format!("{}...", chars)
+            } else {
+                chars
+            }
+        };
+        tracing::debug!("ToolRegistry.execute: name='{}', args={}", name, args_preview);
 
         match self.tools.get(name) {
             Some(tool) => {
-                tracing::debug!("Found tool '{}', executing...", name);
                 let started = std::time::Instant::now();
                 let outcome = tool.execute(args, ctx).await;
                 let elapsed = started.elapsed();

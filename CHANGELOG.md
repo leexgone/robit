@@ -8,6 +8,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- **robit-agent**：Token 校准计数。每次 API 响应后用 `usage.prompt_tokens` 作为精确基线回填（`last_known_prompt_tokens` + `snapshot_message_count`），之后仅对新增消息做增量估算；历史被截断/压缩时自动失效回退启发式估算。零新依赖，显著降低上下文 Token 估算误差，避免过早触发截断。
+- **robit-ai**：流式请求携带 `stream_options.include_usage = true`，使流式响应也能返回 `usage` 统计（OpenAI/DeepSeek 均支持），支撑上述 Token 校准。
+- **robit-gui**：`AgentEvent::Error` 现在以系统消息形式展示在会话中（此前仅打印到浏览器 console，前端无任何错误反馈）。
+
+### Changed
+
+- **日志精简**：每步无变化的上下文估算/截断检查（`estimate_context_tokens`、`maybe_truncate`）降为 TRACE；删除逐流式 chunk 日志（此前每次 LLM 调用刷数十至数百行）；同一次工具调用的多条重复日志合并为一条 INFO（`Executing tool`），工具注册表不再每次调用 dump 全量工具列表；`repair_tool_pairing` 的孤儿消息告警改为每次调用聚合一条 WARN（此前每条孤儿消息每次 API 调用都 WARN）；可能超长的工具参数（如 `write` 的文件内容）进日志前截断。生图模块（`image_gen`）的连接详情/任务提交/任务成功降为 DEBUG（Agent 的 `[async]` 日志已覆盖），轮询中的 `still running` 降为 TRACE（此前每 3 秒一条 INFO），INFO 不再出现脱敏 API key。
+
+### Fixed
+
+- **robit-ai**：新增 `repair_tool_pairing` 历史修复，在 `chat_stream`/`chat` 发送前执行：丢弃没有前置 `assistant(tool_calls)` 声明的孤儿 `tool` 消息，为缺失响应的 `tool_calls` 合成占位 `tool` 结果。修复 GUI 恢复历史会话时报 400 `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`（DeepSeek 等严格校验的提供商）。
+- **robit-gui**：GUI 关闭后不再残留 `.robit/LOCK` 锁文件。Tauri 退出时以 `process::exit` 终止进程、不执行 main 的析构函数，`DirectoryLock` 的 RAII 释放从未运行。改为在 `RunEvent::Exit` 事件中显式释放锁（解锁并删除 LOCK 文件）。
+- **robit-gui**：会话持久化补齐工具调用结构。此前 `ToolCallRequested` 只存 `tool` 消息、不存携带 `tool_calls` 的 assistant 消息，且 `tool` 消息的 `content` 一直停留在调用参数而非实际输出，导致恢复的历史出现孤儿 tool 消息。现在每次工具调用前插入对应的 `assistant(tool_calls)` 消息，工具完成时回写真实输出；前端跳过空内容 assistant 消息的渲染。
+- **robit-agent**：不支持图片的模型（如 DeepSeek）现在会在每次 API 调用前净化历史（`sanitize_history_for_model`），移除 `image_url` 内容块，避免 400 `unknown variant 'image_url'`。
+
 ## [0.1.18] - 2026-08-11
 
 ### Added

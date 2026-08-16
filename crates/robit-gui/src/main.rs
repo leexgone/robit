@@ -40,14 +40,19 @@ fn main() {
         .clone()
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
 
-    // Acquire directory lock
-    let _lock = match robit_agent::DirectoryLock::acquire(&working_dir, "robit-gui") {
+    // Acquire directory lock. Held in an Arc<Mutex<Option<_>>> so the Tauri
+    // exit handler can release it explicitly: Tauri terminates the process
+    // without running main()'s destructors, so plain RAII would leave the
+    // LOCK file behind on every GUI close.
+    let lock = match robit_agent::DirectoryLock::acquire(&working_dir, "robit-gui") {
         Ok(lock) => lock,
         Err(e) => {
             eprintln!("{}", e);
             std::process::exit(1);
         }
     };
+    let lock = Arc::new(std::sync::Mutex::new(Some(lock)));
+    let lock_for_exit = Arc::clone(&lock);
 
     let config =
         load_config(cli.workdir.as_deref()).expect("Failed to load config.toml configuration");
@@ -61,7 +66,7 @@ fn main() {
     let app_state = AppState::new(client, config, cli.workdir, cli.global_storage)
         .expect("Failed to initialize app state");
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
@@ -77,6 +82,19 @@ fn main() {
             commands::get_config,
             commands::read_image_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(move |_app_handle, event| {
+        // RunEvent::Exit fires before the process terminates — the only
+        // reliable place to run cleanup, since destructors are skipped.
+        if let tauri::RunEvent::Exit = event {
+            tracing::info!("Application exiting, releasing directory lock");
+            if let Ok(mut guard) = lock_for_exit.lock() {
+                // Take the lock out and drop it: DirectoryLock's Drop
+                // unlocks the file handle and deletes the LOCK file.
+                drop(guard.take());
+            }
+        }
+    });
 }

@@ -43,6 +43,16 @@ pub struct AgentSession {
     pub session_id: SessionId,
     pub history: Vec<ChatCompletionRequestMessage>,
     pub working_dir: PathBuf,
+    /// The last known exact prompt token count from API `usage.prompt_tokens`.
+    /// Used as a calibration anchor: `last_known_prompt_tokens` is the precise
+    /// token count for the first `snapshot_message_count` messages in history.
+    /// New messages appended after the snapshot are estimated incrementally.
+    /// Invalidated (set to `None`) when history is truncated/compressed.
+    pub last_known_prompt_tokens: Option<u32>,
+    /// Number of messages in `history` that `last_known_prompt_tokens` covers.
+    /// If `history.len() < snapshot_message_count`, the snapshot is stale
+    /// (truncation/compression happened) and calibration is invalid.
+    pub snapshot_message_count: usize,
 }
 
 impl AgentSession {
@@ -59,6 +69,8 @@ impl AgentSession {
             session_id,
             history: vec![system_msg],
             working_dir,
+            last_known_prompt_tokens: None,
+            snapshot_message_count: 0,
         }
     }
 
@@ -86,6 +98,8 @@ impl AgentSession {
             session_id,
             history: full_history,
             working_dir,
+            last_known_prompt_tokens: None,
+            snapshot_message_count: 0,
         }
     }
 }
@@ -212,7 +226,7 @@ impl Agent {
             history,
         );
 
-        tracing::info!(
+        tracing::debug!(
             "Agent::with_history: after adding system prompt, session history length = {}",
             session.history.len()
         );
@@ -221,7 +235,11 @@ impl Agent {
         let supports_images = llm_client.supports_images();
         sanitize_history_for_model(&mut session.history, supports_images);
         // Apply context truncation before starting
-        let truncation_result = context_manager.maybe_truncate(&mut session.history);
+        let truncation_result = context_manager.maybe_truncate(
+            &mut session.history,
+            session.last_known_prompt_tokens,
+            session.snapshot_message_count,
+        );
         if truncation_result.rounds_removed > 0 {
             tracing::info!(
                 "Agent::with_history: truncated {} rounds ({} messages), needs_compression={}",
@@ -299,13 +317,17 @@ impl Agent {
                 // Apply the compression result (generate summary / merge)
                 if let Some(session) = self.sessions.get_mut(&session_id) {
                     apply_compression_result(&self.llm_client, &mut session.history, &result).await;
+                    // Compression changed history — invalidate calibration
+                    session.last_known_prompt_tokens = None;
+                    session.snapshot_message_count = 0;
                 }
 
                 // Check if more compression is needed
                 let needs_more = if let Some(session) = self.sessions.get(&session_id) {
-                    let estimated = crate::context::estimate_messages_tokens_with_margin(
+                    let estimated = self.context_manager.estimate_context_tokens(
                         &session.history,
-                        self.context_manager.token_safety_margin,
+                        session.last_known_prompt_tokens,
+                        session.snapshot_message_count,
                     );
                     estimated > self.context_manager.truncation_threshold()
                 } else {
@@ -319,7 +341,11 @@ impl Agent {
 
                 // Do another round of truncation
                 if let Some(session) = self.sessions.get_mut(&session_id) {
-                    let next_result = self.context_manager.maybe_truncate(&mut session.history);
+                    let next_result = self.context_manager.maybe_truncate(
+                        &mut session.history,
+                        session.last_known_prompt_tokens,
+                        session.snapshot_message_count,
+                    );
                     if next_result.needs_compression {
                         self.pending_truncation = Some((session_id.clone(), next_result));
                     } else if next_result.messages_removed > 0 {
@@ -335,7 +361,7 @@ impl Agent {
 
             tracing::info!("=== Compression processing finished ({} iterations) ===", iterations);
         } else {
-            tracing::info!("No pending compression needed");
+            tracing::debug!("No pending compression needed");
         }
 
         // Take done_rx out of self so the select! loop can borrow it without
@@ -542,17 +568,28 @@ impl Agent {
             .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
 
         // Truncate context if needed
-        let truncation_result = self.context_manager.maybe_truncate(&mut session.history);
+        let truncation_result = self.context_manager.maybe_truncate(
+            &mut session.history,
+            session.last_known_prompt_tokens,
+            session.snapshot_message_count,
+        );
 
         // Handle compression: generate actual summary / merge via LLM
         if truncation_result.needs_compression {
             apply_compression_result(&self.llm_client, &mut session.history, &truncation_result).await;
+            // Truncation changed history — invalidate calibration
+            session.last_known_prompt_tokens = None;
+            session.snapshot_message_count = 0;
 
             tracing::info!(
                 "Compression completed: action={:?}, removed_rounds={}",
                 truncation_result.action, truncation_result.rounds_removed
             );
         } else if truncation_result.messages_removed > 0 {
+            // Messages were removed (e.g. discard) — also invalidate calibration
+            session.last_known_prompt_tokens = None;
+            session.snapshot_message_count = 0;
+
             tracing::info!(
                 "Context truncated without compression: {} messages removed",
                 truncation_result.messages_removed
@@ -567,32 +604,60 @@ impl Agent {
             Some(tool_schemas)
         };
 
-        // Log estimated token usage before call
-        let estimated_prompt = crate::context::estimate_messages_tokens_with_margin(
+        // Log estimated token usage before call (uses calibrated estimation when available)
+        let estimated_prompt = self.context_manager.estimate_context_tokens(
             &session.history,
-            self.context_manager.token_safety_margin,
+            session.last_known_prompt_tokens,
+            session.snapshot_message_count,
         );
+        let calibration_tag = if session.last_known_prompt_tokens.is_some() {
+            "calibrated"
+        } else {
+            "heuristic"
+        };
         tracing::info!(
-            "LLM call: ~{} prompt tokens (with {:.1}x margin), {} messages, threshold={} tokens",
+            "LLM call: ~{} prompt tokens ({}), {} messages",
             estimated_prompt,
-            self.context_manager.token_safety_margin,
+            calibration_tag,
             session.history.len(),
-            self.context_manager.truncation_threshold(),
         );
 
+        // Sanitize history right before API call — some providers reject
+        // image_url content even when supports_images was checked earlier
+        // (e.g. model switch mid-session, or stale history from DB).
+        if !self.llm_client.supports_images() {
+            sanitize_history_for_model(&mut session.history, false);
+        }
+
         // Call LLM (streaming)
-        let mut stream = self
+        let mut stream = match self
             .llm_client
             .chat_stream(session.history.clone(), tools_param)
-            .await?;
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("LLM chat_stream failed: {:?}", e);
+                return Err(e.into());
+            }
+        };
+        tracing::trace!("LLM stream obtained, starting to collect response");
 
         // Collect streaming response
         let mut full_text = String::new();
         let mut tool_call_chunks: HashMap<usize, ToolCallAccumulator> = HashMap::new();
         let mut api_usage: Option<async_openai::types::chat::CompletionUsage> = None;
 
+        let mut chunk_count = 0;
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| AgentError::LlmError(e.into()))?;
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("Stream chunk error: {:?}", e);
+                    return Err(AgentError::LlmError(e.into()));
+                }
+            };
+            chunk_count += 1;
 
             // Capture usage info if present in this chunk (some providers include it in final chunk)
             if let Some(ref usage) = chunk.usage {
@@ -638,6 +703,8 @@ impl Agent {
             }
         }
 
+        tracing::debug!("Stream collection complete: {} chunks, {} chars of text", chunk_count, full_text.len());
+
         // Assemble complete tool calls from chunks
         let assembled_tool_calls: Vec<ChatCompletionMessageToolCall> = {
             let mut indices: Vec<usize> = tool_call_chunks.keys().cloned().collect();
@@ -669,14 +736,16 @@ impl Agent {
             );
         }
 
-        tracing::debug!("Assembled {} tool call(s)", assembled_tool_calls.len());
-        for (i, tc) in assembled_tool_calls.iter().enumerate() {
-            tracing::debug!(
-                "Tool call [{}]: id='{}', name='{}', arguments={}",
-                i,
-                tc.id,
-                tc.function.name,
-                truncate_for_log(&tc.function.arguments, 80)
+        // Calibrate token estimation: store the API-reported prompt_tokens as a
+        // precise baseline. At this point session.history still reflects exactly
+        // what was sent to the API (assistant_msg hasn't been pushed yet), so
+        // prompt_tokens is the exact token count for session.history.
+        if let Some(ref usage) = api_usage {
+            session.last_known_prompt_tokens = Some(usage.prompt_tokens);
+            session.snapshot_message_count = session.history.len();
+            tracing::trace!(
+                "Token calibration updated: prompt_tokens={} at {} messages",
+                usage.prompt_tokens, session.history.len()
             );
         }
 
@@ -724,22 +793,13 @@ impl Agent {
         }
 
         // Execute each tool call
-        tracing::trace!(
-            "[tool] beginning execution of {} tool call(s) this step",
-            assembled_tool_calls.len()
-        );
         for (tc_idx, tc) in assembled_tool_calls.iter().enumerate() {
             tracing::info!(
-                "About to execute tool [{}/{}]: id='{}', name='{}'",
+                "Executing tool [{}/{}]: name='{}', id='{}', args={}",
                 tc_idx + 1,
                 assembled_tool_calls.len(),
-                tc.id,
-                tc.function.name
-            );
-            tracing::trace!(
-                "[tool] tool_call_id='{}', name='{}', arguments={}",
-                tc.id,
                 tc.function.name,
+                tc.id,
                 truncate_for_log(&tc.function.arguments, 80)
             );
 
@@ -753,7 +813,7 @@ impl Agent {
             // failed delivery (closed/full channel, platform send error) is
             // surfaced — a silent failure here is exactly the "no feedback"
             // symptom we want to catch.
-            match self
+            if let Err(e) = self
                 .frontend
                 .on_event(AgentEvent::ToolCallRequested {
                     tool_call_id: tc_info.id.clone(),
@@ -762,17 +822,12 @@ impl Agent {
                 })
                 .await
             {
-                Ok(()) => tracing::trace!(
-                    "[tool] ToolCallRequested delivered to frontend: tool_call_id='{}', name='{}'",
-                    tc_info.id,
-                    tc_info.name
-                ),
-                Err(e) => tracing::warn!(
+                tracing::warn!(
                     "[tool] ToolCallRequested delivery FAILED (user feedback may be lost): tool_call_id='{}', name='{}', error={}",
                     tc_info.id,
                     tc_info.name,
                     e
-                ),
+                );
             }
 
             // Check confirmation
@@ -834,11 +889,6 @@ impl Agent {
                     task_registry: self.task_registry.clone(),
                 };
 
-                tracing::trace!(
-                    "[tool] dispatching to registry: tool_call_id='{}', name='{}'",
-                    tc_info.id,
-                    tc_info.name
-                );
                 let result = self.tools.execute(&tc.function.name, args, &ctx).await;
                 tracing::trace!(
                     "[tool] execution returned: tool_call_id='{}', name='{}', is_pending={}, is_error={}, content_len={}",
@@ -916,7 +966,7 @@ impl Agent {
 
             // Notify frontend of result. Same rationale as above: capture
             // delivery errors so a lost ToolCallResult is never silent.
-            match self
+            if let Err(e) = self
                 .frontend
                 .on_event(AgentEvent::ToolCallResult {
                     tool_call_id: tc.id.clone(),
@@ -924,17 +974,12 @@ impl Agent {
                 })
                 .await
             {
-                Ok(()) => tracing::trace!(
-                    "[tool] ToolCallResult delivered to frontend: tool_call_id='{}', name='{}'",
-                    tc_info.id,
-                    tc_info.name
-                ),
-                Err(e) => tracing::warn!(
+                tracing::warn!(
                     "[tool] ToolCallResult delivery FAILED (user feedback may be lost): tool_call_id='{}', name='{}', error={}",
                     tc_info.id,
                     tc_info.name,
                     e
-                ),
+                );
             }
 
             // Add tool result to history
@@ -952,6 +997,7 @@ impl Agent {
                 .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
             session.history.push(tool_msg);
 
+
             // Inject images from the tool result as a multimodal user message.
             // OpenAI protocol restricts tool message content to text, so images
             // cannot travel in the tool result itself; we inject them in a
@@ -961,19 +1007,8 @@ impl Agent {
                     session.history.push(image_msg);
                 }
             }
-
-            tracing::trace!(
-                "[tool] tool result appended to history: tool_call_id='{}', name='{}', history_len={}",
-                tc_info.id,
-                tc_info.name,
-                session.history.len()
-            );
         }
 
-        tracing::trace!(
-            "[tool] all {} tool call(s) executed this step",
-            assembled_tool_calls.len()
-        );
         Ok(assembled_tool_calls.len())
     }
 
@@ -1494,7 +1529,7 @@ impl ToolCallAccumulator {
         let id = self.id?;
         let name = self.name?;
 
-        tracing::debug!(
+        tracing::trace!(
             "Tool call assembled: id='{}', name='{}', args={}",
             id,
             name,

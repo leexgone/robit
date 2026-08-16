@@ -70,8 +70,8 @@ function App() {
             tool_info: toolInfoRequested,
             created_at: new Date().toISOString(),
           };
-          const currentMsgs = useStore.getState().messages[sid] || [];
-          setMessages(sid, [...currentMsgs, toolMsg]);
+          const toolMsgs = useStore.getState().messages[sid] || [];
+          setMessages(sid, [...toolMsgs, toolMsg]);
           break;
 
         case "ToolCallResult":
@@ -105,6 +105,15 @@ function App() {
 
         case "Error":
           console.error("Agent error:", payload.message);
+          // Display error as a system message in the conversation
+          const errorMsg: MessageData = {
+            id: Date.now(),
+            role: "system",
+            content: `❌ Error: ${payload.message}`,
+            created_at: new Date().toISOString(),
+          };
+          const errorMsgs = useStore.getState().messages[sid] || [];
+          setMessages(sid, [...errorMsgs, errorMsg]);
           setAgentStatus(sid, "ready");
           break;
 
