@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-08-17
+
 ### Added
 
 - **robit-agent**：Token 校准计数。每次 API 响应后用 `usage.prompt_tokens` 作为精确基线回填（`last_known_prompt_tokens` + `snapshot_message_count`），之后仅对新增消息做增量估算；历史被截断/压缩时自动失效回退启发式估算。零新依赖，显著降低上下文 Token 估算误差，避免过早触发截断。
@@ -48,6 +50,7 @@
 
 > 上述后两条共同导致了「万象生图请求被拦截无响应、智能体得不到超时提醒」的现场现象：截断 panic 发生在异步生图任务里，而该任务无 panic 兜底，于是静默死掉、永不回报。
 
-[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/leexgone/robit/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/leexgone/robit/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/leexgone/robit/compare/v0.1.16...v0.1.17
