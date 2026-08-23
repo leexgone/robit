@@ -8,6 +8,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **robit-agent**：系统提示词不再注入工具清单（移除 `system.md` 的 `Available Tools` 段与 `PromptBuilder` 的 `tools` 参数）。工具定义完全通过 OpenAI function calling 的 `tools` 请求参数下发（name/description/参数 JSON Schema），消除与 `tools` 参数重复的文本描述，节省每轮上下文 Token。
+
+### Fixed
+
+- **robit-agent**：`tools` 请求参数现在仅在模型支持 function calling 时下发（`supports_tools` 配置项生效，此前该标志定义了但从未被使用），不支持该参数的 OpenAI 兼容端点不再收到无法处理的请求。注意：`supports_tools` 默认为 `true`（保持既有行为不变），不支持工具调用的模型（如 DeepSeek reasoner）需在配置中显式设置 `supports_tools = false`。
+
 ## [0.1.19] - 2026-08-17
 
 ### Added

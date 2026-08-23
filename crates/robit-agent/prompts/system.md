@@ -1,7 +1,3 @@
-## Available Tools
-
-{tools_section}
-
 ## Available Skills
 
 {skills_section}

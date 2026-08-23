@@ -81,7 +81,9 @@ pub struct ModelConfig {
     pub max_tokens: Option<u32>,
     /// Whether this model supports image inputs (optional, default false).
     pub supports_images: Option<bool>,
-    /// Whether this model supports tool calling (optional, default false).
+    /// Whether this model supports tool calling (optional, default true).
+    /// Set to `false` for models that reject the OpenAI function-calling
+    /// `tools` parameter (e.g. reasoning-only models).
     pub supports_tools: Option<bool>,
 }
 
@@ -520,7 +522,10 @@ pub fn resolve_profile(
         temperature: model.temperature,
         context_window: model.context_window,
         supports_images: model.supports_images.unwrap_or(false),
-        supports_tools: model.supports_tools.unwrap_or(false),
+        // Default true: the agent depends on tool calling, and providers that
+        // accept the `tools` parameter must keep working even when the config
+        // omits this field. Models that reject it must opt out explicitly.
+        supports_tools: model.supports_tools.unwrap_or(true),
     })
 }
 

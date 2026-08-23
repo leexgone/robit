@@ -138,6 +138,7 @@ name = "DeepSeek Reasoner"
 context_window = 65536
 temperature = 0.6
 max_tokens = 8192
+supports_tools = false                 # 不支持 function calling 的模型需显式关闭（默认 true）
 
 [providers.qwen]                       # 另一个提供商
 name = "通义千问"

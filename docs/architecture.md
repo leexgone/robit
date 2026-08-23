@@ -131,7 +131,7 @@ pub trait Tool: Send + Sync {
     /// 工具名称，LLM 通过这个名字调用
     fn name(&self) -> &str;
 
-    /// 工具描述，注入到系统提示词中
+    /// 工具描述，随 function calling 的 `tools` 请求参数传给 LLM
     fn description(&self) -> &str;
 
     /// 工具的参数 JSON Schema，LLM 根据这个生成参数
@@ -477,17 +477,18 @@ cwd/.robit/skills/        ← 项目技能（高优先级，同名覆盖全局�
 
 ```txt
 ┌─────────────────────────────────────┐
-│  1. 身份定义（Agent Identity）       │  ← 固定
+│  1. Agent 提示词（身份与工作方式）    │  ← agent.md（用户可自定义）
 ├─────────────────────────────────────┤
-│  2. 工具使用说明（Tool Instructions）│  ← 根据 enabled_tools 动态生成
+│  2. 技能清单（Available Skills）     │  ← 根据启用的技能动态注入
 ├─────────────────────────────────────┤
-│  3. 编程规范（Coding Guidelines）    │  ← 固定
-├─────────────────────────────────────┤
-│  4. 环境信息（Environment Info）     │  ← 运行时注入（OS、cwd、时间等）
-├─────────────────────────────────────┤
-│  5. 技能注入（Skills）               │  ← 根据启用的技能动态注入
+│  3. 环境信息（Environment Info）     │  ← 运行时注入（OS、cwd、时间等）
 └─────────────────────────────────────┘
 ```
+
+工具清单**不写进系统提示词**，而是通过 OpenAI function calling 的 `tools` 请求参数
+（含每个工具的 name/description/参数 JSON Schema）下发给 LLM，避免与 `tools`
+参数重复、节省每轮上下文 Token。仅当模型配置 `supports_tools = true`（默认）
+时才携带该参数；不支持 function calling 的模型需显式配置 `supports_tools = false`。
 
 ### 内置默认提示词（精简版）
 
@@ -526,7 +527,7 @@ cwd/.robit/skills/        ← 项目技能（高优先级，同名覆盖全局�
 
 提示词分为两部分：
 1. **Agent 提示词（用户可自定义）**：定义角色、工作方式等
-2. **系统提示词（内置固定）**：包含 Tools、Skills、Environment 等，自动追加
+2. **系统提示词（内置固定）**：包含 Skills、Environment 等，自动追加（工具清单不在其中，经 `tools` 请求参数下发）
 
 用户可通过以下文件自定义 Agent 提示词：
 
@@ -545,9 +546,10 @@ cwd/.robit/skills/        ← 项目技能（高优先级，同名覆盖全局�
 [Agent 提示词]   ← 用户可自定义（agent.md）
     ↓
 [系统提示词]     ← 内置固定，自动追加（system.md）
-  ├── Available Tools
   ├── Available Skills
   └── Environment
+
+工具清单经 function calling 的 `tools` 请求参数下发，不占用系统提示词
 ```
 
 ### 技能注入格式

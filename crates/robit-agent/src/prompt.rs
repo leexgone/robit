@@ -3,14 +3,18 @@
 use std::path::Path;
 
 use crate::datetime::current_date;
-use crate::tool::Tool;
 
 /// Default agent prompt template (user-editable part).
-/// Does NOT include Tools/Skills/Environment sections - those are appended automatically.
+/// Does NOT include Skills/Environment sections - those are appended automatically.
 const DEFAULT_AGENT_PROMPT: &str = include_str!("../prompts/default.md");
 
 /// Built-in system prompt - automatically appended to all prompts.
-/// Contains Tools, Skills, and Environment sections (never overridden by users).
+/// Contains Skills and Environment sections (never overridden by users).
+///
+/// Note: tools are NOT listed here. They are exposed to the LLM exclusively
+/// through the OpenAI function-calling `tools` request parameter (see
+/// `ToolRegistry::tool_schemas`), which also carries each tool's parameter
+/// JSON Schema.
 const SYSTEM_PROMPT: &str = include_str!("../prompts/system.md");
 
 pub struct PromptBuilder {
@@ -53,17 +57,19 @@ impl PromptBuilder {
     ///
     /// The prompt is composed of:
     /// 1. Agent prompt (user-provided from agent.md, or default from default.md)
-    /// 2. System prompt (Tools, Skills, Environment) - automatically appended,
+    /// 2. System prompt (Skills, Environment) - automatically appended,
     ///    defined in system.md (built-in, never overridden by users)
     ///
     /// `skills` is a list of (name, description) pairs for enabled skills.
+    ///
+    /// Tools are intentionally NOT part of the system prompt: they are exposed
+    /// to the LLM via the OpenAI function-calling `tools` request parameter
+    /// (`ToolRegistry::tool_schemas`), which also carries parameter schemas.
     pub fn build_system_prompt(
         &self,
-        tools: &[&dyn Tool],
         skills: &[(&str, &str)],
         working_dir: &std::path::Path,
     ) -> String {
-        let tools_section = Self::build_tools_section(tools);
         let skills_section = Self::build_skills_section(skills);
         let os = std::env::consts::OS;
         let cwd = working_dir.display().to_string();
@@ -72,38 +78,15 @@ impl PromptBuilder {
         // Select base prompt: custom agent prompt or default agent prompt
         let agent_prompt = self.custom_prompt.as_deref().unwrap_or(DEFAULT_AGENT_PROMPT);
 
-        // Replace variables in the system prompt (Tools, Skills, Environment sections)
+        // Replace variables in the system prompt (Skills, Environment sections)
         let system_part = SYSTEM_PROMPT
             .replace("{os}", os)
             .replace("{cwd}", &cwd)
             .replace("{date}", &date)
-            .replace("{tools_section}", &tools_section)
             .replace("{skills_section}", &skills_section);
 
         // Combine: agent prompt + system prompt
         format!("{}\n\n{}", agent_prompt.trim(), system_part)
-    }
-
-    /// Build the tools description section.
-    fn build_tools_section(tools: &[&dyn Tool]) -> String {
-        if tools.is_empty() {
-            return "(no available tools)".to_string();
-        }
-
-        let mut section = String::new();
-        for tool in tools {
-            section.push_str(&format!(
-                "- **{}**: {}{}\n",
-                tool.name(),
-                tool.description(),
-                if tool.requires_confirmation() {
-                    " (requires user confirmation)"
-                } else {
-                    ""
-                }
-            ));
-        }
-        section
     }
 
     /// Build the skills description section.
