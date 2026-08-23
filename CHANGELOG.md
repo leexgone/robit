@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-08-23
+
 ### Changed
 
 - **robit-agent**：系统提示词不再注入工具清单（移除 `system.md` 的 `Available Tools` 段与 `PromptBuilder` 的 `tools` 参数）。工具定义完全通过 OpenAI function calling 的 `tools` 请求参数下发（name/description/参数 JSON Schema），消除与 `tools` 参数重复的文本描述，节省每轮上下文 Token。
@@ -58,7 +60,8 @@
 
 > 上述后两条共同导致了「万象生图请求被拦截无响应、智能体得不到超时提醒」的现场现象：截断 panic 发生在异步生图任务里，而该任务无 panic 兜底，于是静默死掉、永不回报。
 
-[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.19...HEAD
+[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.20...HEAD
+[0.1.20]: https://github.com/leexgone/robit/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/leexgone/robit/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/leexgone/robit/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/leexgone/robit/compare/v0.1.16...v0.1.17
