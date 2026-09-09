@@ -1061,6 +1061,7 @@ impl Agent {
         let mut parts = vec![ChatCompletionRequestUserMessageContentPart::Text(
             ChatCompletionRequestMessageContentPartText {
                 text: text.to_string(),
+                prompt_cache_breakpoint: None,
             },
         )];
 
@@ -1081,6 +1082,7 @@ impl Agent {
                                     url: base64_url,
                                     detail: None,
                                 },
+                                prompt_cache_breakpoint: None,
                             },
                         ));
                     }
@@ -1583,6 +1585,7 @@ fn build_image_user_message(images: &[ToolImage]) -> Option<ChatCompletionReques
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            prompt_cache_breakpoint: None,
         },
     )];
     for img in images {
@@ -1592,6 +1595,7 @@ fn build_image_user_message(images: &[ToolImage]) -> Option<ChatCompletionReques
                     url: img.data_url.clone(),
                     detail: None,
                 },
+                prompt_cache_breakpoint: None,
             },
         ));
     }
