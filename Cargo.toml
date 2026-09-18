@@ -44,11 +44,11 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "mul
 
 # 编码
 base64 = "0.23"
-bytes = "1.0"
+bytes = "1.12"
 
 # 序列化
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "1.1"
 
@@ -60,15 +60,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
 
 # 错误处理
-thiserror = "2"
-anyhow = "1"
+thiserror = "2.0"
+anyhow = "1.0"
 
 # 工具库
 dirs = "7.0"
 dotenvy = "0.15"
 uuid = { version = "1.26", features = ["v4"] }
 globset = "0.4"
-regex = "1"
+regex = "1.13"
 time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
 rusqlite = { version = "0.40", features = ["bundled", "bundled-full"] }
 fs2 = "0.4"
