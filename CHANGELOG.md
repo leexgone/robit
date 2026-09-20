@@ -8,6 +8,13 @@
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-09-20
+
+### Fixed
+
+- **robit-agent**：修复并行图片工具调用触发 400 `insufficient tool messages following tool_calls message`（DeepSeek 等严格校验的提供商）。`read` 图片文件等返回图片的工具结果此前在工具执行循环内逐个注入多模态 user 消息，并行调用批次中该消息被插在 tool 响应中间，违反 "assistant(tool_calls) 后必须紧跟每个 tool_call_id 的 tool 响应" 的协议约束。现在图片 user 消息在整批工具结果之后统一注入，保证序列为 `assistant(tool_calls) → tool×N → user(图片)`。
+- **robit-ai**：新增 `repair_interleaved_tool_responses` 历史修复，在 `chat_stream`/`chat` 发送前（`repair_tool_pairing` 之前）执行：把夹在 `tool_calls` 与 tool 响应之间的非 tool 消息移到批次末尾，保持相对顺序。DB 加载的历史、旧版本写出的交错序列在每次 API 调用前自动被修复，无需迁移存量数据。
+
 ## [0.1.20] - 2026-08-23
 
 ### Changed
