@@ -553,15 +553,6 @@ impl Agent {
     /// Run one step: call LLM, process response, execute tools.
     /// Returns the number of tool calls executed (0 = turn complete, no tools called).
     async fn run_one_step(&mut self, session_id: &SessionId) -> Result<usize> {
-        // First get the working_dir before the first mutable borrow
-        let working_dir = {
-            let session = self
-                .sessions
-                .get(session_id)
-                .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
-            session.working_dir.clone()
-        };
-
         let session = self
             .sessions
             .get_mut(session_id)
@@ -799,6 +790,29 @@ impl Agent {
             return Ok(0);
         }
 
+        self.execute_tool_calls(session_id, &assembled_tool_calls).await
+    }
+
+    /// Execute the tool calls assembled from one LLM response and append the
+    /// results to the session history.
+    async fn execute_tool_calls(
+        &mut self,
+        session_id: &SessionId,
+        assembled_tool_calls: &[ChatCompletionMessageToolCall],
+    ) -> Result<usize> {
+        // First get the working_dir before any mutable borrow of sessions
+        let working_dir = {
+            let session = self
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
+            session.working_dir.clone()
+        };
+
+        // Images collected across the whole batch, injected as one user
+        // message after the loop.
+        let mut batch_images: Vec<ToolImage> = Vec::new();
+
         // Execute each tool call
         for (tc_idx, tc) in assembled_tool_calls.iter().enumerate() {
             tracing::info!(
@@ -1004,15 +1018,24 @@ impl Agent {
                 .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
             session.history.push(tool_msg);
 
+            // Collect images from this tool result; they are injected after
+            // ALL tool messages of the batch (below).
+            batch_images.extend(truncated_result.images);
+        }
 
-            // Inject images from the tool result as a multimodal user message.
-            // OpenAI protocol restricts tool message content to text, so images
-            // cannot travel in the tool result itself; we inject them in a
-            // separate user message right after the tool result.
-            if self.llm_client.supports_images() {
-                if let Some(image_msg) = build_image_user_message(&truncated_result.images) {
-                    session.history.push(image_msg);
-                }
+        // Inject the batch's collected images as a single multimodal user
+        // message AFTER all tool messages. OpenAI protocol restricts tool
+        // message content to text, so images travel in a separate user
+        // message — but it must not interleave with the tool responses:
+        // providers reject anything between an assistant `tool_calls`
+        // message and its tool responses with a 400 error.
+        if self.llm_client.supports_images() {
+            if let Some(image_msg) = build_image_user_message(&batch_images) {
+                let session = self
+                    .sessions
+                    .get_mut(session_id)
+                    .ok_or_else(|| AgentError::InternalError("Session not found".to_string()))?;
+                session.history.push(image_msg);
             }
         }
 
@@ -1667,5 +1690,156 @@ fn summarize_result(content: &str) -> String {
     } else {
         let truncated: String = content.chars().take(MAX).collect();
         format!("{}... (truncated, {} chars total)", truncated, char_count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::AgentEvent;
+    use crate::frontend::Frontend;
+    use crate::skill::SkillRegistry;
+    use crate::tool::{Tool, ToolContext};
+    use async_trait::async_trait;
+    use robit_ai::config::{ModelConfig, ProviderConfig, RobitConfig};
+    use serde_json::Value;
+
+    /// Frontend that swallows all events (no UI in tests).
+    struct NoopFrontend;
+
+    #[async_trait]
+    impl Frontend for NoopFrontend {
+        async fn on_event(&self, _event: AgentEvent) -> Result<()> {
+            Ok(())
+        }
+
+        async fn request_tool_confirmation(&self, _info: &ToolCallInfo) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// A tool whose result always carries one image, mimicking `read` on an
+    /// image file with a vision-capable model.
+    struct ImageTool;
+
+    #[async_trait]
+    impl Tool for ImageTool {
+        fn name(&self) -> &str {
+            "fake_image_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Returns an image"
+        }
+
+        fn parameters_schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn requires_confirmation(&self) -> bool {
+            false
+        }
+
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolResult> {
+            Ok(ToolResult {
+                content: "Image file: x.png".to_string(),
+                is_error: false,
+                images: vec![ToolImage {
+                    data_url: "data:image/png;base64,Zm9v".to_string(),
+                    label: "x.png".to_string(),
+                }],
+                is_pending: false,
+                pending_task_id: None,
+            })
+        }
+    }
+
+    /// Build an `LlmClient` for a vision model without contacting it (the
+    /// base URL points at a closed port; only `supports_images()` is used).
+    fn vision_llm_client() -> Arc<LlmClient> {
+        let config = RobitConfig {
+            default_model: Some("test/vision".to_string()),
+            providers: HashMap::from([(
+                "test".to_string(),
+                ProviderConfig {
+                    name: Some("Test".to_string()),
+                    base_url: "http://127.0.0.1:1".to_string(),
+                    api_key: "sk-test".to_string(),
+                    models: vec![ModelConfig {
+                        id: "vision".to_string(),
+                        name: Some("Vision".to_string()),
+                        context_window: None,
+                        max_output_tokens: None,
+                        temperature: None,
+                        max_tokens: None,
+                        supports_images: Some(true),
+                        supports_tools: Some(true),
+                    }],
+                },
+            )]),
+            app: None,
+            channels: None,
+            default_image_model: None,
+            image_providers: HashMap::new(),
+        };
+        Arc::new(LlmClient::from_config(&config, None).unwrap())
+    }
+
+    fn tool_call(id: &str) -> ChatCompletionMessageToolCall {
+        ChatCompletionMessageToolCall {
+            id: id.to_string(),
+            function: FunctionCall {
+                name: "fake_image_tool".to_string(),
+                arguments: "{}".to_string(),
+            },
+        }
+    }
+
+    /// Regression test for the DeepSeek 400 "insufficient tool messages
+    /// following tool_calls message": when a parallel tool-call batch returns
+    /// images, the injected multimodal user message(s) must come AFTER all
+    /// tool messages of the batch, never between them.
+    #[tokio::test]
+    async fn parallel_image_tool_results_keep_tool_messages_contiguous() {
+        let mut tools = ToolRegistry::new();
+        tools.register(ImageTool);
+        let mut agent = Agent::new(
+            vision_llm_client(),
+            Arc::new(tools),
+            Arc::new(SkillRegistry::new(vec![], &[])),
+            Arc::new(NoopFrontend),
+            None,
+            None,
+            PathBuf::from("."),
+            true,
+            HashMap::new(),
+        );
+
+        let session_id = agent.default_session_id.clone();
+        let calls = vec![tool_call("call_0"), tool_call("call_1"), tool_call("call_2")];
+        let executed = agent.execute_tool_calls(&session_id, &calls).await.unwrap();
+        assert_eq!(executed, 3);
+
+        let session = agent.sessions.get(&session_id).unwrap();
+        // History layout: [system, tool, tool, tool, user(images)]. The
+        // system prompt is message 0; skip it.
+        assert_eq!(session.history.len(), 5, "3 tool messages + 1 image user message");
+        let kinds: Vec<&str> = session
+            .history
+            .iter()
+            .skip(1)
+            .map(|m| match m {
+                ChatCompletionRequestMessage::Tool(_) => "tool",
+                ChatCompletionRequestMessage::User(_) => "user",
+                ChatCompletionRequestMessage::Assistant(_) => "assistant",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["tool", "tool", "tool", "user"],
+            "tool responses must be contiguous after the assistant tool_calls \
+             message; image user message(s) go after the batch"
+        );
     }
 }

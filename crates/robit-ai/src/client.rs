@@ -162,6 +162,124 @@ fn repair_tool_pairing(
     result
 }
 
+/// Repair histories where a non-tool message (e.g. a user message carrying
+/// tool-result images) is interleaved between an assistant `tool_calls`
+/// message and its tool responses.
+///
+/// Providers enforce that the messages immediately following an assistant
+/// message with `tool_calls` are the `tool` responses for each declared
+/// `tool_call_id`; DeepSeek rejects violations with a 400 "insufficient tool
+/// messages following tool_calls message". Such histories can come from
+/// sessions written by older builds that injected image user messages
+/// per-tool-call, or from restored databases.
+///
+/// Deferred non-tool messages are re-inserted after the batch's last tool
+/// response (or at the end of the history if the batch is truncated),
+/// preserving their relative order.
+fn repair_interleaved_tool_responses(
+    messages: Vec<ChatCompletionRequestMessage>,
+) -> Vec<ChatCompletionRequestMessage> {
+    use std::collections::HashSet;
+
+    // Quick pre-scan: is there any non-tool message inside a tool_calls →
+    // tool-responses window? If not, pass through without rebuilding.
+    {
+        let mut pending: HashSet<&String> = HashSet::new();
+        let mut interleaved = false;
+        'scan: for msg in &messages {
+            match msg {
+                ChatCompletionRequestMessage::Assistant(a) => {
+                    if let Some(tool_calls) = &a.tool_calls {
+                        pending = tool_calls
+                            .iter()
+                            .filter_map(|tc| {
+                                if let ChatCompletionMessageToolCalls::Function(f) = tc {
+                                    Some(&f.id)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                    }
+                }
+                ChatCompletionRequestMessage::Tool(t) => {
+                    pending.remove(&t.tool_call_id);
+                }
+                _ => {
+                    if !pending.is_empty() {
+                        interleaved = true;
+                        break 'scan;
+                    }
+                }
+            }
+        }
+        if !interleaved {
+            return messages;
+        }
+    }
+
+    tracing::warn!(
+        "repair_interleaved_tool_responses: moving non-tool message(s) out of a \
+         tool_calls → tool-responses window (providers reject interleaved messages \
+         with a 400 error)"
+    );
+
+    // Rebuild: defer non-tool messages that arrive while a batch is still
+    // unanswered; flush them after the batch's last tool response.
+    let mut result: Vec<ChatCompletionRequestMessage> = Vec::with_capacity(messages.len());
+    let mut deferred: Vec<ChatCompletionRequestMessage> = Vec::new();
+    let mut pending: HashSet<String> = HashSet::new();
+
+    for msg in messages {
+        match &msg {
+            ChatCompletionRequestMessage::Assistant(a) => {
+                if let Some(tool_calls) = &a.tool_calls {
+                    // A new batch while the previous one is still unanswered
+                    // (truncated history): flush deferred messages before it.
+                    if !deferred.is_empty() {
+                        result.append(&mut deferred);
+                    }
+                    pending = tool_calls
+                        .iter()
+                        .filter_map(|tc| {
+                            if let ChatCompletionMessageToolCalls::Function(f) = tc {
+                                Some(f.id.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    result.push(msg);
+                } else if pending.is_empty() {
+                    result.push(msg);
+                } else {
+                    deferred.push(msg);
+                }
+            }
+            ChatCompletionRequestMessage::Tool(t) => {
+                let responded = pending.remove(&t.tool_call_id);
+                result.push(msg);
+                if responded && pending.is_empty() && !deferred.is_empty() {
+                    result.append(&mut deferred);
+                }
+            }
+            _ => {
+                if pending.is_empty() {
+                    result.push(msg);
+                } else {
+                    deferred.push(msg);
+                }
+            }
+        }
+    }
+    // A batch truncated mid-way (history cut before all responses): keep any
+    // still-deferred messages at the end; `repair_tool_pairing` will
+    // synthesize placeholders for the unanswered ids right after the
+    // assistant message.
+    result.append(&mut deferred);
+    result
+}
+
 pub struct LlmClient {
     client: async_openai::Client<OpenAIConfig>,
     model: String,
@@ -197,8 +315,12 @@ impl LlmClient {
         messages: Vec<ChatCompletionRequestMessage>,
         tools: Option<Vec<ChatCompletionTools>>,
     ) -> Result<ChatCompletionResponseStream, LlmError> {
-        // Validate and repair messages before sending to LLM
+        // Validate and repair messages before sending to LLM. Interleave
+        // repair must run before tool-pairing repair: it restores the
+        // assistant → tool×N window so the pairing pass can then match, drop,
+        // or synthesize tool responses against a contiguous batch.
         let messages = validate_and_filter_messages(messages);
+        let messages = repair_interleaved_tool_responses(messages);
         let messages = repair_tool_pairing(messages);
         let msg_count = messages.len();
 
@@ -234,8 +356,10 @@ impl LlmClient {
         messages: Vec<ChatCompletionRequestMessage>,
         tools: Option<Vec<ChatCompletionTools>>,
     ) -> Result<CreateChatCompletionResponse, LlmError> {
-        // Validate and repair messages before sending to LLM
+        // Validate and repair messages before sending to LLM (same pipeline
+        // as `chat_stream`; see the comment there for the repair order).
         let messages = validate_and_filter_messages(messages);
+        let messages = repair_interleaved_tool_responses(messages);
         let messages = repair_tool_pairing(messages);
 
         let request = CreateChatCompletionRequest {
@@ -408,5 +532,188 @@ mod tests {
             })
             .collect();
         assert_eq!(tool_ids, vec!["call_1"]);
+    }
+
+    fn assistant_multi_tool_call_msg(
+        calls: &[(&str, &str)],
+    ) -> ChatCompletionRequestMessage {
+        ChatCompletionRequestMessage::Assistant(ChatCompletionRequestAssistantMessage {
+            content: None,
+            name: None,
+            tool_calls: Some(
+                calls
+                    .iter()
+                    .map(|(id, name)| {
+                        ChatCompletionMessageToolCalls::Function(ChatCompletionMessageToolCall {
+                            id: id.to_string(),
+                            function: FunctionCall {
+                                name: name.to_string(),
+                                arguments: "{}".to_string(),
+                            },
+                        })
+                    })
+                    .collect(),
+            ),
+            refusal: None,
+            audio: None,
+            #[allow(deprecated)]
+            function_call: None,
+        })
+    }
+
+    fn image_user_msg(label: &str) -> ChatCompletionRequestMessage {
+        user_msg(&format!("[工具返回的图片] {}", label))
+    }
+
+    #[test]
+    fn interleave_repair_moves_user_messages_after_tool_batch() {
+        // The exact shape produced by the pre-fix image injection: one
+        // multimodal user message right after EACH tool result of a parallel
+        // tool_calls batch. Providers reject this with 400 "insufficient
+        // tool messages following tool_calls message".
+        let messages = vec![
+            user_msg("generate images"),
+            assistant_multi_tool_call_msg(&[
+                ("call_0", "read"),
+                ("call_1", "read"),
+                ("call_2", "read"),
+            ]),
+            tool_msg("call_0", "Image file: a.png"),
+            image_user_msg("a.png"),
+            tool_msg("call_1", "Image file: b.png"),
+            image_user_msg("b.png"),
+            tool_msg("call_2", "Image file: c.png"),
+            image_user_msg("c.png"),
+        ];
+        let repaired = repair_interleaved_tool_responses(messages);
+        assert_eq!(repaired.len(), 8, "no message may be dropped");
+
+        let role_kinds: Vec<&str> = repaired
+            .iter()
+            .map(|m| match m {
+                ChatCompletionRequestMessage::User(_) => "user",
+                ChatCompletionRequestMessage::Assistant(a) => {
+                    if a.tool_calls.is_some() {
+                        "assistant+tool_calls"
+                    } else {
+                        "assistant"
+                    }
+                }
+                ChatCompletionRequestMessage::Tool(_) => "tool",
+                _ => "other",
+            })
+            .collect();
+        // Tool responses must directly follow the assistant tool_calls
+        // message, with all image user messages moved after the batch.
+        assert_eq!(
+            role_kinds,
+            vec![
+                "user",
+                "assistant+tool_calls",
+                "tool",
+                "tool",
+                "tool",
+                "user",
+                "user",
+                "user",
+            ]
+        );
+        // Relative order of the deferred image messages is preserved.
+        let user_texts: Vec<String> = repaired
+            .iter()
+            .filter_map(|m| {
+                if let ChatCompletionRequestMessage::User(u) = m {
+                    if let async_openai::types::chat::ChatCompletionRequestUserMessageContent::Text(t) = &u.content {
+                        Some(t.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            user_texts.last().map(|t| t.contains("c.png")),
+            Some(true),
+            "deferred messages keep their original order (c.png last)"
+        );
+    }
+
+    #[test]
+    fn interleave_repair_keeps_valid_history_untouched() {
+        let messages = vec![
+            user_msg("look at this"),
+            assistant_tool_call_msg("call_1", "read"),
+            tool_msg("call_1", "Image file: a.png"),
+            image_user_msg("a.png"),
+            assistant_text_msg("looks great"),
+        ];
+        let repaired = repair_interleaved_tool_responses(messages.clone());
+        assert_eq!(
+            repaired.len(),
+            messages.len(),
+            "valid history must not change length"
+        );
+        // And not just length: a valid history must pass through unchanged.
+        let summarize = |m: &ChatCompletionRequestMessage| match m {
+            ChatCompletionRequestMessage::User(u) => format!("user:{:?}", u.content),
+            ChatCompletionRequestMessage::Assistant(a) => format!(
+                "assistant:{:?}:{:?}",
+                a.content, a.tool_calls.as_ref().map(|tcs| tcs.len())
+            ),
+            ChatCompletionRequestMessage::Tool(t) => {
+                format!("tool:{}:{:?}", t.tool_call_id, t.content)
+            }
+            _ => "other".to_string(),
+        };
+        let before: Vec<String> = messages.iter().map(summarize).collect();
+        let after: Vec<String> = repaired.iter().map(summarize).collect();
+        assert_eq!(before, after, "valid history must not be reordered");
+    }
+
+    #[test]
+    fn interleave_repair_truncated_batch_defers_to_end() {
+        // Batch never fully answered (e.g. truncated history): the interleaved
+        // user message still moves after the last tool response of the batch.
+        let messages = vec![
+            user_msg("do something"),
+            assistant_multi_tool_call_msg(&[("call_0", "read"), ("call_1", "read")]),
+            tool_msg("call_0", "result 0"),
+            image_user_msg("a.png"),
+        ];
+        let repaired = repair_interleaved_tool_responses(messages);
+        assert_eq!(repaired.len(), 4);
+        assert!(matches!(repaired[1], ChatCompletionRequestMessage::Assistant(_)));
+        assert!(matches!(repaired[2], ChatCompletionRequestMessage::Tool(_)));
+        assert!(matches!(repaired[3], ChatCompletionRequestMessage::User(_)));
+    }
+
+    #[test]
+    fn interleave_repair_flushes_deferred_before_next_assistant_batch() {
+        // A new assistant tool_calls message arriving while the previous batch
+        // is still unanswered: deferred messages are flushed before it.
+        let messages = vec![
+            user_msg("start"),
+            assistant_multi_tool_call_msg(&[("call_0", "read"), ("call_1", "read")]),
+            tool_msg("call_0", "result 0"),
+            image_user_msg("a.png"),
+            assistant_tool_call_msg("call_2", "bash"),
+            tool_msg("call_2", "ok"),
+        ];
+        let repaired = repair_interleaved_tool_responses(messages);
+        let role_kinds: Vec<&str> = repaired
+            .iter()
+            .map(|m| match m {
+                ChatCompletionRequestMessage::User(_) => "user",
+                ChatCompletionRequestMessage::Assistant(_) => "assistant",
+                ChatCompletionRequestMessage::Tool(_) => "tool",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            role_kinds,
+            vec!["user", "assistant", "tool", "user", "assistant", "tool"]
+        );
     }
 }

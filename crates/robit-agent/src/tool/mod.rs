@@ -74,8 +74,9 @@ pub trait Tool: Send + Sync {
 ///
 /// When a tool (e.g. `read` on an image file) produces images and the model
 /// supports image inputs, the agent injects them as a multimodal user message
-/// after the tool message (OpenAI protocol restricts tool message content to
-/// text, so images cannot travel in the tool result itself).
+/// after all tool messages of the batch (OpenAI protocol restricts tool
+/// message content to text, so images cannot travel in the tool result
+/// itself, and nothing may interleave with the tool responses).
 #[derive(Debug, Clone)]
 pub struct ToolImage {
     /// Base64 data URL, e.g. "data:image/png;base64,...".
