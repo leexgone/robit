@@ -68,7 +68,7 @@ pub struct ToolCallInfoData {
 }
 
 /// Current schema version. Increment when the schema changes.
-const CURRENT_SCHEMA_VERSION: i32 = 4;
+const CURRENT_SCHEMA_VERSION: i32 = 5;
 
 // ============================================================================
 // Memory data structures
@@ -283,7 +283,7 @@ fn create_all_tables(conn: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_messages_created
             ON messages(session_id, created_at);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_chat_id
-            ON sessions(chat_id) WHERE chat_id IS NOT NULL;
+            ON sessions(chat_id) WHERE chat_id IS NOT NULL AND is_active = 1;
 
         CREATE TABLE IF NOT EXISTS memories (
             id           TEXT PRIMARY KEY,
@@ -340,6 +340,7 @@ fn migrate(conn: &Connection, from: i32, to: i32) -> SqliteResult<()> {
             1 => migrate_v1_to_v2(conn)?,
             2 => migrate_v2_to_v3(conn)?,
             3 => migrate_v3_to_v4(conn)?,
+            4 => migrate_v4_to_v5(conn)?,
             other => {
                 return Err(rusqlite::Error::InvalidParameterName(format!(
                     "Unknown schema version: {}",
@@ -423,6 +424,24 @@ fn migrate_v3_to_v4(conn: &Connection) -> SqliteResult<()> {
         -- Backfill existing messages into the FTS index
         INSERT INTO messages_fts(rowid, content)
         SELECT id, content FROM messages;",
+    )?;
+    Ok(())
+}
+
+/// v4 → v5: rebuild `idx_sessions_chat_id` to only cover ACTIVE sessions.
+///
+/// The v4 index (`WHERE chat_id IS NOT NULL`) counted archived rows too, so
+/// `/new` (which soft-deletes the old session and inserts a new one with the
+/// same `chat_id`) always failed with a UNIQUE constraint violation. The
+/// rebuilt index allows any number of archived sessions per chat_id while
+/// still enforcing at most one ACTIVE session.
+fn migrate_v4_to_v5(conn: &Connection) -> SqliteResult<()> {
+    // Safe under the v4 index: it guaranteed at most one row per chat_id in
+    // total, so there can be no duplicate active rows to trip the new index.
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_sessions_chat_id;
+        CREATE UNIQUE INDEX idx_sessions_chat_id
+            ON sessions(chat_id) WHERE chat_id IS NOT NULL AND is_active = 1;",
     )?;
     Ok(())
 }
@@ -1435,6 +1454,57 @@ mod tests {
     }
 
     #[test]
+    fn archived_session_allows_new_session_same_chat() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        insert_session(&conn, "qq-1", Some("group:abc"), "First", "model", "qq").unwrap();
+        // /new archives the old session (soft delete) before creating a new one.
+        delete_session(&conn, "qq-1").unwrap();
+        insert_session(&conn, "qq-2", Some("group:abc"), "Second", "model", "qq").unwrap();
+
+        // Still only one ACTIVE session per chat_id.
+        let err = insert_session(&conn, "qq-3", Some("group:abc"), "Third", "model", "qq");
+        assert!(err.is_err());
+
+        // Lookup by chat_id returns the active session only.
+        let active = find_session_by_chat_id(&conn, "group:abc").unwrap().unwrap();
+        assert_eq!(active.id, "qq-2");
+    }
+
+    #[test]
+    fn migrates_v4_chat_id_index_to_active_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Simulate a v4 database: the old unique index covers all rows,
+        // active or not, and an archived session is blocking the chat_id.
+        ensure_meta_table(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id          TEXT PRIMARY KEY,
+                chat_id     TEXT,
+                title       TEXT NOT NULL,
+                model       TEXT NOT NULL,
+                source      TEXT NOT NULL DEFAULT 'gui',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                is_active   INTEGER DEFAULT 1
+            );
+            CREATE UNIQUE INDEX idx_sessions_chat_id
+                ON sessions(chat_id) WHERE chat_id IS NOT NULL;
+            INSERT INTO sessions (id, chat_id, title, model, source, created_at, updated_at, is_active)
+            VALUES ('old-1', 'group:abc', 'Old', 'model', 'qq', '2020-01-01', '2020-01-01', 0);",
+        )
+        .unwrap();
+        write_schema_version(&conn, 4).unwrap();
+
+        init_db(&conn).unwrap();
+        assert_eq!(read_schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+
+        // The archived session no longer blocks a new session for the same chat_id.
+        insert_session(&conn, "new-1", Some("group:abc"), "New", "model", "qq").unwrap();
+    }
+
+    #[test]
     fn migrates_legacy_v1_database() {
         let conn = Connection::open_in_memory().unwrap();
         // Simulate a legacy v1 database: old schema, no _schema_meta.
@@ -1677,10 +1747,10 @@ mod tests {
         )
         .unwrap();
 
-        // Run init_db — should migrate v3 -> v4 and backfill
+        // Run init_db — should migrate v3 to the current version and backfill
         init_db(&conn).unwrap();
 
-        assert_eq!(read_schema_version(&conn).unwrap(), 4);
+        assert_eq!(read_schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
 
         // Verify search works on the legacy message
         let filter = MessageSearchFilter {
