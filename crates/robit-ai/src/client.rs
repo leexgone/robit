@@ -346,7 +346,10 @@ impl LlmClient {
         if let Err(e) = &stream {
             tracing::error!("Chat stream creation failed: {:?}", e);
         }
-        let stream = stream?;
+        // Map to a friendly error (e.g. content-moderation rejections carry a
+        // provider error code that deserves a clearer message than the raw
+        // "400 Bad Request ..." display).
+        let stream = stream.map_err(LlmError::from_openai_error)?;
         Ok(stream)
     }
 
@@ -371,7 +374,12 @@ impl LlmClient {
             ..Default::default()
         };
 
-        let response = self.client.chat().create(request).await?;
+        let response = self
+            .client
+            .chat()
+            .create(request)
+            .await
+            .map_err(LlmError::from_openai_error)?;
         Ok(response)
     }
 

@@ -651,8 +651,13 @@ impl Agent {
             let chunk = match chunk_result {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::error!("Stream chunk error: {:?}", e);
-                    return Err(AgentError::LlmError(e.into()));
+                    // Providers sometimes push `{"error": ...}` events (e.g.
+                    // content moderation) into the stream; recover the real
+                    // cause from the raw payload instead of surfacing a bare
+                    // JSON deserialization failure.
+                    let llm_error = robit_ai::LlmError::from_openai_error(e);
+                    tracing::error!("Stream chunk error: {}", llm_error);
+                    return Err(AgentError::LlmError(llm_error));
                 }
             };
             chunk_count += 1;
