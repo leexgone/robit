@@ -8,6 +8,16 @@
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-09-21
+
+### Added
+
+- **robit-ai**：服务商错误友好提示。LLM 请求与流式响应中的提供商错误现在映射为清晰的中文提示：已知内容审核错误码（DashScope `data_inspection_failed`、OpenAI 系 `content_filter`/`content_policy_violation`）区分输入侧/输出侧拦截——输入侧（对话上下文被判定不适宜，该会话后续请求会持续失败）提示清空上下文或新建会话，输出侧提示调整提问或稍后重试；其余错误码显示 `服务商返回错误（code）：message`，载荷无法解析时保持原始错误，服务商原始消息始终保留供排查。此前流中段推送的 `{"error": ...}` 事件（无 `choices` 字段）只报出裸的 JSON 反序列化失败，HTTP 400 拒绝只显示 `400 Bad Request ...`，真实原因埋在载荷里。
+
+### Fixed
+
+- **robit-agent**：修复 QQ Bot 执行 `/new` 后报 `UNIQUE constraint failed: sessions.chat_id`，且该聊天后续所有消息均无法开启会话。`sessions` 表唯一索引 `idx_sessions_chat_id` 此前只排除 `chat_id IS NULL`、未排除 `is_active = 0` 的归档行，等于限制同一 `chat_id` 终身只能有一条记录，与"归档旧会话 + 新建会话"的设计（`/list`、`/switch`）冲突。索引放宽为仅约束活跃会话（`WHERE chat_id IS NOT NULL AND is_active = 1`，每个聊天同时最多一个活跃会话，归档记录不限量）；schema v4 → v5 自动迁移重建索引，存量受影响的库启动时自动修复，历史会话与消息完整保留，无需删库。
+
 ## [0.1.21] - 2026-09-20
 
 ### Fixed
