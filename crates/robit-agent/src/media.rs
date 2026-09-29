@@ -178,6 +178,14 @@ pub struct CompressedImage {
 /// - `max_dim == 0` (compression disabled)
 /// - GIF (re-encoding would keep only the first frame of an animation)
 /// - re-encoding produced a LARGER file (image was already well optimized)
+/// Decode guards: images whose width or height exceeds this are rejected
+/// before any pixel buffer is allocated. File size says nothing about the
+/// decoded size — a tiny, highly compressible PNG can decompress to hundreds
+/// of MB (decode bomb), enough to OOM a resident bot process.
+const MAX_DECODE_DIMENSION: u32 = 16384;
+/// Hard cap on total allocation during decode (256MB).
+const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+
 fn compress_image_bytes(bytes: &[u8], mime: &str, max_dim: u32) -> Result<CompressedImage, MediaError> {
     if max_dim == 0 || mime == "image/gif" {
         return Ok(CompressedImage {
@@ -189,7 +197,17 @@ fn compress_image_bytes(bytes: &[u8], mime: &str, max_dim: u32) -> Result<Compre
         });
     }
 
-    let img = image::load_from_memory(bytes)
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| MediaError::Image(format!("format detection failed: {}", e)))?;
+    reader.limits(limits);
+    let img = reader
+        .decode()
         .map_err(|e| MediaError::Image(format!("decode failed: {}", e)))?;
     let orig_dims = (img.width(), img.height());
 
@@ -209,7 +227,7 @@ fn compress_image_bytes(bytes: &[u8], mime: &str, max_dim: u32) -> Result<Compre
     let mut jpeg = Vec::new();
     {
         use image::ImageEncoder as _;
-        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85);
         encoder
             .write_image(
                 final_img.as_raw(),
@@ -378,5 +396,29 @@ mod tests {
         assert!(out.kept_original);
         assert_eq!(out.bytes, orig);
         assert_eq!(out.mime, "image/png");
+    }
+
+    #[test]
+    fn non_square_images_scale_by_longest_side() {
+        // Portrait: 600×2000 → longest side 2000 → 307×1024
+        let out = compress_image_bytes(&noise_png(600, 2000), "image/png", 1024).unwrap();
+        assert_eq!(out.new_dims, (307, 1024));
+        assert_eq!(out.orig_dims, (600, 2000));
+
+        // Extreme aspect: 10000×10 → 1024×1
+        let out = compress_image_bytes(&noise_png(10000, 10), "image/png", 1024).unwrap();
+        assert_eq!(out.new_dims, (1024, 1));
+    }
+
+    #[test]
+    fn oversized_dimensions_are_rejected_before_decoding() {
+        // A highly compressible 20000×10 PNG is a tiny file, but decoding
+        // must refuse it (decode bomb guard) instead of trusting file size.
+        let bomb = solid_png(20000, 10);
+        let result = compress_image_bytes(&bomb, "image/png", 1024);
+        assert!(
+            result.is_err(),
+            "images wider/taller than the decode cap must be rejected, got Ok"
+        );
     }
 }
