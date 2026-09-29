@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **robit-agent**：修复会话历史中 base64 图片随每次 LLM 调用全量重发，长会话累积后请求体超出服务商网关限制（HTTP 413 Request Entity Too Large，openresty 拒绝）。`read` 图片等返回图片的工具结果、用户图片附件此前以多模态 user 消息注入历史且永不清理，多张 2K PNG 的 base64 累积达几十 MB；而服务商对每张图片仅计约 1k token，token 估算与截断对此完全无感。现在图片在成功发送给模型一次后即降级为文本占位符（`[历史图片已省略：N 张图片已发送给模型...]`），每张图片只随紧随其后的一次调用发送，后续调用不再重复携带图片数据。图片消息本就不持久化到 DB，重启后历史为纯文本，存量会话无需迁移即可正常加载。
+- **robit-ai**：服务商反向代理（openresty 等）对超限请求返回 HTML 错误页，async-openai 只能报出裸的 JSON 反序列化失败（`failed to deserialize api response: error:expected value at line 1 column 1 content:<html>...`），真实原因被掩埋。现在检测 HTML 载荷并提取 `<title>`，映射为友好提示：413 会说明常见原因是上下文中图片过多或过大并建议新建会话（`/new`），其他网关错误（如 502）给出稍后重试的通用建议。
+
 ## [0.1.22] - 2026-09-21
 
 ### Added
