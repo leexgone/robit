@@ -42,6 +42,14 @@ pub enum LlmError {
     #[error("内容审核拦截：输入内容被服务商判定为不适宜内容，请调整提问或清空上下文/新建会话后重试（{detail}）")]
     ContentModerationInput { detail: String },
 
+    /// The provider's reverse-proxy gateway (e.g. openresty) rejected the
+    /// request with a non-JSON HTML error page — async-openai can only
+    /// report this as a JSON deserialization failure with the real cause
+    /// buried in the raw payload. Most commonly HTTP 413 "Request Entity
+    /// Too Large" when the conversation carries many large base64 images.
+    #[error("服务商网关错误：{title}。{hint}")]
+    GatewayError { title: String, hint: String },
+
     #[error("服务商返回错误（{code}）：{message}")]
     ProviderError { code: String, message: String },
 }
@@ -77,20 +85,26 @@ impl LlmError {
                     _ => LlmError::OpenAiError(OpenAIError::ApiError(resp)),
                 }
             }
-            OpenAIError::JSONDeserialize(_, ref raw) => match extract_provider_error(raw) {
-                Some((Some(code), message)) => {
-                    if is_content_moderation_code(&code) {
-                        moderation_error(&code, &message)
-                    } else {
-                        LlmError::ProviderError { code, message }
+            OpenAIError::JSONDeserialize(_, ref raw) => {
+                if let Some(gateway) = extract_gateway_error(raw) {
+                    gateway
+                } else {
+                    match extract_provider_error(raw) {
+                        Some((Some(code), message)) => {
+                            if is_content_moderation_code(&code) {
+                                moderation_error(&code, &message)
+                            } else {
+                                LlmError::ProviderError { code, message }
+                            }
+                        }
+                        Some((None, message)) => LlmError::ProviderError {
+                            code: "unknown".to_string(),
+                            message,
+                        },
+                        None => LlmError::OpenAiError(err),
                     }
                 }
-                Some((None, message)) => LlmError::ProviderError {
-                    code: "unknown".to_string(),
-                    message,
-                },
-                None => LlmError::OpenAiError(err),
-            },
+            }
             other => LlmError::OpenAiError(other),
         }
     }
@@ -131,6 +145,37 @@ fn extract_provider_error(raw: &str) -> Option<(Option<String>, String)> {
         .or_else(|| err.get("type").and_then(|t| t.as_str()))
         .map(|s| s.to_string());
     Some((code, message))
+}
+
+/// Detect a reverse-proxy HTML error page (e.g. openresty "413 Request
+/// Entity Too Large") in a raw payload that failed JSON deserialization,
+/// and turn it into a friendly error. Proxies answer with HTML instead of
+/// JSON, which async-openai can only surface as a deserialization failure.
+fn extract_gateway_error(raw: &str) -> Option<LlmError> {
+    if !raw.trim_start().starts_with('<') {
+        return None;
+    }
+    let title = extract_html_title(raw).unwrap_or_else(|| "未知网关错误".to_string());
+    let hint = if title.contains("413") {
+        "请求体过大，通常是上下文中图片过多或过大导致，建议减少读取图片或新建会话（/new）后重试".to_string()
+    } else {
+        "请求被服务商网关拒绝，请稍后重试或检查服务商状态".to_string()
+    };
+    Some(LlmError::GatewayError { title, hint })
+}
+
+/// Extract the `<title>` text from an HTML error page. `<title>`/`</title>`
+/// are ASCII markers, so the byte offsets from `find` are always valid UTF-8
+/// boundaries and slicing cannot panic.
+fn extract_html_title(raw: &str) -> Option<String> {
+    let start = raw.find("<title>")? + "<title>".len();
+    let end = raw[start..].find("</title>")? + start;
+    let title = raw[start..end].trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -242,5 +287,64 @@ mod tests {
         let raw = "not json at all";
         let llm = LlmError::from_openai_error(json_deserialize_err(raw));
         assert!(matches!(llm, LlmError::OpenAiError(_)));
+    }
+
+    /// Real-world openresty 413 page from the 2026-09-28 incident log.
+    const OPENRESTY_413: &str = "<html>\r\n<head><title>413 Request Entity Too Large</title></head>\r\n<body>\r\n<center><h1>413 Request Entity Too Large</h1></center>\r\n<hr><center>openresty</center>\r\n</body>\r\n</html>\r\n";
+
+    #[test]
+    fn html_413_page_becomes_friendly_gateway_error() {
+        let llm = LlmError::from_openai_error(json_deserialize_err(OPENRESTY_413));
+        match &llm {
+            LlmError::GatewayError { title, hint } => {
+                assert_eq!(title, "413 Request Entity Too Large");
+                assert!(
+                    hint.contains("图片"),
+                    "413 hint should mention images, got: {hint}"
+                );
+            }
+            other => panic!("expected GatewayError, got {:?}", other),
+        }
+        let text = llm.to_string();
+        assert!(text.contains("服务商网关错误"));
+        assert!(text.contains("413 Request Entity Too Large"));
+    }
+
+    #[test]
+    fn html_502_page_becomes_gateway_error_with_generic_hint() {
+        let raw = "<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n</body>\r\n</html>\r\n";
+        let llm = LlmError::from_openai_error(json_deserialize_err(raw));
+        match &llm {
+            LlmError::GatewayError { title, hint } => {
+                assert_eq!(title, "502 Bad Gateway");
+                assert!(
+                    hint.contains("稍后重试"),
+                    "generic hint should suggest retry, got: {hint}"
+                );
+            }
+            other => panic!("expected GatewayError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn html_without_title_falls_back_to_generic_title() {
+        let raw = "<html><body><h1>something broke</h1></body></html>";
+        let llm = LlmError::from_openai_error(json_deserialize_err(raw));
+        match &llm {
+            LlmError::GatewayError { title, .. } => {
+                assert!(!title.is_empty(), "title must have a non-empty fallback");
+            }
+            other => panic!("expected GatewayError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn html_title_with_cjk_is_extracted_without_panic() {
+        let raw = "<html><head><title>网关超时</title></head><body></body></html>";
+        let llm = LlmError::from_openai_error(json_deserialize_err(raw));
+        match &llm {
+            LlmError::GatewayError { title, .. } => assert_eq!(title, "网关超时"),
+            other => panic!("expected GatewayError, got {:?}", other),
+        }
     }
 }
