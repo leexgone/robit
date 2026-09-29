@@ -752,6 +752,14 @@ impl Agent {
             );
         }
 
+        // The model has now seen every image in history — drop the base64
+        // payloads so subsequent calls don't re-send megabytes of image data
+        // (provider gateways reject oversized bodies with HTTP 413). Must run
+        // AFTER token calibration above: the calibration baseline reflects
+        // what was actually sent, so later estimates only over-count, which
+        // is the safe direction for truncation.
+        downgrade_history_images(&mut session.history);
+
         // Add assistant message to history
         let content = if full_text.is_empty() {
             None
@@ -1686,6 +1694,67 @@ fn sanitize_history_for_model(
     }
 }
 
+/// Downgrade image content in session history to text placeholders.
+///
+/// Base64 images injected into history (tool-result images, user
+/// attachments) are re-sent on EVERY LLM call. A session that reads many
+/// multi-MB images quickly exceeds the provider gateway's request body
+/// limit (HTTP 413 "Request Entity Too Large") even though the token
+/// estimate stays low — providers count ~1k tokens per image regardless
+/// of byte size, so token-based truncation never fires.
+///
+/// After a successful LLM call the model has already seen the images, so
+/// they are replaced with a text note. Images added by later tool calls
+/// still get sent on the next call (one-shot delivery).
+fn downgrade_history_images(history: &mut Vec<ChatCompletionRequestMessage>) -> usize {
+    let mut downgraded = 0usize;
+    for msg in history.iter_mut() {
+        if let ChatCompletionRequestMessage::User(user_msg) = msg {
+            if let ChatCompletionRequestUserMessageContent::Array(parts) = &user_msg.content {
+                let image_count = parts
+                    .iter()
+                    .filter(|p| {
+                        matches!(
+                            p,
+                            ChatCompletionRequestUserMessageContentPart::ImageUrl(_)
+                        )
+                    })
+                    .count();
+                if image_count > 0 {
+                    let mut text: String = parts
+                        .iter()
+                        .filter_map(|p| {
+                            if let ChatCompletionRequestUserMessageContentPart::Text(t) = p {
+                                Some(t.text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!(
+                        "[历史图片已省略：{image_count} 张图片已发送给模型，为控制请求体积不再重复发送]"
+                    ));
+                    user_msg.content = ChatCompletionRequestUserMessageContent::Text(text);
+                    downgraded += 1;
+                }
+            }
+        }
+    }
+
+    if downgraded > 0 {
+        tracing::info!(
+            "downgrade_history_images: replaced {} image message(s) with text placeholders \
+             (images are sent once, then dropped to keep request bodies small)",
+            downgraded
+        );
+    }
+    downgraded
+}
+
 /// Truncate a task result to a bounded summary for the task registry.
 fn summarize_result(content: &str) -> String {
     const MAX: usize = 500;
@@ -1845,6 +1914,99 @@ mod tests {
             vec!["tool", "tool", "tool", "user"],
             "tool responses must be contiguous after the assistant tool_calls \
              message; image user message(s) go after the batch"
+        );
+    }
+
+    /// 构造一条带 base64 图片的多模态 user 消息（模拟 build_image_user_message
+    /// / build_multimodal_message 的产物）。
+    fn image_user_message(text: &str, image_count: usize) -> ChatCompletionRequestMessage {
+        let mut parts = vec![ChatCompletionRequestUserMessageContentPart::Text(
+            ChatCompletionRequestMessageContentPartText {
+                text: text.to_string(),
+                prompt_cache_breakpoint: None,
+            },
+        )];
+        for _ in 0..image_count {
+            parts.push(ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                ChatCompletionRequestMessageContentPartImage {
+                    image_url: ImageUrl {
+                        url: "data:image/png;base64,Zm9v".to_string(),
+                        detail: None,
+                    },
+                    prompt_cache_breakpoint: None,
+                },
+            ));
+        }
+        ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+            content: ChatCompletionRequestUserMessageContent::Array(parts),
+            name: None,
+        })
+    }
+
+    fn plain_user_message() -> ChatCompletionRequestMessage {
+        ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+            content: ChatCompletionRequestUserMessageContent::Text("普通消息".to_string()),
+            name: None,
+        })
+    }
+
+    fn history_user_text(msg: &ChatCompletionRequestMessage) -> String {
+        match msg {
+            ChatCompletionRequestMessage::User(u) => match &u.content {
+                ChatCompletionRequestUserMessageContent::Text(t) => t.clone(),
+                _ => panic!("expected Text content after downgrade"),
+            },
+            _ => panic!("expected User message"),
+        }
+    }
+
+    #[test]
+    fn downgrade_history_images_replaces_base64_with_placeholder() {
+        let mut history = vec![
+            image_user_message("[工具返回的图片] a.png, b.png", 2),
+            plain_user_message(),
+        ];
+        let n = downgrade_history_images(&mut history);
+        assert_eq!(n, 1, "exactly one image-bearing message downgraded");
+        let text = history_user_text(&history[0]);
+        assert!(
+            text.contains("[工具返回的图片] a.png, b.png"),
+            "original text part must survive, got: {text}"
+        );
+        assert!(text.contains("2"), "placeholder should mention image count");
+        assert!(
+            !text.contains("base64"),
+            "no base64 payload may remain in history, got: {text}"
+        );
+    }
+
+    #[test]
+    fn downgrade_image_only_message_produces_placeholder_text() {
+        // Message built with an empty text part: downgrade must still yield
+        // non-empty text content, never an empty string.
+        let mut history = vec![image_user_message("", 1)];
+        let n = downgrade_history_images(&mut history);
+        assert_eq!(n, 1);
+        let text = history_user_text(&history[0]);
+        assert!(!text.trim().is_empty(), "placeholder text must be non-empty");
+    }
+
+    #[test]
+    fn downgrade_history_images_keeps_plain_messages_untouched() {
+        let mut history = vec![plain_user_message(), plain_user_message()];
+        let n = downgrade_history_images(&mut history);
+        assert_eq!(n, 0);
+        assert_eq!(history_user_text(&history[0]), "普通消息");
+    }
+
+    #[test]
+    fn downgrade_history_images_is_idempotent() {
+        let mut history = vec![image_user_message("[工具返回的图片] a.png", 1)];
+        assert_eq!(downgrade_history_images(&mut history), 1);
+        assert_eq!(
+            downgrade_history_images(&mut history),
+            0,
+            "second pass must find nothing and append no extra note"
         );
     }
 }
