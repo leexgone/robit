@@ -1104,18 +1104,19 @@ impl Agent {
         // Add images
         for attachment in attachments {
             if attachment.is_image() {
-                // Download and encode as base64
+                // Download and encode as base64 (compressed for the context)
                 match media::download_and_encode_base64(
                     &attachment.url,
                     &attachment.content_type,
+                    self.context_manager.max_image_dimension,
                 )
                 .await
                 {
-                    Ok(base64_url) => {
+                    Ok(encoded) => {
                         parts.push(ChatCompletionRequestUserMessageContentPart::ImageUrl(
                             ChatCompletionRequestMessageContentPartImage {
                                 image_url: ImageUrl {
-                                    url: base64_url,
+                                    url: encoded.data_url,
                                     detail: None,
                                 },
                                 prompt_cache_breakpoint: None,

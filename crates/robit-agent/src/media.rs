@@ -50,13 +50,22 @@ pub async fn download_media(
     Ok(save_path)
 }
 
-/// Download media from URL and encode as base64 data URL.
-///
-/// Returns a string like "data:image/jpeg;base64,...".
+/// An image (or other media) encoded as a base64 data URL, plus info about
+/// any compression applied. `compression.bytes` is emptied after the data
+/// URL is built to avoid holding a second copy of the payload.
+#[derive(Debug)]
+pub struct EncodedImage {
+    pub data_url: String,
+    pub compression: CompressedImage,
+}
+
+/// Download media from URL and encode as base64 data URL, compressing
+/// images first (see [`compress_image_bytes`]).
 pub async fn download_and_encode_base64(
     url: &str,
     content_type: &str,
-) -> Result<String, MediaError> {
+    max_image_dim: u32,
+) -> Result<EncodedImage, MediaError> {
     let client = reqwest::Client::new();
     let bytes = client.get(url).send().await?.bytes().await?;
 
@@ -64,15 +73,16 @@ pub async fn download_and_encode_base64(
         return Err(MediaError::InvalidContent);
     }
 
-    let base64 = general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:{};base64,{}", content_type, base64))
+    encode_image_bytes(&bytes, content_type, max_image_dim).await
 }
 
-/// Read a local file and encode it as a base64 data URL.
-///
-/// The MIME type is inferred from the file extension. Returns a string like
-/// "data:image/png;base64,...".
-pub async fn encode_file_base64(path: &Path) -> Result<String, MediaError> {
+/// Read a local file and encode it as a base64 data URL, compressing images
+/// first (see [`compress_image_bytes`]). The MIME type is inferred from the
+/// file extension.
+pub async fn encode_file_base64(
+    path: &Path,
+    max_image_dim: u32,
+) -> Result<EncodedImage, MediaError> {
     let bytes = tokio::fs::read(path).await?;
 
     if bytes.is_empty() {
@@ -80,8 +90,44 @@ pub async fn encode_file_base64(path: &Path) -> Result<String, MediaError> {
     }
 
     let mime_type = mime_from_extension(path);
-    let base64 = general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:{};base64,{}", mime_type, base64))
+    encode_image_bytes(&bytes, mime_type, max_image_dim).await
+}
+
+/// Compress (if an image and enabled) and base64-encode raw media bytes.
+async fn encode_image_bytes(
+    bytes: &[u8],
+    mime: &str,
+    max_image_dim: u32,
+) -> Result<EncodedImage, MediaError> {
+    let mut compression = if mime.starts_with("image/") {
+        let owned = bytes.to_vec();
+        let mime = mime.to_string();
+        // Decoding/resizing/encoding is pure CPU work on multi-MB payloads —
+        // keep it off the async runtime threads.
+        tokio::task::spawn_blocking(move || compress_image_bytes(&owned, &mime, max_image_dim))
+            .await
+            .map_err(|e| MediaError::Image(format!("compression task failed: {}", e)))??
+    } else {
+        CompressedImage {
+            bytes: bytes.to_vec(),
+            mime: mime.to_string(),
+            orig_dims: (0, 0),
+            new_dims: (0, 0),
+            kept_original: true,
+        }
+    };
+
+    let data_url = format!(
+        "data:{};base64,{}",
+        compression.mime,
+        general_purpose::STANDARD.encode(&compression.bytes)
+    );
+    // The bytes now only exist inside the data URL; drop the copy.
+    compression.bytes = Vec::new();
+    Ok(EncodedImage {
+        data_url,
+        compression,
+    })
 }
 
 /// Infer a MIME type from the file extension.

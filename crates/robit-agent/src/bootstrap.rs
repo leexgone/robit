@@ -121,9 +121,20 @@ pub fn create_tools_from_config(
         .map(|m| m.supports_images)
         .unwrap_or(false);
 
+    // Max dimension for images encoded into the context (downscaled + JPEG
+    // beyond that; 0 disables).
+    let max_image_dimension = context_config
+        .and_then(|c| c.max_image_dimension)
+        .unwrap_or(1024);
+
     // Always register read, load_skill, memory, history, and query_task tools
     // (required for basic functionality / async task visibility)
-    tools.register(ReadTool::new(max_lines, max_bytes, supports_images));
+    tools.register(ReadTool::new(
+        max_lines,
+        max_bytes,
+        supports_images,
+        max_image_dimension,
+    ));
     tools.register(LoadSkillTool::new(skill_registry));
     tools.register(MemorizeTool::new());
     tools.register(RecallTool::new());
