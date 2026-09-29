@@ -157,7 +157,7 @@ fn extract_gateway_error(raw: &str) -> Option<LlmError> {
     }
     let title = extract_html_title(raw).unwrap_or_else(|| "未知网关错误".to_string());
     let hint = if title.contains("413") {
-        "请求体过大，通常是上下文中图片过多或过大导致，建议减少读取图片或新建会话（/new）后重试".to_string()
+        "请求体过大，通常是上下文中图片过多或过大导致，建议减少读取图片或清空上下文/新建会话后重试".to_string()
     } else {
         "请求被服务商网关拒绝，请稍后重试或检查服务商状态".to_string()
     };
@@ -301,6 +301,12 @@ mod tests {
                 assert!(
                     hint.contains("图片"),
                     "413 hint should mention images, got: {hint}"
+                );
+                // robit-ai is shared by TUI/GUI/chatbot; "/new" only exists
+                // in chatbot, so the hint must stay platform-neutral.
+                assert!(
+                    !hint.contains("/new"),
+                    "hint must not reference chatbot-only /new command, got: {hint}"
                 );
             }
             other => panic!("expected GatewayError, got {:?}", other),
