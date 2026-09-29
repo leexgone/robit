@@ -229,6 +229,11 @@ pub struct ContextConfig {
     /// Maximum times a single summary segment may be merged before being discarded (default 2).
     /// Controls information distortion — each merge loses detail; discard when limit is hit.
     pub max_merges_per_segment: Option<usize>,
+    /// Max dimension (longest side, in pixels) for images before they are
+    /// base64-encoded into the context. Larger images are proportionally
+    /// downscaled and re-encoded as JPEG to keep request bodies small.
+    /// Default 1024; 0 disables compression (send original bytes).
+    pub max_image_dimension: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1245,5 +1250,29 @@ mod tests {
         let resolved = resolve_image_provider(&config).unwrap();
         assert_eq!(resolved.api_key, "sk-from-env");
         std::env::remove_var("ROBIT_IMG_TEST_KEY");
+    }
+
+    #[test]
+    fn test_parse_max_image_dimension() {
+        let toml_str = r#"
+            [providers.default]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.default.models]]
+            id = "deepseek-chat"
+
+            [app.context]
+            max_image_dimension = 2048
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config
+                .app
+                .as_ref()
+                .and_then(|a| a.context.as_ref())
+                .and_then(|c| c.max_image_dimension),
+            Some(2048)
+        );
     }
 }

@@ -260,6 +260,10 @@ pub struct ContextManager {
     pub merge_count: usize,
     /// Maximum merges per segment before discarding (default 2).
     pub max_merges_per_segment: usize,
+    /// Max dimension (longest side, px) for images encoded into the context
+    /// (default 1024). Larger images are downscaled and re-encoded as JPEG.
+    /// 0 disables compression.
+    pub max_image_dimension: u32,
 }
 
 impl ContextManager {
@@ -281,6 +285,7 @@ impl ContextManager {
             max_summary_segments,
             merge_count,
             max_merges_per_segment,
+            max_image_dimension,
         ) = match config {
             Some(c) => (
                 c.max_output_lines.unwrap_or(500),
@@ -297,8 +302,9 @@ impl ContextManager {
                 c.max_summary_segments.unwrap_or(5),
                 c.merge_count.unwrap_or(2),
                 c.max_merges_per_segment.unwrap_or(2),
+                c.max_image_dimension.unwrap_or(1024),
             ),
-            None => (500, 51200, 0.2, 0.7, 3, 1.3, 5000, true, 30, true, 3, 5, 2, 2),
+            None => (500, 51200, 0.2, 0.7, 3, 1.3, 5000, true, 30, true, 3, 5, 2, 2, 1024),
         };
 
         Self {
@@ -317,6 +323,7 @@ impl ContextManager {
             max_summary_segments,
             merge_count,
             max_merges_per_segment,
+            max_image_dimension,
         }
     }
 
@@ -1071,6 +1078,7 @@ mod tests {
             max_summary_segments: Some(5),
             merge_count: Some(2),
             max_merges_per_segment: Some(2),
+            max_image_dimension: Some(1024),
         }
     }
 

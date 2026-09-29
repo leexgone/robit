@@ -14,6 +14,8 @@ pub enum MediaError {
     Io(#[from] std::io::Error),
     #[error("Invalid media content: empty or corrupted")]
     InvalidContent,
+    #[error("Image processing error: {0}")]
+    Image(String),
 }
 
 /// Download media from URL and save to the specified directory.
@@ -97,5 +99,238 @@ fn mime_from_extension(path: &Path) -> &'static str {
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         _ => "application/octet-stream",
+    }
+}
+
+/// Result of preparing an image for the vision-model context.
+#[derive(Debug)]
+pub struct CompressedImage {
+    /// Encoded image bytes (possibly the untouched original).
+    pub bytes: Vec<u8>,
+    /// MIME type of `bytes`.
+    pub mime: String,
+    /// Original (width, height); (0, 0) when unknown (passthrough).
+    pub orig_dims: (u32, u32),
+    /// Final (width, height); (0, 0) when unknown (passthrough).
+    pub new_dims: (u32, u32),
+    /// True when the original bytes were kept (GIF, compression disabled,
+    /// or re-encoding would have grown the file).
+    pub kept_original: bool,
+}
+
+/// Downscale and re-encode an image for the vision-model context.
+///
+/// Base64 image payloads are re-sent with every LLM call, so multi-MB 2K
+/// images quickly blow past provider-gateway request-body limits (HTTP 413).
+/// This function proportionally downscales the image so its longest side is
+/// at most `max_dim`, flattens any alpha channel onto white, and re-encodes
+/// as JPEG (quality 85) — typically a 10x size reduction for generated 2K
+/// PNGs with no practical loss for vision models, which ingest images at
+/// roughly this resolution anyway.
+///
+/// Pass-through cases (original bytes kept unchanged):
+/// - `max_dim == 0` (compression disabled)
+/// - GIF (re-encoding would keep only the first frame of an animation)
+/// - re-encoding produced a LARGER file (image was already well optimized)
+fn compress_image_bytes(bytes: &[u8], mime: &str, max_dim: u32) -> Result<CompressedImage, MediaError> {
+    if max_dim == 0 || mime == "image/gif" {
+        return Ok(CompressedImage {
+            bytes: bytes.to_vec(),
+            mime: mime.to_string(),
+            orig_dims: (0, 0),
+            new_dims: (0, 0),
+            kept_original: true,
+        });
+    }
+
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| MediaError::Image(format!("decode failed: {}", e)))?;
+    let orig_dims = (img.width(), img.height());
+
+    // JPEG has no alpha channel — flatten transparency onto white.
+    let rgb = flatten_alpha_to_white(img);
+
+    let final_img = if orig_dims.0.max(orig_dims.1) > max_dim {
+        let longest = orig_dims.0.max(orig_dims.1) as f32;
+        let scale = max_dim as f32 / longest;
+        let nw = ((orig_dims.0 as f32 * scale).round() as u32).max(1);
+        let nh = ((orig_dims.1 as f32 * scale).round() as u32).max(1);
+        image::imageops::resize(&rgb, nw, nh, image::imageops::FilterType::Lanczos3)
+    } else {
+        rgb
+    };
+
+    let mut jpeg = Vec::new();
+    {
+        use image::ImageEncoder as _;
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85);
+        encoder
+            .write_image(
+                final_img.as_raw(),
+                final_img.width(),
+                final_img.height(),
+                image::ExtendedColorType::Rgb8,
+            )
+            .map_err(|e| MediaError::Image(format!("JPEG encode failed: {}", e)))?;
+    }
+
+    // Keep the original when re-encoding grew the file.
+    if jpeg.len() >= bytes.len() {
+        return Ok(CompressedImage {
+            bytes: bytes.to_vec(),
+            mime: mime.to_string(),
+            orig_dims,
+            new_dims: orig_dims,
+            kept_original: true,
+        });
+    }
+
+    Ok(CompressedImage {
+        bytes: jpeg,
+        mime: "image/jpeg".to_string(),
+        orig_dims,
+        new_dims: (final_img.width(), final_img.height()),
+        kept_original: false,
+    })
+}
+
+/// Composite an image's alpha channel onto a white background, returning RGB.
+fn flatten_alpha_to_white(img: image::DynamicImage) -> image::RgbImage {
+    use image::GenericImageView;
+    let (w, h) = img.dimensions();
+    let mut out = image::RgbImage::new(w, h);
+    for (x, y, p) in img.pixels() {
+        let a = p.0[3] as f32 / 255.0;
+        let blend = |c: u8| ((c as f32 * a) + (255.0 * (1.0 - a))).round() as u8;
+        out.put_pixel(x, y, image::Rgb([blend(p.0[0]), blend(p.0[1]), blend(p.0[2])]));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic pseudo-random RGB PNG. Noise barely compresses in PNG,
+    /// so the downscaled JPEG is guaranteed to be much smaller — this keeps
+    /// the size assertions meaningful and reproducible.
+    fn noise_png(w: u32, h: u32) -> Vec<u8> {
+        let mut img = image::RgbImage::new(w, h);
+        let mut seed: u32 = 0x1234_5678;
+        for (_, _, p) in img.enumerate_pixels_mut() {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *p = image::Rgb([(seed >> 16) as u8, (seed >> 8) as u8, seed as u8]);
+        }
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    fn solid_png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(w, h, image::Rgb([200, 30, 30]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    fn noise_gif(w: u32, h: u32) -> Vec<u8> {
+        let mut img = image::RgbImage::new(w, h);
+        let mut seed: u32 = 0xDEAD_BEEF;
+        for (_, _, p) in img.enumerate_pixels_mut() {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *p = image::Rgb([(seed >> 16) as u8, (seed >> 8) as u8, seed as u8]);
+        }
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, image::ImageFormat::Gif)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn big_image_is_downscaled_and_reencoded_as_jpeg() {
+        let orig = noise_png(2048, 2048);
+        let out = compress_image_bytes(&orig, "image/png", 1024).unwrap();
+        assert_eq!(out.mime, "image/jpeg");
+        assert_eq!(out.orig_dims, (2048, 2048));
+        assert_eq!(out.new_dims, (1024, 1024));
+        assert!(!out.kept_original);
+        // JPEG magic bytes
+        assert_eq!(&out.bytes[0..2], &[0xFF, 0xD8]);
+        assert!(
+            out.bytes.len() * 10 < orig.len(),
+            "2048px noise PNG should shrink >10x as a 1024px JPEG: {} -> {} bytes",
+            orig.len(),
+            out.bytes.len()
+        );
+    }
+
+    #[test]
+    fn small_image_keeps_dimensions_still_reencodes() {
+        let orig = noise_png(800, 600);
+        let out = compress_image_bytes(&orig, "image/png", 1024).unwrap();
+        assert_eq!(out.new_dims, (800, 600));
+        assert_eq!(out.mime, "image/jpeg");
+        assert!(!out.kept_original);
+    }
+
+    #[test]
+    fn gif_passes_through_unchanged() {
+        // Re-encoding a GIF keeps only the first frame, so GIFs must never
+        // go through the compression path.
+        let orig = noise_gif(32, 32);
+        let out = compress_image_bytes(&orig, "image/gif", 1024).unwrap();
+        assert!(out.kept_original);
+        assert_eq!(out.bytes, orig);
+        assert_eq!(out.mime, "image/gif");
+    }
+
+    #[test]
+    fn tiny_image_keeps_original_when_reencoding_would_grow() {
+        let orig = solid_png(8, 8);
+        let out = compress_image_bytes(&orig, "image/png", 1024).unwrap();
+        assert!(out.kept_original, "tiny PNG should not be replaced by a larger JPEG");
+        assert_eq!(out.bytes, orig);
+        assert_eq!(out.mime, "image/png");
+    }
+
+    #[test]
+    fn transparent_pixels_flatten_to_white() {
+        // 256px RGBA noise under full transparency: the PNG is large (noise)
+        // while the flattened JPEG is tiny, so the compression path runs.
+        let mut img = image::RgbaImage::new(256, 256);
+        let mut seed: u32 = 0x0BAD_C0DE;
+        for (_, _, p) in img.enumerate_pixels_mut() {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *p = image::Rgba([(seed >> 16) as u8, (seed >> 8) as u8, seed as u8, 0]);
+        }
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        let out = compress_image_bytes(&buf.get_ref(), "image/png", 1024).unwrap();
+        assert_eq!(out.mime, "image/jpeg");
+        assert!(!out.kept_original);
+        let decoded = image::load_from_memory(&out.bytes).unwrap();
+        use image::GenericImageView as _;
+        let p = decoded.get_pixel(0, 0);
+        assert!(
+            p.0[0] >= 250 && p.0[1] >= 250 && p.0[2] >= 250,
+            "transparent pixels should flatten to white, got {:?}",
+            p
+        );
+    }
+
+    #[test]
+    fn zero_max_dimension_disables_compression() {
+        let orig = noise_png(2048, 2048);
+        let out = compress_image_bytes(&orig, "image/png", 0).unwrap();
+        assert!(out.kept_original);
+        assert_eq!(out.bytes, orig);
+        assert_eq!(out.mime, "image/png");
     }
 }
