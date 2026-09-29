@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-09-29
+
 ### Added
 
 - **robit-agent**：图片进入上下文前自动压缩。`read` 图片文件与用户图片附件在 base64 编码前，若最长边超过 `[app.context].max_image_dimension`（默认 1024，0 禁用）则等比缩放（Lanczos3）并重编码为 JPEG（质量 85），透明通道合成白底；2K PNG 单图体积可降低一个数量级，配合 0.1.23 的"图片用后即弃"进一步保障长会话请求体不超网关限制。GIF（动图）直通不压缩；重编码后反而变大（已高度优化的图）时保留原字节。工具结果文本会标注压缩信息（如 `2048×2048 → 1024×1024 JPEG`），模型可据此判断可用细节量。解码前施加防护上限（单边最大 16384px、解码总分配 256MB），超高分辨率"解码炸弹"图片直接报错而非耗尽内存。注意：附件为未启用解码器的格式（BMP/TIFF/SVG 等）时降级为文本描述；压缩会忽略 EXIF 方向信息。
@@ -86,7 +88,9 @@
 
 > 上述后两条共同导致了「万象生图请求被拦截无响应、智能体得不到超时提醒」的现场现象：截断 panic 发生在异步生图任务里，而该任务无 panic 兜底，于是静默死掉、永不回报。
 
-[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.20...HEAD
+[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.23...HEAD
+[0.1.23]: https://github.com/leexgone/robit/compare/v0.1.22...v0.1.23
+[0.1.22]: https://github.com/leexgone/robit/compare/v0.1.21...v0.1.22
 [0.1.20]: https://github.com/leexgone/robit/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/leexgone/robit/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/leexgone/robit/compare/v0.1.17...v0.1.18
