@@ -317,6 +317,16 @@ enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 - **配置 `enabled_tools`**：只启用列表中指定的工具
 - **`read` 和 `load_skill`**：始终启用（基础功能必需）
 
+### 记忆机制（memory_mode）
+
+`[app] memory_mode` 控制长期记忆机制，默认 `file`：
+
+- `tools`：注册 SQLite 记忆工具（`memorize` / `recall` / `forget` / `list_memories`），数据存于 `robit.db` 的 `memories` 表。
+- `file`（默认）：文件记忆机制。记忆文件存于记忆目录（`.robit/memory/`，`global_storage` 时 `~/.robit/memory/`）：主记忆文件 `memory.md` 与每日记忆文件 `memory-YYYY-MM-DD.md` 均由 Agent 通过 `write` / `edit` 工具按系统提示词指引维护；系统提示词中注入机制说明，`memory.md` 内容（上限 16KB，超限截断）自动拼入系统提示词。会话中途修改 `memory.md` 不热刷新，重启或新会话生效。
+- `off`：不启用任何记忆机制。
+
+Bot 平台（QQ 多会话）下所有聊天共享同一份 `memory.md`，不做按用户隔离。
+
 ## Bootstrap 模块
 
 为避免各前端（`robit-tui`、`robit-gui`、`examples/robit-agent`）重复实现技能和工具加载逻辑，`robit-agent` 提供 `bootstrap` 模块统一处理启动流程。
@@ -702,6 +712,7 @@ TurnComplete → 输入区域恢复可用
 TUI 不持久化，每次启动是新对话。GUI 与 Bot 平台通过 SQLite 持久化会话元数据与消息（`robit-agent::storage`，schema 版本化，当前 v2）：
 
 - DB 路径：`cwd/.robit/memory/robit.db`（默认）或 `~/.robit/memory/robit.db`（`global_storage = true`）
+- 同目录（`.robit/memory/`）在 `memory_mode = "file"` 时存放记忆文件：`memory.md`（主记忆，注入系统提示词）与 `memory-YYYY-MM-DD.md`（每日记忆）
 - GUI 重开会话时会重新读取 DB 消息用于显示；Bot 平台重启后按 `chat_id` 恢复会话记录
 - 注：当前 MVP 不会把 DB 历史注入回 Agent 的内存 `history`（`AgentSession` 私有），重启后 Agent 从空历史开始；完整历史恢复是后续增强
 

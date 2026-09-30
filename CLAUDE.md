@@ -72,6 +72,7 @@
 | `grep` | 搜索文件内容 | 否 | 否 |
 | `find` | 按模式查找文件 | 否 | 否 |
 | `ls` | 列出目录内容 | 否 | 否 |
+| `memorize` / `recall` / `forget` / `list_memories` | SQLite 长期记忆工具，仅在 `memory_mode = "tools"` 时注册 | 否（默认关闭） | 仅 `forget` 需确认 |
 | `generate_image` | 文生图（异步执行），使用配置的 `default_image_model` 指定的模型（万相/OpenAI 兼容） | 否（需显式配置 `image_providers`） | 是 |
 | `query_task` | 查询异步后台任务状态（如生图进度/结果） | 是 | 否 |
 
@@ -98,11 +99,11 @@
 ```txt
 配置目录结构
     |--项目本地：.robit/config.toml   # 项目配置（最高优先级）
-    |--项目本地：.robit/memory/robit.db # 默认 GUI 会话数据库
+    |--项目本地：.robit/memory/robit.db # 默认 GUI 会话数据库；memory_mode = "file" 时同目录存放记忆文件（memory.md、memory-YYYY-MM-DD.md，由 Agent 维护）
     |--全局：~/.robit/
     |   |-- .env                      # 环境变量（API keys 等）
     |   |-- config.toml               # 全局配置（fallback）
-    |   |-- memory/robit.db           # 启用 global_storage 后的 GUI 会话数据库
+    |   |-- memory/robit.db           # 启用 global_storage 后的 GUI 会话数据库；同上，memory_mode = "file" 时存放记忆文件
     |   |-- skills/                   # 全局技能目录
     |   |-- prompts/                  # 自定义提示词目录
     |       |-- system.txt            # 自定义系统提示词（可选）
@@ -190,6 +191,7 @@ max_steps = 10
 enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]  # 可选，启用的工具列表。不配置时启用所有工具；read 和 load_skill 始终启用
 auto_approve = false                   # 可选，是否自动批准所有工具调用（默认 false）
 global_storage = false                 # 可选，是否使用全局会话存储 ~/.robit/memory/robit.db（默认 false，使用 cwd/.robit/memory/robit.db）
+memory_mode = "file"                   # 可选，记忆机制：tools（SQLite 记忆工具）/ file（文件记忆：memory.md + 每日文件，主记忆注入系统提示词）/ off，默认 file
 
 [app.context]                          # 上下文管理配置（可选，以下为默认值）
 max_output_lines = 500                 # 单次工具输出最大行数
