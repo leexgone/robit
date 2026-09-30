@@ -97,6 +97,8 @@ fn main() -> Result<()> {
     let skill_registry = bootstrap_result.skill_registry;
     let tools = bootstrap_result.tool_registry;
 
+    let memory = robit_agent::memory::resolve_memory_settings(&config, &working_dir)?;
+
     // Create channels
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
     let (message_tx, message_rx) = mpsc::channel::<FrontendMessage>(16);
@@ -117,6 +119,7 @@ fn main() -> Result<()> {
         working_dir,
         auto_approve,
         std::collections::HashMap::new(),
+        memory,
     );
 
     // Setup terminal

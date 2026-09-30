@@ -27,6 +27,7 @@ use crate::error::{AgentError, Result};
 use crate::event::{new_session_id, AgentEvent, FrontendMessage, MediaAttachment, SessionId};
 use crate::frontend::Frontend;
 use crate::media;
+use crate::memory::MemorySettings;
 use crate::prompt::PromptBuilder;
 use crate::skill::SkillRegistry;
 use crate::tool::async_runner::{AsyncTaskDone, AsyncTaskRunner};
@@ -153,14 +154,16 @@ impl Agent {
         working_dir: PathBuf,
         auto_approve: bool,
         extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
+        memory: MemorySettings,
     ) -> Self {
         let prompt_builder = PromptBuilder::with_working_dir(Some(&working_dir));
         let context_manager = ContextManager::new(context_window, context_config);
 
-        // Build system prompt with skills. Tools are NOT listed in the prompt;
-        // they are exposed via the function-calling `tools` request parameter.
+        // Build system prompt with skills + memory section. Tools are NOT listed
+        // in the prompt; they are exposed via the function-calling `tools` request parameter.
         let skill_descs = skills.skill_descriptions();
-        let system_prompt = prompt_builder.build_system_prompt(&skill_descs, &working_dir);
+        let system_prompt =
+            prompt_builder.build_system_prompt(&skill_descs, &working_dir, &memory);
 
         // Create default session
         let session_id = new_session_id();
@@ -204,6 +207,7 @@ impl Agent {
         extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
         session_id: SessionId,
         history: Vec<ChatCompletionRequestMessage>,
+        memory: MemorySettings,
     ) -> Self {
         tracing::info!(
             "Agent::with_history: session_id={}, received {} history messages",
@@ -213,10 +217,11 @@ impl Agent {
         let prompt_builder = PromptBuilder::with_working_dir(Some(&working_dir));
         let context_manager = ContextManager::new(context_window, context_config);
 
-        // Build system prompt with skills. Tools are NOT listed in the prompt;
-        // they are exposed via the function-calling `tools` request parameter.
+        // Build system prompt with skills + memory section. Tools are NOT listed
+        // in the prompt; they are exposed via the function-calling `tools` request parameter.
         let skill_descs = skills.skill_descriptions();
-        let system_prompt = prompt_builder.build_system_prompt(&skill_descs, &working_dir);
+        let system_prompt =
+            prompt_builder.build_system_prompt(&skill_descs, &working_dir, &memory);
 
         // Create session with history
         let mut session = AgentSession::with_history(
@@ -1776,7 +1781,7 @@ mod tests {
     use crate::skill::SkillRegistry;
     use crate::tool::{Tool, ToolContext};
     use async_trait::async_trait;
-    use robit_ai::config::{ModelConfig, ProviderConfig, RobitConfig};
+    use robit_ai::config::{MemoryMode, ModelConfig, ProviderConfig, RobitConfig};
     use serde_json::Value;
 
     /// Frontend that swallows all events (no UI in tests).
@@ -1888,6 +1893,10 @@ mod tests {
             PathBuf::from("."),
             true,
             HashMap::new(),
+            MemorySettings {
+                mode: MemoryMode::Off,
+                dir: PathBuf::from("."),
+            },
         );
 
         let session_id = agent.default_session_id.clone();

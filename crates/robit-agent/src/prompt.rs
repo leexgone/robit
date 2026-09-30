@@ -57,7 +57,7 @@ impl PromptBuilder {
     ///
     /// The prompt is composed of:
     /// 1. Agent prompt (user-provided from agent.md, or default from default.md)
-    /// 2. System prompt (Skills, Environment) - automatically appended,
+    /// 2. System prompt (Skills, Environment, Memory) - automatically appended,
     ///    defined in system.md (built-in, never overridden by users)
     ///
     /// `skills` is a list of (name, description) pairs for enabled skills.
@@ -69,6 +69,7 @@ impl PromptBuilder {
         &self,
         skills: &[(&str, &str)],
         working_dir: &std::path::Path,
+        memory_settings: &crate::memory::MemorySettings,
     ) -> String {
         let skills_section = Self::build_skills_section(skills);
         let os = std::env::consts::OS;
@@ -78,12 +79,20 @@ impl PromptBuilder {
         // Select base prompt: custom agent prompt or default agent prompt
         let agent_prompt = self.custom_prompt.as_deref().unwrap_or(DEFAULT_AGENT_PROMPT);
 
-        // Replace variables in the system prompt (Skills, Environment sections)
+        let memory_section = crate::memory::build_memory_section(memory_settings, &date);
+
+        // Replace variables in the system prompt (Skills, Environment, Memory).
+        // NOTE: `{memory_section}` must be replaced LAST — the injected memory
+        // content may legitimately contain literal `{os}` / `{memory_dir}` /
+        // ... text that must survive verbatim.
         let system_part = SYSTEM_PROMPT
             .replace("{os}", os)
             .replace("{cwd}", &cwd)
             .replace("{date}", &date)
-            .replace("{skills_section}", &skills_section);
+            .replace("{skills_section}", &skills_section)
+            .replace("{memory_section}", &memory_section)
+            .trim_end()
+            .to_string();
 
         // Combine: agent prompt + system prompt
         format!("{}\n\n{}", agent_prompt.trim(), system_part)
@@ -107,5 +116,53 @@ impl PromptBuilder {
 impl Default for PromptBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::resolve_memory_settings;
+    use robit_ai::config::{AppConfig, MemoryMode, RobitConfig};
+    use std::collections::HashMap;
+
+    fn config_with_memory_mode(mode: MemoryMode) -> RobitConfig {
+        RobitConfig {
+            default_model: None,
+            providers: HashMap::new(),
+            app: Some(AppConfig {
+                memory_mode: Some(mode),
+                ..Default::default()
+            }),
+            channels: None,
+            default_image_model: None,
+            image_providers: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn system_prompt_contains_memory_section_in_file_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join(".robit/memory");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("memory.md"), "- 用户偏好：深色主题\n").unwrap();
+        let settings =
+            resolve_memory_settings(&config_with_memory_mode(MemoryMode::File), tmp.path())
+                .unwrap();
+        let prompt = PromptBuilder::new().build_system_prompt(&[], tmp.path(), &settings);
+        assert!(prompt.contains("## Memory"));
+        assert!(prompt.contains("用户偏好：深色主题"));
+        assert!(prompt.contains("## Environment"));
+    }
+
+    #[test]
+    fn system_prompt_has_no_memory_section_in_tools_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let settings =
+            resolve_memory_settings(&config_with_memory_mode(MemoryMode::Tools), tmp.path())
+                .unwrap();
+        let prompt = PromptBuilder::new().build_system_prompt(&[], tmp.path(), &settings);
+        assert!(!prompt.contains("## Memory"));
+        assert!(prompt.contains("## Environment"));
     }
 }

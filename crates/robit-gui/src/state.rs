@@ -258,6 +258,9 @@ impl AppState {
 
         let context_config = self.context_config.as_ref();
 
+        let memory = robit_agent::memory::resolve_memory_settings(&self.config, &self.working_dir)
+            .map_err(|e| format!("Failed to resolve memory settings: {}", e))?;
+
         let agent = Agent::with_history(
             llm_client,
             tools,
@@ -270,6 +273,7 @@ impl AppState {
             std::collections::HashMap::new(),
             session_id_obj,
             history_messages,
+            memory,
         );
 
         let cancel_token = CancellationToken::new();

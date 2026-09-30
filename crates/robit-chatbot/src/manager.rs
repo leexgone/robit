@@ -641,6 +641,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         let session_id_obj = SessionId::from(session_id.to_string());
 
         tracing::debug!("spawn_session_agent: creating Agent with history...");
+        let memory = robit_agent::memory::resolve_memory_settings(&self.config, &self.working_dir)?;
         let agent = Agent::with_history(
             Arc::clone(&self.llm_client),
             Arc::clone(&self.tool_registry),
@@ -661,6 +662,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             },
             session_id_obj,
             history_messages,
+            memory,
         );
 
         let sid = session_id.to_string();

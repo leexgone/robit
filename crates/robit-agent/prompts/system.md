@@ -9,3 +9,5 @@
 - Operating System: {os}
 - Working Directory: {cwd}
 - Current Date: {date}
+
+{memory_section}

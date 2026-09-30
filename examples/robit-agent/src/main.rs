@@ -86,6 +86,8 @@ fn main() -> anyhow::Result<()> {
         confirm_tx,
     });
 
+    let memory = robit_agent::memory::resolve_memory_settings(&config, &working_dir)?;
+
     let agent = Agent::new(
         client,
         tools,
@@ -96,6 +98,7 @@ fn main() -> anyhow::Result<()> {
         working_dir,
         auto_approve,
         std::collections::HashMap::new(),
+        memory,
     );
 
     let rt = tokio::runtime::Runtime::new()?;
