@@ -19,13 +19,24 @@ const DB_FILE: &str = "robit.db";
 
 /// Resolve the session database path for a working directory and storage scope.
 pub fn resolve_db_path(working_dir: &Path, global_storage: bool) -> Result<PathBuf> {
+    Ok(resolve_memory_dir(working_dir, global_storage)?.join(DB_FILE))
+}
+
+/// Resolve the memory directory for a working directory and storage scope.
+///
+/// Same root derivation as [`resolve_db_path`]: `{working_dir}/.robit/memory/`
+/// by default, `~/.robit/memory/` when `global_storage` is enabled. Does NOT
+/// create the directory — memory files (`memory.md` and daily
+/// `memory-YYYY-MM-DD.md`) are created by the agent itself via the `write`
+/// tool on first use.
+pub fn resolve_memory_dir(working_dir: &Path, global_storage: bool) -> Result<PathBuf> {
     if global_storage {
         let home = dirs::home_dir().ok_or_else(|| {
             crate::error::AgentError::InternalError("Cannot determine home directory".to_string())
         })?;
-        Ok(home.join(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE))
+        Ok(home.join(ROBIT_DIR).join(MEMORY_DIR))
     } else {
-        Ok(working_dir.join(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE))
+        Ok(working_dir.join(ROBIT_DIR).join(MEMORY_DIR))
     }
 }
 
@@ -1249,6 +1260,30 @@ mod tests {
             path,
             working_dir.join(ROBIT_DIR).join(MEMORY_DIR).join(DB_FILE)
         );
+    }
+
+    #[test]
+    fn resolves_memory_dir_local() {
+        let working_dir = PathBuf::from("/tmp/project");
+        let dir = resolve_memory_dir(&working_dir, false).unwrap();
+        assert_eq!(dir, PathBuf::from("/tmp/project/.robit/memory"));
+    }
+
+    #[test]
+    fn resolves_memory_dir_is_db_path_parent() {
+        // 记忆目录必须与 robit.db 同根（db 就在记忆目录下）
+        let working_dir = PathBuf::from("/tmp/project");
+        let db_path = resolve_db_path(&working_dir, false).unwrap();
+        let dir = resolve_memory_dir(&working_dir, false).unwrap();
+        assert_eq!(db_path.parent().unwrap(), dir.as_path());
+    }
+
+    #[test]
+    fn resolves_memory_dir_global() {
+        let working_dir = PathBuf::from("/tmp/project");
+        let dir = resolve_memory_dir(&working_dir, true).unwrap();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(dir, home.join(".robit/memory"));
     }
 
     #[test]
