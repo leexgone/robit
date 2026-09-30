@@ -120,6 +120,14 @@ pub fn resolve_memory_settings(
 - **`Tools` 模式**：4 个记忆工具保持现有行为（无条件注册；`enabled_tools` 列表中的 `memorize` 等条目被忽略）。
 - **`File` / `Off` 模式**：4 个记忆工具完全不注册——不进 `ToolRegistry`，LLM 的 `tools` 请求参数中不可见；`enabled_tools` 中若出现记忆工具名，记录 `tracing::warn` 后忽略。
 
+### 6.1 指令与工具展示入口（无需改动，仅结论）
+
+经排查，当前各前端**不存在**记忆专属聊天指令，禁用记忆工具后无需屏蔽任何指令响应：
+
+- TUI 指令集（`/exit`、`/clear`、`/model`、`/tools`、`/scroll`、`/skills`）与 chatbot 指令集（`/clear`、`/stop`、`/cancel`、`/new`、`/list`、`/switch`、`/help`）均无记忆条目；GUI 无斜杠指令。
+- TUI `/tools` 打印的是 `ToolRegistry` 实时工具列表，记忆工具不注册后自动不再显示，无需额外处理。
+- chatbot `/help` 为静态文本，不含记忆条目，无需修改。
+
 ## 7. 提示词拼装
 
 ### 7.1 prompts/system.md
