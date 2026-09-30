@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-09-30
+
 ### Added
 
 - **robit-agent**：`generate_image` 工具新增 4 个可选参数：`size`（输出分辨率，`宽*高` 格式，如 `1696*960`）、`negative_prompt`（反向提示词）、`prompt_extend`（提示词智能改写开关，遇 `IPInfringementSuspect` / `DataInspectionFailed` 审核报错时可设 `false` 重试）、`seed`（随机种子，范围 [0, 2147483647]，越界直接返回参数错误）。参数经 `extra_params` 管道透传：DashScope 协议合并进 `parameters`，OpenAI 兼容协议合并进请求体顶层；全部省略时请求体与之前完全一致，不影响现有行为。
@@ -97,7 +99,8 @@
 
 > 上述后两条共同导致了「万象生图请求被拦截无响应、智能体得不到超时提醒」的现场现象：截断 panic 发生在异步生图任务里，而该任务无 panic 兜底，于是静默死掉、永不回报。
 
-[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.23...HEAD
+[Unreleased]: https://github.com/leexgone/robit/compare/v0.1.24...HEAD
+[0.1.24]: https://github.com/leexgone/robit/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/leexgone/robit/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/leexgone/robit/compare/v0.1.21...v0.1.22
 [0.1.20]: https://github.com/leexgone/robit/compare/v0.1.19...v0.1.20
