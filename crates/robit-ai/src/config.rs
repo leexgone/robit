@@ -1342,6 +1342,21 @@ mod tests {
     }
 
     #[test]
+    fn test_memory_mode_defaults_to_file_without_app_section() {
+        // 完全没有 [app] 段 → 默认 File
+        let toml_str = r#"
+            [providers.test]
+            base_url = "https://example.com"
+            api_key = "k"
+
+            [[providers.test.models]]
+            id = "m"
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(resolve_memory_mode(&config), MemoryMode::File);
+    }
+
+    #[test]
     fn test_memory_mode_invalid_rejected() {
         let toml_str = r#"
             [providers.test]

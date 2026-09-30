@@ -150,7 +150,7 @@ mod tests {
             resolve_memory_settings(&config_with_memory_mode(MemoryMode::File), tmp.path())
                 .unwrap();
         let prompt = PromptBuilder::new().build_system_prompt(&[], tmp.path(), &settings);
-        assert!(prompt.contains("## Memory"));
+        assert!(prompt.contains("file-based memory mechanism"));
         assert!(prompt.contains("用户偏好：深色主题"));
         assert!(prompt.contains("## Environment"));
     }
@@ -162,7 +162,7 @@ mod tests {
             resolve_memory_settings(&config_with_memory_mode(MemoryMode::Tools), tmp.path())
                 .unwrap();
         let prompt = PromptBuilder::new().build_system_prompt(&[], tmp.path(), &settings);
-        assert!(!prompt.contains("## Memory"));
+        assert!(!prompt.contains("file-based memory mechanism"));
         assert!(prompt.contains("## Environment"));
     }
 }

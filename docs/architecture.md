@@ -325,7 +325,7 @@ enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 - `file`（默认）：文件记忆机制。记忆文件存于记忆目录（`.robit/memory/`，`global_storage` 时 `~/.robit/memory/`）：主记忆文件 `memory.md` 与每日记忆文件 `memory-YYYY-MM-DD.md` 均由 Agent 通过 `write` / `edit` 工具按系统提示词指引维护；系统提示词中注入机制说明，`memory.md` 内容（上限 16KB，超限截断）自动拼入系统提示词。会话中途修改 `memory.md` 不热刷新，重启或新会话生效。
 - `off`：不启用任何记忆机制。
 
-Bot 平台（QQ 多会话）下所有聊天共享同一份 `memory.md`，不做按用户隔离。
+Bot 平台（QQ 多会话）下所有聊天共享同一份 `memory.md`，不做按用户隔离。并发写入说明：Bot 平台多个聊天的 Agent 并发维护同一份 `memory.md`，`write` 为整文件覆盖（后写覆盖先写，存在丢失更新窗口），`edit` 在他人已修改时会因精确匹配失败而安全报错；MVP 不做文件锁。
 
 ## Bootstrap 模块
 

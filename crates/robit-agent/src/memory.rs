@@ -8,7 +8,7 @@
 //! explanation plus the current master file content (bounded by
 //! [`MAX_MEMORY_INJECT_BYTES`], truncated beyond that).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use robit_ai::config::{resolve_memory_mode, MemoryMode, RobitConfig};
 
@@ -30,6 +30,26 @@ pub struct MemorySettings {
     pub dir: std::path::PathBuf,
 }
 
+/// Resolve the memory directory with spec §8 degradation: a resolution
+/// failure (e.g. `global_storage = true` but no home directory) must not
+/// block Agent startup — warn and fall back to the project-local dir.
+fn memory_dir_with_fallback(
+    working_dir: &Path,
+    resolved: crate::error::Result<PathBuf>,
+) -> PathBuf {
+    match resolved {
+        Ok(dir) => dir,
+        Err(err) => {
+            tracing::warn!(
+                "Failed to resolve memory dir: {}; falling back to project-local .robit/memory",
+                err
+            );
+            crate::storage::resolve_memory_dir(working_dir, false)
+                .expect("project-local memory dir resolution cannot fail")
+        }
+    }
+}
+
 /// Resolve memory settings from config. Called by frontends when
 /// constructing an Agent.
 pub fn resolve_memory_settings(
@@ -42,7 +62,10 @@ pub fn resolve_memory_settings(
         .as_ref()
         .and_then(|a| a.global_storage)
         .unwrap_or(false);
-    let dir = resolve_memory_dir(working_dir, global_storage)?;
+    let dir = memory_dir_with_fallback(
+        working_dir,
+        resolve_memory_dir(working_dir, global_storage),
+    );
     Ok(MemorySettings { mode, dir })
 }
 
@@ -69,10 +92,11 @@ fn build_file_section(settings: &MemorySettings, date: &str) -> String {
 
     match read_master_file(&settings.dir) {
         Ok(None) => {} // not created yet — the explanation covers first-time creation
-        Ok(Some(content)) => {
+        Ok(Some(content)) if !content.trim().is_empty() => {
             section.push_str("\n\n---\n\n");
             section.push_str(&content);
         }
+        Ok(Some(_)) => {} // empty/whitespace-only file: treat as missing, no dangling separator
         Err(err) => {
             // Read failure must not block startup: degrade to the
             // explanation plus a failure note.
@@ -108,8 +132,8 @@ fn read_master_file(dir: &Path) -> std::io::Result<Option<String>> {
             String::from_utf8_lossy(&bytes[..MAX_MEMORY_INJECT_BYTES]).into_owned();
         content.push_str(&format!(
             "\n\n... (truncated; use the read tool to load the full \
-             {}/memory.md)",
-            dir.display()
+             {})",
+            dir.join("memory.md").display()
         ));
         Ok(Some(content))
     } else {
@@ -154,6 +178,23 @@ mod tests {
         let settings = resolve_memory_settings(&config_with(None, true), tmp.path()).unwrap();
         let home = dirs::home_dir().unwrap();
         assert_eq!(settings.dir, home.join(".robit/memory"));
+    }
+
+    #[test]
+    fn memory_dir_fallback_passes_through_ok() {
+        let tmp = TempDir::new().unwrap();
+        let resolved = crate::storage::resolve_memory_dir(tmp.path(), false);
+        let dir = memory_dir_with_fallback(tmp.path(), resolved);
+        assert_eq!(dir, tmp.path().join(".robit").join("memory"));
+    }
+
+    #[test]
+    fn memory_dir_fallback_degrades_on_error() {
+        // spec §8: a resolution error must not block startup — fall back to project-local
+        let tmp = TempDir::new().unwrap();
+        let err = crate::error::AgentError::InternalError("no home directory".to_string());
+        let dir = memory_dir_with_fallback(tmp.path(), Err(err));
+        assert_eq!(dir, tmp.path().join(".robit").join("memory"));
     }
 
     #[test]
@@ -206,12 +247,29 @@ mod tests {
     }
 
     #[test]
+    fn file_section_no_separator_for_empty_master_file() {
+        // 0 字节 memory.md：视为缺失 → 不产生悬空 --- 分隔符
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".robit/memory");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("memory.md"), "").unwrap();
+        let settings = resolve_memory_settings(
+            &config_with(Some(MemoryMode::File), false),
+            tmp.path(),
+        )
+        .unwrap();
+        let section = build_memory_section(&settings, "2026-09-30");
+        assert!(section.starts_with("## Memory\n"));
+        assert!(!section.contains("---"));
+    }
+
+    #[test]
     fn file_section_truncates_oversized_master_file() {
         // 超过 16KB 且截断点落在多字节字符中间 → 截断不 panic
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".robit/memory");
         fs::create_dir_all(&dir).unwrap();
-        let big = "记忆内容测试x".repeat(20000); // 每轮 19 字节 → 约 380KB
+        let big = "记".repeat(6000); // 每字符 3 字节 → 18000 字节，16384 切点落在字符中间
         fs::write(dir.join("memory.md"), &big).unwrap();
         let settings = resolve_memory_settings(
             &config_with(Some(MemoryMode::File), false),
@@ -220,6 +278,7 @@ mod tests {
         .unwrap();
         let section = build_memory_section(&settings, "2026-09-30");
         assert!(section.contains("truncated"));
+        assert!(section.contains('\u{FFFD}'));
         assert!(section.len() < MAX_MEMORY_INJECT_BYTES + 4096);
     }
 
