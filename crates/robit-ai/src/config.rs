@@ -189,8 +189,26 @@ pub struct AppConfig {
     pub retry: Option<RetryConfig>,
     pub auto_approve: Option<bool>,
     pub global_storage: Option<bool>,
+    /// 长期记忆机制（默认 file）。
+    pub memory_mode: Option<MemoryMode>,
     /// Bot platform settings (shared across Bot frontends).
     pub bot: Option<BotConfig>,
+}
+
+/// `[app] memory_mode` 长期记忆机制选择器。
+///
+/// - `tools`：注册 SQLite 记忆工具（memorize/recall/forget/list_memories）。
+/// - `file`：文件记忆机制——记忆目录下的 `memory.md` 与每日文件
+///   `memory-YYYY-MM-DD.md`，主记忆内容注入系统提示词。
+/// - `off`：不启用任何记忆机制。
+///
+/// 默认 `file`（记忆工具默认关闭）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryMode {
+    Tools,
+    File,
+    Off,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -640,6 +658,16 @@ pub fn resolve_image_provider(config: &RobitConfig) -> Result<ResolvedImageProvi
         poll_interval_secs: provider.poll_interval_secs,
         poll_timeout_secs: provider.poll_timeout_secs,
     })
+}
+
+/// 解析生效的记忆模式。未配置时返回 `File`
+/// （记忆工具默认关闭，文件记忆机制默认启用）。
+pub fn resolve_memory_mode(config: &RobitConfig) -> MemoryMode {
+    config
+        .app
+        .as_ref()
+        .and_then(|a| a.memory_mode)
+        .unwrap_or(MemoryMode::File)
 }
 
 // ============================================================================
@@ -1274,5 +1302,57 @@ mod tests {
                 .and_then(|c| c.max_image_dimension),
             Some(2048)
         );
+    }
+
+    #[test]
+    fn test_memory_mode_all_values() {
+        for (mode_str, expected) in [
+            ("tools", MemoryMode::Tools),
+            ("file", MemoryMode::File),
+            ("off", MemoryMode::Off),
+        ] {
+            let toml_str = format!(
+                "[providers.test]\nbase_url = \"https://example.com\"\napi_key = \"k\"\n\n\
+                 [[providers.test.models]]\nid = \"m\"\n\n\
+                 [app]\nmemory_mode = \"{}\"",
+                mode_str
+            );
+            let config: RobitConfig = toml::from_str(&toml_str).unwrap();
+            assert_eq!(resolve_memory_mode(&config), expected);
+        }
+    }
+
+    #[test]
+    fn test_memory_mode_defaults_to_file() {
+        // 老用户配置：有 [app] 但没有 memory_mode → 默认 File（记忆工具关闭）
+        let toml_str = r#"
+            [providers.test]
+            base_url = "https://example.com"
+            api_key = "k"
+
+            [[providers.test.models]]
+            id = "m"
+
+            [app]
+            max_steps = 5
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(resolve_memory_mode(&config), MemoryMode::File);
+    }
+
+    #[test]
+    fn test_memory_mode_invalid_rejected() {
+        let toml_str = r#"
+            [providers.test]
+            base_url = "https://example.com"
+            api_key = "k"
+
+            [[providers.test.models]]
+            id = "m"
+
+            [app]
+            memory_mode = "bogus"
+        "#;
+        assert!(toml::from_str::<RobitConfig>(toml_str).is_err());
     }
 }
