@@ -6,7 +6,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use robit_ai::config::{resolve_image_provider, resolve_profile, RobitConfig};
+use robit_ai::config::{
+    resolve_image_provider, resolve_memory_mode, resolve_profile, MemoryMode, RobitConfig,
+};
 
 use crate::image_gen::ImageGenClient;
 use crate::skill::{load_skills, Skill, SkillRegistry};
@@ -102,7 +104,9 @@ pub fn filter_skills_by_config(skills: Vec<Skill>, config: &RobitConfig) -> Vec<
 ///
 /// - If enabled_tools is not specified: all tools are registered
 /// - If enabled_tools is specified: only register tools in the list
-/// - `read`, `load_skill`, and memory tools are always registered (required for basic functionality)
+/// - `read` and `load_skill` are always registered (required for basic functionality)
+/// - Memory tools (`memorize`/`recall`/`forget`/`list_memories`) are registered
+///   only when `memory_mode = "tools"`; `file`/`off` modes skip them entirely.
 pub fn create_tools_from_config(
     config: &RobitConfig,
     skill_registry: Arc<SkillRegistry>,
@@ -127,7 +131,12 @@ pub fn create_tools_from_config(
         .and_then(|c| c.max_image_dimension)
         .unwrap_or(1024);
 
-    // Always register read, load_skill, memory, history, and query_task tools
+    // Memory tools are only registered in "tools" mode. The default is
+    // "file" (file-based memory), where they are entirely absent from the
+    // ToolRegistry and thus invisible to the LLM.
+    let memory_tools_enabled = resolve_memory_mode(config) == MemoryMode::Tools;
+
+    // Always register read, load_skill, history, and query_task tools
     // (required for basic functionality / async task visibility)
     tools.register(ReadTool::new(
         max_lines,
@@ -136,10 +145,12 @@ pub fn create_tools_from_config(
         max_image_dimension,
     ));
     tools.register(LoadSkillTool::new(skill_registry));
-    tools.register(MemorizeTool::new());
-    tools.register(RecallTool::new());
-    tools.register(ForgetTool::new());
-    tools.register(ListMemoriesTool::new());
+    if memory_tools_enabled {
+        tools.register(MemorizeTool::new());
+        tools.register(RecallTool::new());
+        tools.register(ForgetTool::new());
+        tools.register(ListMemoriesTool::new());
+    }
     tools.register(SearchHistoryTool::new());
     tools.register(QueryTaskTool::new());
 
@@ -157,10 +168,16 @@ pub fn create_tools_from_config(
                 match tool_name.as_str() {
                     "read" => {} // already registered
                     "load_skill" => {} // already registered
-                    "memorize" => {} // already registered
-                    "recall" => {} // already registered
-                    "forget" => {} // already registered
-                    "list_memories" => {} // already registered
+                    "memorize" | "recall" | "forget" | "list_memories" => {
+                        // Only effective in "tools" mode; skipped otherwise.
+                        if !memory_tools_enabled {
+                            tracing::warn!(
+                                "memory tool {} listed in enabled_tools but memory_mode \
+                                 != \"tools\", skipping",
+                                tool_name
+                            );
+                        }
+                    }
                     "search_history" => {} // already registered
                     "query_task" => {} // already registered
                     "bash" => tools.register(BashTool::new(max_bytes)),
@@ -237,5 +254,88 @@ fn build_image_client(config: &RobitConfig) -> Option<ImageGenClient> {
 pub fn log_skill_errors(errors: &[SkillLoadError]) {
     for err in errors {
         tracing::warn!("Skill load error: {:?}", err);
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use robit_ai::config::{AppConfig, MemoryMode, RobitConfig};
+    use std::collections::HashMap;
+
+    const MEMORY_TOOL_NAMES: [&str; 4] = ["memorize", "recall", "forget", "list_memories"];
+
+    fn config_with_memory_mode(mode: Option<MemoryMode>) -> RobitConfig {
+        RobitConfig {
+            default_model: None,
+            providers: HashMap::new(),
+            app: Some(AppConfig {
+                memory_mode: mode,
+                ..Default::default()
+            }),
+            channels: None,
+            default_image_model: None,
+            image_providers: HashMap::new(),
+        }
+    }
+
+    fn registry_for(config: &RobitConfig) -> ToolRegistry {
+        let skills = Arc::new(SkillRegistry::new(Vec::new(), &[]));
+        create_tools_from_config(config, skills)
+    }
+
+    #[test]
+    fn memory_tools_registered_in_tools_mode() {
+        let registry = registry_for(&config_with_memory_mode(Some(MemoryMode::Tools)));
+        let names = registry.tool_names();
+        for tool in MEMORY_TOOL_NAMES {
+            assert!(names.contains(&tool), "missing {}", tool);
+        }
+    }
+
+    #[test]
+    fn memory_tools_not_registered_in_file_mode() {
+        let registry = registry_for(&config_with_memory_mode(Some(MemoryMode::File)));
+        let names = registry.tool_names();
+        for tool in MEMORY_TOOL_NAMES {
+            assert!(!names.contains(&tool), "{} should not be registered", tool);
+        }
+        assert!(names.contains(&"read"));
+    }
+
+    #[test]
+    fn memory_tools_not_registered_by_default() {
+        // 未配置 memory_mode（老用户升级路径）→ 默认 file，不注册记忆工具
+        let registry = registry_for(&config_with_memory_mode(None));
+        let names = registry.tool_names();
+        for tool in MEMORY_TOOL_NAMES {
+            assert!(!names.contains(&tool));
+        }
+    }
+
+    #[test]
+    fn memory_tools_not_registered_in_off_mode() {
+        let registry = registry_for(&config_with_memory_mode(Some(MemoryMode::Off)));
+        for tool in MEMORY_TOOL_NAMES {
+            assert!(!registry.tool_names().contains(&tool));
+        }
+    }
+
+    #[test]
+    fn memory_tools_in_enabled_tools_list_ignored_in_file_mode() {
+        // enabled_tools 显式列出记忆工具但模式非 tools → 跳过注册（warn），不报错
+        let mut config = config_with_memory_mode(Some(MemoryMode::File));
+        config.app.as_mut().unwrap().enabled_tools =
+            Some(vec!["read".into(), "memorize".into(), "recall".into()]);
+        let registry = registry_for(&config);
+        let names = registry.tool_names();
+        assert!(names.contains(&"read"));
+        for tool in MEMORY_TOOL_NAMES {
+            assert!(!names.contains(&tool));
+        }
     }
 }
