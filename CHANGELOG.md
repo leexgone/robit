@@ -11,6 +11,7 @@
 ### Changed
 
 - **robit-agent / robit-ai**：记忆机制重构。新增 `[app] memory_mode` 配置（`tools` / `file` / `off`），**默认 `file`**——未配置的用户升级后 SQLite 记忆工具（`memorize` / `recall` / `forget` / `list_memories`）不再注册，自动切换为文件记忆机制：记忆目录（`.robit/memory/`，启用 `global_storage` 时为 `~/.robit/memory/`）下由 Agent 通过 `write` / `edit` 工具维护主记忆文件 `memory.md` 与每日记忆文件 `memory-YYYY-MM-DD.md`，机制说明与主记忆内容（上限 16KB，超限截断）随系统提示词注入上下文；`memory.md` 内容中的字面占位符文本不受模板替换影响。需要原 SQLite 记忆工具的用户请显式配置 `memory_mode = "tools"`；已有 `memories` 表数据不迁移、不删除。Bot 平台各聊天共享同一份 `memory.md`。
+- **robit-agent**：记忆跟进修复。每日记忆文件名与系统提示词 `{date}` 改用**本地时区**日期（复用日志轮转的 `local_utc_offset`，无法确定时回退 UTC），UTC+8 用户在本地 0-8 点不再落到"昨天"的文件；DB 时间戳（created_at/updated_at）保持 UTC 不变。`memory_mode = "file"` 但 `enabled_tools` 未包含 `write` / `edit` 时，启动输出告警提示记忆将无法持久化（补齐工具或改设 `memory_mode = "off"`）。
 
 ## [0.1.23] - 2026-09-29
 
