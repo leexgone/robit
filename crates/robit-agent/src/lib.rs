@@ -13,6 +13,7 @@ pub mod frontend;
 pub mod image_gen;
 pub mod lock;
 pub mod media;
+pub mod memory;
 pub mod prompt;
 pub mod skill;
 pub mod storage;
@@ -28,6 +29,7 @@ pub use event::{AgentEvent, FrontendMessage, MediaAttachment, SessionId};
 pub use image_gen::{GeneratedImage, ImageGenClient, ImageGenError, ImageGenErrorInfo, ImageGenRequest};
 pub use lock::{DirectoryLock, LockError, LockInfo};
 pub use media::{download_and_encode_base64, download_media, MediaError};
+pub use memory::{build_memory_section, resolve_memory_settings, MemorySettings, MAX_MEMORY_INJECT_BYTES};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
 pub use skill::{Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
 pub use storage::{
