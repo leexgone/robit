@@ -189,20 +189,21 @@ pub struct AppConfig {
     pub retry: Option<RetryConfig>,
     pub auto_approve: Option<bool>,
     pub global_storage: Option<bool>,
-    /// 长期记忆机制（默认 file）。
+    /// Long-term memory mechanism (default: file).
     pub memory_mode: Option<MemoryMode>,
     /// Bot platform settings (shared across Bot frontends).
     pub bot: Option<BotConfig>,
 }
 
-/// `[app] memory_mode` 长期记忆机制选择器。
+/// Selector for the `[app] memory_mode` long-term memory mechanism.
 ///
-/// - `tools`：注册 SQLite 记忆工具（memorize/recall/forget/list_memories）。
-/// - `file`：文件记忆机制——记忆目录下的 `memory.md` 与每日文件
-///   `memory-YYYY-MM-DD.md`，主记忆内容注入系统提示词。
-/// - `off`：不启用任何记忆机制。
+/// - `tools`: register SQLite memory tools (memorize/recall/forget/list_memories).
+/// - `file`: file-based memory mechanism — `memory.md` and daily files
+///   `memory-YYYY-MM-DD.md` under the memory directory; the main memory
+///   content is injected into the system prompt.
+/// - `off`: no memory mechanism is enabled.
 ///
-/// 默认 `file`（记忆工具默认关闭）。
+/// Defaults to `file` (memory tools disabled by default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryMode {
@@ -660,8 +661,8 @@ pub fn resolve_image_provider(config: &RobitConfig) -> Result<ResolvedImageProvi
     })
 }
 
-/// 解析生效的记忆模式。未配置时返回 `File`
-/// （记忆工具默认关闭，文件记忆机制默认启用）。
+/// Resolve the effective memory mode. Returns `File` when unset
+/// (memory tools disabled by default, file-based memory enabled by default).
 pub fn resolve_memory_mode(config: &RobitConfig) -> MemoryMode {
     config
         .app
