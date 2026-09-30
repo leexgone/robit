@@ -134,7 +134,8 @@ pub fn create_tools_from_config(
     // Memory tools are only registered in "tools" mode. The default is
     // "file" (file-based memory), where they are entirely absent from the
     // ToolRegistry and thus invisible to the LLM.
-    let memory_tools_enabled = resolve_memory_mode(config) == MemoryMode::Tools;
+    let memory_mode = resolve_memory_mode(config);
+    let memory_tools_enabled = memory_mode == MemoryMode::Tools;
 
     // Always register read, load_skill, history, and query_task tools
     // (required for basic functionality / async task visibility)
@@ -211,7 +212,36 @@ pub fn create_tools_from_config(
         }
     }
 
+    // The file-memory mechanism instructs the agent (via the system prompt)
+    // to create/update memory files with write/edit. If those tools are not
+    // registered, the instructions are unactionable and memory silently
+    // never persists — warn loudly at startup.
+    if memory_mode == MemoryMode::File {
+        let missing = missing_file_memory_tools(&tools.tool_names());
+        if !missing.is_empty() {
+            tracing::warn!(
+                "memory_mode = \"file\" but tool(s) [{}] are not enabled; the agent \
+                 cannot persist memory files (the system prompt instructs it to use \
+                 write/edit). Enable them, or set memory_mode = \"off\" to hide the \
+                 mechanism.",
+                missing.join(", ")
+            );
+        }
+    }
+
     tools
+}
+
+/// Tools the file-memory mechanism relies on to create/update memory files.
+const FILE_MEMORY_REQUIRED_TOOLS: [&str; 2] = ["write", "edit"];
+
+/// Required file-memory tools missing from `names` (empty when all present).
+/// Pure helper split out from `create_tools_from_config` for testability.
+fn missing_file_memory_tools(names: &[&str]) -> Vec<&'static str> {
+    FILE_MEMORY_REQUIRED_TOOLS
+        .into_iter()
+        .filter(|tool| !names.contains(tool))
+        .collect()
 }
 
 /// Build the image generation client from config.
@@ -337,5 +367,17 @@ mod tests {
         for tool in MEMORY_TOOL_NAMES {
             assert!(!names.contains(&tool));
         }
+    }
+
+    #[test]
+    fn missing_file_memory_tools_empty_when_all_present() {
+        assert!(missing_file_memory_tools(&["read", "write", "edit", "bash"]).is_empty());
+    }
+
+    #[test]
+    fn missing_file_memory_tools_reports_each_missing() {
+        assert_eq!(missing_file_memory_tools(&["read", "edit"]), vec!["write"]);
+        assert_eq!(missing_file_memory_tools(&["read", "write"]), vec!["edit"]);
+        assert_eq!(missing_file_memory_tools(&["read"]), vec!["write", "edit"]);
     }
 }
