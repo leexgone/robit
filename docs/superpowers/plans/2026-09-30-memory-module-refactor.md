@@ -18,7 +18,7 @@
 - `{memory_section}` 在 `SYSTEM_PROMPT` 的所有占位符替换中**必须最后替换**。
 - 读取 `memory.md` 失败不得阻断 Agent 启动：`tracing::warn` + 降级为仅机制说明。
 - `tools` 模式下记忆工具保持现有行为（无条件注册，忽略 `enabled_tools` 列表中的记忆工具名）；`file`/`off` 模式下完全不注册，`enabled_tools` 列出记忆工具名时记 `tracing::warn` 后跳过。
-- 提示词模板（`prompts/memory.md`）与注释均为中文，风格与 `prompts/system.md`、现有 doc-comment 一致。
+- 记忆相关提示词模板（`prompts/memory.md`）与注入系统提示词的运行时文本（截断标注、读取失败提示）一律用**英文**，与现有 `prompts/system.md` 及代码注释风格一致；代码 doc-comment 用英文（与 storage.rs / bootstrap.rs 一致）。
 - 提交信息用中文 conventional commits（如 `feat(agent): ...`），结尾加 `Co-Authored-By: Claude Code <noreply@anthropic.com>`。
 - Bot 平台（QQ 多会话）共享单份 `memory.md`，不做隔离（MVP 明确非目标）。
 - 各 crate 版本用 `version.workspace = true`，本次不发版、不 bump 版本号。
@@ -274,16 +274,16 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - [ ] **Step 1: 创建提示词模板 `crates/robit-agent/prompts/memory.md`**
 
 ```markdown
-你拥有基于文件的记忆机制。记忆以 Markdown 文件形式存放在 `{memory_dir}/`：
+You have a file-based memory mechanism. Memories are stored as Markdown files in `{memory_dir}/`:
 
-- **主记忆文件** `{memory_dir}/memory.md`：存放值得长期保留的信息（用户偏好、关键事实、项目核心知识）。它的内容会在每次会话开始时自动注入你的上下文，请保持精炼、去重、可维护。
-- **每日记忆文件** `{memory_dir}/memory-YYYY-MM-DD.md`：存放当天的工作过程与临时上下文。今天对应的文件是 `{memory_dir}/memory-{date}.md`。需要回顾某天的过程时，用 `read` 工具读取对应日期的文件。
+- **Master memory file** `{memory_dir}/memory.md`: information worth keeping long-term (user preferences, key facts, core project knowledge). Its content is automatically injected into your context at the start of every session — keep it concise, deduplicated, and maintainable.
+- **Daily memory file** `{memory_dir}/memory-YYYY-MM-DD.md`: the current day's work process and temporary context. Today's file is `{memory_dir}/memory-{date}.md`. To review a past day, use the `read` tool to open the file for that date.
 
-使用规则：
+Usage rules:
 
-1. 记忆文件不存在时用 `write` 工具创建；更新已有文件用 `edit` 工具，避免整文件重写。
-2. 用户要求你"记住"某事，或你判断信息对后续会话有价值时，写入合适的记忆文件；信息过时或冗余时主动整理删除。
-3. 长期价值的信息进 `memory.md`，仅当日有效的过程记录进每日文件。
+1. Create memory files with the `write` tool when they do not exist; update existing files with the `edit` tool instead of rewriting them whole.
+2. When the user asks you to "remember" something, or you judge that information will matter in future sessions, write it to the appropriate memory file; proactively clean up outdated or redundant entries.
+3. Information with long-term value goes into `memory.md`; same-day process notes go into the daily file.
 ```
 
 - [ ] **Step 2: 写失败测试**
@@ -291,13 +291,15 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 创建 `crates/robit-agent/src/memory.rs`，先只写测试骨架（实现部分留待 Step 4，此时文件顶部暂不 `include_str!` 会导致编译错，属预期）：
 
 ```rust
-//! 文件记忆机制。
+//! File-based memory mechanism.
 //!
-//! 当 SQLite 记忆工具被禁用（`memory_mode = "file"`）时，智能体以
-//! Markdown 文件维护长期记忆：记忆目录下的主记忆文件 `memory.md` 与
-//! 每日文件 `memory-YYYY-MM-DD.md`。本模块负责解析记忆设置，并生成
-//! 注入系统提示词的 `{memory_section}`：机制说明 + 主记忆文件当前内容
-//!（受 [`MAX_MEMORY_INJECT_BYTES`] 上限约束，超限截断）。
+//! When the SQLite memory tools are disabled (`memory_mode = "file"`), the
+//! agent keeps long-term memory in Markdown files under the memory
+//! directory: a master `memory.md` plus daily `memory-YYYY-MM-DD.md` files.
+//! This module resolves the memory settings and builds the
+//! `{memory_section}` injected into the system prompt: the mechanism
+//! explanation plus the current master file content (bounded by
+//! [`MAX_MEMORY_INJECT_BYTES`], truncated beyond that).
 
 #[cfg(test)]
 mod tests {
@@ -400,7 +402,7 @@ mod tests {
         )
         .unwrap();
         let section = build_memory_section(&settings, "2026-09-30");
-        assert!(section.contains("已截断"));
+        assert!(section.contains("truncated"));
         assert!(section.len() < MAX_MEMORY_INJECT_BYTES + 4096);
     }
 
@@ -417,7 +419,7 @@ mod tests {
         .unwrap();
         let section = build_memory_section(&settings, "2026-09-30");
         assert!(section.starts_with("## Memory\n"));
-        assert!(section.contains("读取 memory.md 失败"));
+        assert!(section.contains("Failed to read memory.md"));
     }
 
     #[test]
@@ -463,20 +465,21 @@ use crate::storage::resolve_memory_dir;
 
 const MEMORY_PROMPT_TEMPLATE: &str = include_str!("../prompts/memory.md");
 
-/// 主记忆文件内容注入系统提示词的上限。
-/// 超限截断，并标注可用 read 工具读取完整内容。
+/// Upper bound for the master memory file content injected into the
+/// system prompt. Larger files are truncated with a note pointing at `read`.
 pub const MAX_MEMORY_INJECT_BYTES: usize = 16 * 1024;
 
-/// 一次 Agent 构造所用的记忆设置。
+/// Memory settings for one Agent construction.
 #[derive(Debug, Clone)]
 pub struct MemorySettings {
-    /// 当前生效的记忆机制。
+    /// The active memory mechanism.
     pub mode: MemoryMode,
-    /// 记忆文件目录（与 robit.db 同根）。
+    /// Directory holding the memory files (same root as robit.db).
     pub dir: std::path::PathBuf,
 }
 
-/// 从配置解析记忆设置。前端构造 Agent 时调用。
+/// Resolve memory settings from config. Called by frontends when
+/// constructing an Agent.
 pub fn resolve_memory_settings(
     config: &RobitConfig,
     working_dir: &Path,
@@ -491,10 +494,12 @@ pub fn resolve_memory_settings(
     Ok(MemorySettings { mode, dir })
 }
 
-/// 生成系统提示词的 `{memory_section}` 文本。
+/// Build the `{memory_section}` text for the system prompt.
 ///
-/// `tools` / `off` 模式返回空串；`file` 模式返回机制说明 + 主记忆内容。
-/// 节标题 `## Memory` 由本函数生成（非空时自带），避免空节标题残留。
+/// Returns an empty string for `tools` / `off` modes; for `file` mode
+/// returns the mechanism explanation plus the master file content.
+/// The `## Memory` heading is generated here (carried by the non-empty
+/// text), so no empty heading leaks into the prompt.
 pub fn build_memory_section(settings: &MemorySettings, date: &str) -> String {
     match settings.mode {
         MemoryMode::Tools | MemoryMode::Off => String::new(),
@@ -511,20 +516,22 @@ fn build_file_section(settings: &MemorySettings, date: &str) -> String {
     let mut section = format!("## Memory\n\n{}", explanation.trim());
 
     match read_master_file(&settings.dir) {
-        Ok(None) => {} // 尚未创建——机制说明已覆盖首次创建指引
+        Ok(None) => {} // not created yet — the explanation covers first-time creation
         Ok(Some(content)) => {
             section.push_str("\n\n---\n\n");
             section.push_str(&content);
         }
         Err(err) => {
-            // 读取失败不阻断启动：降级为机制说明 + 失败提示
+            // Read failure must not block startup: degrade to the
+            // explanation plus a failure note.
             tracing::warn!(
                 "Failed to read {}: {}",
                 settings.dir.join("memory.md").display(),
                 err
             );
             section.push_str(&format!(
-                "\n\n（读取 memory.md 失败：{}。可稍后用 read 工具检查该文件。）",
+                "\n\n(Failed to read memory.md: {}. You can check the file later \
+                 with the read tool.)",
                 err
             ));
         }
@@ -533,8 +540,8 @@ fn build_file_section(settings: &MemorySettings, date: &str) -> String {
     section
 }
 
-/// 读取主记忆文件。文件不存在时返回 `Ok(None)`。
-/// 内容超过 [`MAX_MEMORY_INJECT_BYTES`] 时截断并标注。
+/// Read the master memory file. Returns `Ok(None)` when it does not exist yet.
+/// Content larger than [`MAX_MEMORY_INJECT_BYTES`] is truncated with a note.
 fn read_master_file(dir: &Path) -> std::io::Result<Option<String>> {
     let path = dir.join("memory.md");
     let bytes = match std::fs::read(&path) {
@@ -543,11 +550,13 @@ fn read_master_file(dir: &Path) -> std::io::Result<Option<String>> {
         Err(e) => return Err(e),
     };
     if bytes.len() > MAX_MEMORY_INJECT_BYTES {
-        // 切片可能切在多字节字符中间，from_utf8_lossy 以替换符收尾而非报错
+        // The slice may split a multi-byte char at the cut point;
+        // from_utf8_lossy substitutes it instead of failing.
         let mut content =
             String::from_utf8_lossy(&bytes[..MAX_MEMORY_INJECT_BYTES]).into_owned();
         content.push_str(&format!(
-            "\n\n...（已截断，完整内容可用 read 工具读取 {}/memory.md）",
+            "\n\n... (truncated; use the read tool to load the full \
+             {}/memory.md)",
             dir.display()
         ));
         Ok(Some(content))

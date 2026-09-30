@@ -140,7 +140,7 @@ pub fn resolve_memory_settings(
 
 ### 7.2 新模板 `prompts/memory.md`（include_str!）
 
-文件记忆机制说明，含变量 `{memory_dir}`、`{date}`。要点：
+文件记忆机制说明，含变量 `{memory_dir}`、`{date}`。**模板与注入系统提示词的运行时文本（截断标注、读取失败提示）一律用英文**，与现有 `prompts/system.md`、`prompts/default.md` 的提示词语言保持一致。要点：
 
 1. **目录与文件**：记忆目录为 `{memory_dir}`；主记忆文件 `memory.md`（持久事实、用户偏好、项目关键知识）；每日记忆文件 `memory-YYYY-MM-DD.md`（当日工作过程、临时上下文，按 `{date}` 推导当日文件名）。
 2. **创建与写入指引**：文件不存在时用 `write` 工具创建；更新用 `edit` 工具。
@@ -173,9 +173,10 @@ pub fn resolve_memory_settings(
 - **注入上限**：`memory.md` 内容注入上限 **16 KB**（MVP 固定常量 `MAX_MEMORY_INJECT_BYTES`）。超限时截断并在末尾标注：
 
   ```text
-  ...（已截断，完整内容可用 read 工具读取 {memory_dir}/memory.md）
+  ... (truncated; use the read tool to load the full {memory_dir}/memory.md)
   ```
-- **读取失败**（权限/IO 错误）：`tracing::warn` 记录，注入机制说明但不含文件内容，**不阻断 Agent 启动**。
+
+- **读取失败**（权限/IO 错误）：`tracing::warn` 记录，注入机制说明及失败提示（`Failed to read memory.md: ...`），**不阻断 Agent 启动**。
 - **目录解析失败**：同上，降级为不含 `{memory_dir}` 具体路径的说明文本。
 
 ## 9. 测试计划
