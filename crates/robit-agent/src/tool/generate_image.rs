@@ -21,6 +21,9 @@ use crate::media::download_media;
 /// Maximum number of images that can be generated in one call.
 const MAX_N: u32 = 4;
 
+/// Maximum seed value accepted by the DashScope (Wanxiang) API.
+const MAX_SEED: u64 = 2_147_483_647;
+
 #[derive(Debug, Deserialize)]
 struct GenerateImageArgs {
     prompt: String,
@@ -30,6 +33,56 @@ struct GenerateImageArgs {
     output_path: Option<String>,
     #[serde(default)]
     n: Option<u32>,
+    /// Output resolution as "width*height" (e.g. "1280*1280").
+    #[serde(default)]
+    size: Option<String>,
+    /// Negative prompt: content to exclude from the image.
+    #[serde(default)]
+    negative_prompt: Option<String>,
+    /// Whether to enable smart prompt rewriting (provider default: true).
+    #[serde(default)]
+    prompt_extend: Option<bool>,
+    /// Random seed in [0, 2147483647] for reproducible generation.
+    #[serde(default)]
+    seed: Option<u64>,
+}
+
+/// Build the provider pass-through parameters from the optional tool args.
+///
+/// Returns `Value::Null` when no optional parameter was given, so the request
+/// body stays identical to before these options existed. For the DashScope
+/// protocol these keys are merged into `parameters`; for the OpenAI protocol
+/// into the top-level request body (unsupported keys are rejected by the
+/// provider, which surfaces as an API error the LLM can react to).
+fn build_extra_params(args: &GenerateImageArgs) -> Value {
+    let mut extra = serde_json::Map::new();
+    if let Some(size) = args
+        .size
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        extra.insert("size".to_string(), json!(size));
+    }
+    if let Some(np) = args
+        .negative_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        extra.insert("negative_prompt".to_string(), json!(np));
+    }
+    if let Some(pe) = args.prompt_extend {
+        extra.insert("prompt_extend".to_string(), json!(pe));
+    }
+    if let Some(seed) = args.seed {
+        extra.insert("seed".to_string(), json!(seed));
+    }
+    if extra.is_empty() {
+        Value::Null
+    } else {
+        Value::Object(extra)
+    }
 }
 
 pub struct GenerateImageTool {
@@ -78,6 +131,33 @@ impl Tool for GenerateImageTool {
                     "description": "Number of images to generate (1-4). Defaults to 1.",
                     "minimum": 1,
                     "maximum": MAX_N
+                },
+                "size": {
+                    "type": "string",
+                    "description": "Output image resolution as 'width*height' (e.g. '1280*1280'). \
+                                    Omit to use the provider default. Common ratios (Wanxiang wan2.5+): \
+                                    1:1 '1280*1280', 3:4 '1104*1472', 4:3 '1472*1104', \
+                                    9:16 '960*1696', 16:9 '1696*960'. \
+                                    Constraints depend on the configured model; an invalid size is \
+                                    rejected by the provider as an API error."
+                },
+                "negative_prompt": {
+                    "type": "string",
+                    "description": "Optional negative prompt: content to avoid in the generated \
+                                    image (e.g. '低分辨率，肢体畸形'). Max 500 characters."
+                },
+                "prompt_extend": {
+                    "type": "boolean",
+                    "description": "Optional. Enable smart prompt rewriting (provider default: true). \
+                                    Set to false if generation fails with IPInfringementSuspect or \
+                                    DataInspectionFailed caused by the rewritten prompt."
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "Optional random seed in [0, 2147483647]. Same seed keeps \
+                                    results relatively stable across calls.",
+                    "minimum": 0,
+                    "maximum": MAX_SEED
                 }
             },
             "required": ["prompt"]
@@ -105,6 +185,19 @@ impl Tool for GenerateImageTool {
         // Validate and clamp n
         let n = parsed.n.unwrap_or(1).clamp(1, MAX_N);
 
+        // Validate seed against the provider's accepted range (schema also
+        // declares it, but the LLM may still send an out-of-range value).
+        if let Some(seed) = parsed.seed {
+            if seed > MAX_SEED {
+                return Ok(ToolResult::error(format!(
+                    "seed must be in [0, {}], got {}",
+                    MAX_SEED, seed
+                )));
+            }
+        }
+
+        let extra_params = build_extra_params(&parsed);
+
         // Resolve save directory (default: {working_dir}/images)
         let save_dir = match parsed.output_path.as_deref() {
             Some(p) => resolve_path(p, &ctx.working_dir),
@@ -131,10 +224,14 @@ impl Tool for GenerateImageTool {
             let req = ImageGenRequest {
                 prompt,
                 n: Some(n),
-                extra_params: Value::Null,
+                extra_params,
             };
 
-            tracing::info!("[generate_image] requesting {} image(s) (background)", n);
+            tracing::info!(
+                "[generate_image] requesting {} image(s) (background), extra_params={}",
+                n,
+                req.extra_params
+            );
 
             let images = match client.generate(&req).await {
                 Ok(imgs) => imgs,
@@ -296,5 +393,51 @@ mod tests {
         let working_dir = PathBuf::from("/home/user/project");
         let saved = PathBuf::from("/tmp/images/cat.png");
         assert_eq!(display_path(&saved, &working_dir), "/tmp/images/cat.png");
+    }
+
+    fn args(prompt: &str) -> GenerateImageArgs {
+        serde_json::from_value(json!({ "prompt": prompt })).unwrap()
+    }
+
+    #[test]
+    fn test_extra_params_all_absent_is_null() {
+        assert_eq!(build_extra_params(&args("a cat")), Value::Null);
+    }
+
+    #[test]
+    fn test_extra_params_blank_strings_filtered() {
+        let mut a = args("a cat");
+        a.size = Some("  ".to_string());
+        a.negative_prompt = Some("".to_string());
+        assert_eq!(build_extra_params(&a), Value::Null);
+    }
+
+    #[test]
+    fn test_extra_params_all_present() {
+        let mut a = args("a cat");
+        a.size = Some(" 1696*960 ".to_string());
+        a.negative_prompt = Some("低分辨率".to_string());
+        a.prompt_extend = Some(false);
+        a.seed = Some(42);
+        let extra = build_extra_params(&a);
+        assert_eq!(extra["size"], json!("1696*960"));
+        assert_eq!(extra["negative_prompt"], json!("低分辨率"));
+        assert_eq!(extra["prompt_extend"], json!(false));
+        assert_eq!(extra["seed"], json!(42));
+        assert_eq!(extra.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn test_args_deserialize_optional_fields() {
+        let a: GenerateImageArgs = serde_json::from_value(json!({
+            "prompt": "a cat",
+            "size": "1280*1280",
+            "seed": 2147483647u64
+        }))
+        .unwrap();
+        assert_eq!(a.size.as_deref(), Some("1280*1280"));
+        assert_eq!(a.seed, Some(2_147_483_647));
+        assert_eq!(a.negative_prompt, None);
+        assert_eq!(a.prompt_extend, None);
     }
 }
