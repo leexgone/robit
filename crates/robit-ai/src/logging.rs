@@ -42,18 +42,22 @@ fn get_log_file_path(
     Ok(log_file)
 }
 
-/// Determine the system's local UTC offset for log timestamps and file naming.
+/// Determine the system's local UTC offset.
+///
+/// Shared by log timestamps / daily log-file naming and robit-agent's
+/// prompt date + daily memory filenames, so everything rolls at local
+/// midnight consistently.
 ///
 /// Falls back to UTC (with a stderr warning) if the offset can't be determined.
 /// In `time` 0.3.37+ this works on any thread: Unix uses the reentrant
 /// `localtime_r`, Windows uses `SystemTimeToTzSpecificLocalTime` - both
 /// thread-safe - so it's safe to call even after the tokio runtime starts.
-fn local_utc_offset() -> UtcOffset {
+pub fn local_utc_offset() -> UtcOffset {
     match UtcOffset::current_local_offset() {
         Ok(offset) => offset,
         Err(_) => {
             eprintln!(
-                "Could not determine local time offset; log timestamps will be UTC."
+                "Could not determine local time offset; timestamps will be UTC."
             );
             UtcOffset::UTC
         }
