@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **robit-agent**：`generate_image` 工具新增 4 个可选参数：`size`（输出分辨率，`宽*高` 格式，如 `1696*960`）、`negative_prompt`（反向提示词）、`prompt_extend`（提示词智能改写开关，遇 `IPInfringementSuspect` / `DataInspectionFailed` 审核报错时可设 `false` 重试）、`seed`（随机种子，范围 [0, 2147483647]，越界直接返回参数错误）。参数经 `extra_params` 管道透传：DashScope 协议合并进 `parameters`，OpenAI 兼容协议合并进请求体顶层；全部省略时请求体与之前完全一致，不影响现有行为。
+
 ### Changed
 
 - **robit-agent / robit-ai**：记忆机制重构。新增 `[app] memory_mode` 配置（`tools` / `file` / `off`），**默认 `file`**——未配置的用户升级后 SQLite 记忆工具（`memorize` / `recall` / `forget` / `list_memories`）不再注册，自动切换为文件记忆机制：记忆目录（`.robit/memory/`，启用 `global_storage` 时为 `~/.robit/memory/`）下由 Agent 通过 `write` / `edit` 工具维护主记忆文件 `memory.md` 与每日记忆文件 `memory-YYYY-MM-DD.md`，机制说明与主记忆内容（上限 16KB，超限截断）随系统提示词注入上下文；`memory.md` 内容中的字面占位符文本不受模板替换影响。需要原 SQLite 记忆工具的用户请显式配置 `memory_mode = "tools"`；已有 `memories` 表数据不迁移、不删除。Bot 平台各聊天共享同一份 `memory.md`。
