@@ -16,7 +16,7 @@
 
 ### Fixed
 
-- **构建**：发版 CI 的 GUI 三平台构建失败——`tauri-plugin-shell`（Rust crate 2.4.0）与 CI 全新安装的 npm `@tauri-apps/plugin-shell`（2.5.0）major/minor 不一致被 Tauri CLI 拒绝。`cargo update` 对齐 Rust 侧至 2.5.0（tauri 2.12.3 等依赖同步更新）。
+- **构建**：发版 CI 的 GUI 三平台构建失败——`tauri-plugin-shell`（Rust crate 2.4.0）与 CI 全新安装的 npm `@tauri-apps/plugin-shell`（2.5.0）major/minor 不一致被 Tauri CLI 拒绝。修复分三层：`cargo update` 对齐 Rust 侧至 2.5.0（tauri 2.12.3 等依赖同步更新）；`package-lock.json` 重新生成（旧 lock 混有内网 Nexus 源 URL，CI 不可达，这也是此前 workflow 删 lock 全新安装的原因），全部 resolved 指向公共 npm 源，`@tauri-apps/plugin-shell` 在 package.json 中钉为精确版本 `2.5.0`；release.yml 的 GUI 依赖安装改用 `npm ci` 严格按 lock 安装，杜绝"未改代码却因依赖漂移挂发版"的静默失败。
 
 ## [0.1.24] - 2026-09-30
 

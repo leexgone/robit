@@ -157,10 +157,12 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: crates/robit-gui/ui
-        shell: bash
-        run: |
-          rm -rf node_modules package-lock.json
-          npm install
+        # Install strictly from the committed package-lock.json (public npm
+        # registry). The lock pins @tauri-apps/* versions that must stay on the
+        # same major.minor as the Rust crates in Cargo.lock (tauri,
+        # tauri-plugin-shell) — the Tauri CLI rejects mismatched pairs. When
+        # upgrading Tauri deps, update both sides in the same commit.
+        run: npm ci
 
       - name: Build frontend
         working-directory: crates/robit-gui/ui

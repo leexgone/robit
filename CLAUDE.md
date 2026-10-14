@@ -247,6 +247,7 @@ reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
   3. 运行 `cargo check` 让 `Cargo.lock` 同步更新（各 workspace 成员的版本号）
 - 各 crate 的 `Cargo.toml` 用 `robit-xxx.workspace = true` 引用内部依赖，不要硬编码版本。
 - `crates/robit-gui/tauri.conf.json` **不要**写 `version` 字段：Tauri 会自动从 Cargo.toml 读版本（经 `CARGO_PKG_VERSION` 跟随 workspace），GUI 产物名（`Robit_X.Y.Z_*`）与运行时版本显示均由此而来。曾因硬编码 `0.1.1` 导致产物名长期停在 `Robit_0.1.1_*`，切勿加回。
+- GUI 的 npm 侧 `@tauri-apps/*` 与 Rust 侧 tauri crate 版本必须 **major.minor 一致**（Tauri CLI 构建时强校验，不一致直接拒绝构建）。`crates/robit-gui/ui/package-lock.json` 锁定公共 npm 源版本，CI 用 `npm ci` 安装。升级 Tauri 依赖时，`cargo update -p tauri-plugin-shell` 与 `npm install @tauri-apps/plugin-shell@<同版本>` 必须在**同一提交**完成。
 
 ### 步骤
 
