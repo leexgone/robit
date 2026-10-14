@@ -208,6 +208,19 @@ impl ToolRegistry {
 // 结果：文件内容（带行号），图片返回 base64
 ```
 
+#### `read_image` — 识图工具
+
+仅当主模型不支持图片输入（`supports_images = false`）且配置了顶层 `default_vision_model` 时注册。
+
+```json5
+// 参数
+{
+  "file_path": "screenshot.png",       // 必填，图片路径（PNG/JPEG/GIF/WebP）
+  "prompt": "提取图中所有文字"           // 可选，识别指令；缺省为"详细描述图片内容"
+}
+// 结果：视觉模型生成的文本描述（图片经 max_image_dimension 压缩后发送）
+```
+
 #### `bash` — 执行命令
 
 ```json5
@@ -316,6 +329,7 @@ enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 - **不配置 `enabled_tools`**：自动启用所有工具
 - **配置 `enabled_tools`**：只启用列表中指定的工具
 - **`read` 和 `load_skill`**：始终启用（基础功能必需）
+- **`read_image`**：仅当主模型 `supports_images = false` 且顶层 `default_vision_model`（指向普通 `providers` 中的多模态模型）已配置并解析成功时注册。主模型支持图片时 `read` 已直接注入图片，`read_image` 不注册（`default_vision_model` 被忽略并打 info 日志）。
 
 ### 记忆机制（memory_mode）
 
@@ -388,6 +402,7 @@ let tool_registry = bootstrap_result.tool_registry;
 `create_tools_from_config()` 自动注册以下工具：
 
 - `read` - 读取文件（带输出截断）
+- `read_image` - 识图工具（主模型不支持图片时，经 `default_vision_model` 指定的多模态模型识别图片并返回文本描述）
 - `bash` - 执行 Shell 命令
 - `write` - 创建/覆盖文件
 - `edit` - 精确编辑

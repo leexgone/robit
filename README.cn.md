@@ -120,13 +120,14 @@ robit 使用统一配置文件 `config.toml`。加载顺序为：
 
 API Key 支持 `${ENV_VAR}` 环境变量替换。程序会自动尝试加载 `~/.robit/.env`。
 
-> **toml 注意**：`default_model`、`default_image_model` 等顶层键必须出现在任何 `[section]`（如 `[providers.*]`、`[app]`）**之前**。若把顶层键放在 `[[providers.*.models]]` 数组项之后，toml 会把它当作该 model 的字段，导致顶层读取不到而被忽略。
+> **toml 注意**：`default_model`、`default_image_model`、`default_vision_model` 等顶层键必须出现在任何 `[section]`（如 `[providers.*]`、`[app]`）**之前**。若把顶层键放在 `[[providers.*.models]]` 数组项之后，toml 会把它当作该 model 的字段，导致顶层读取不到而被忽略。
 
 最小配置示例：
 
 ```toml
 default_model = "deepseek/deepseek-chat"
 # default_image_model = "wanxiang/wan2.7-image"  # 可选，顶层键，启用 generate_image 工具
+# default_vision_model = "qwen/qwen-vl-max"      # 可选，顶层键，主模型不支持图片时启用 read_image 工具
 
 [providers.deepseek]
 name = "DeepSeek"
@@ -223,6 +224,7 @@ DEEPSEEK_API_KEY=your-api-key
 | 工具 | 说明 |
 | --- | --- |
 | `read` | 读取文件内容，支持输出截断 |
+| `read_image` | 调用视觉模型识别图片并返回文本描述（需配置 `default_vision_model`；仅当主模型不支持图片输入时注册） |
 | `bash` | 执行 Shell 命令 |
 | `write` | 创建或覆盖文件 |
 | `edit` | 精确查找替换 |
@@ -233,7 +235,7 @@ DEEPSEEK_API_KEY=your-api-key
 | `query_task` | 查询异步后台任务状态，始终启用 |
 | `load_skill` | 加载技能内容，始终启用 |
 
-`read`、`load_skill`、`query_task` 以及 memory/history 工具会始终注册。其他工具可通过 `[app].enabled_tools` 控制。`generate_image` 需配置 `image_providers` + `default_image_model`。
+`read`、`load_skill`、`query_task` 以及 memory/history 工具会始终注册。其他工具可通过 `[app].enabled_tools` 控制。`generate_image` 需配置 `image_providers` + `default_image_model`。`read_image` 需配置 `default_vision_model`（指向普通 `providers` 中 `supports_images = true` 的模型），且仅当主模型不支持图片输入时注册。
 
 ## 技能系统
 

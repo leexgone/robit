@@ -2,6 +2,7 @@
 
 pub mod bash;
 pub mod read;
+pub mod read_image;
 pub mod write;
 pub mod edit;
 pub mod generate_image;

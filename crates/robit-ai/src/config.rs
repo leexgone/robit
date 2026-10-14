@@ -49,6 +49,10 @@ pub struct RobitConfig {
     /// Image generation provider definitions, keyed by provider name.
     #[serde(default)]
     pub image_providers: HashMap<String, ImageProviderConfig>,
+    /// Default vision model in "provider/model" format (e.g. "qwen/qwen-vl-max"),
+    /// used by the `read_image` tool when the main model cannot process images.
+    /// The model must be defined in the regular `providers` section.
+    pub default_vision_model: Option<String>,
 }
 
 /// A single LLM provider (one API endpoint with multiple models).
@@ -508,7 +512,19 @@ pub fn resolve_profile(
         (key.clone(), first_model.id.clone())
     };
 
-    let provider = config.providers.get(&provider_key).ok_or_else(|| {
+    resolve_provider_model(config, &provider_key, &model_id)
+}
+
+/// Look up a specific provider/model pair in `config.providers` and validate it.
+///
+/// Shared by `resolve_profile` (via `default_model` or explicit provider) and
+/// `resolve_vision_model` (via `default_vision_model`).
+fn resolve_provider_model(
+    config: &RobitConfig,
+    provider_key: &str,
+    model_id: &str,
+) -> Result<ResolvedModel, LlmError> {
+    let provider = config.providers.get(provider_key).ok_or_else(|| {
         LlmError::ConfigError(format!(
             "Provider '{}' is not defined in config.toml. Available providers: {:?}",
             provider_key,
@@ -538,7 +554,7 @@ pub fn resolve_profile(
     }
 
     Ok(ResolvedModel {
-        profile_name: provider_key,
+        profile_name: provider_key.to_string(),
         model_id: model.id.clone(),
         base_url: provider.base_url.clone(),
         api_key: provider.api_key.clone(),
@@ -553,18 +569,40 @@ pub fn resolve_profile(
     })
 }
 
-/// Parse "provider/model" format from default_model.
+/// Parse "provider/model" format (e.g. from `default_model` or
+/// `default_vision_model`).
 ///
 /// Returns (provider_key, model_id).
 fn parse_default_model(default_model: &str) -> Result<(String, String), LlmError> {
     let parts: Vec<&str> = default_model.splitn(2, '/').collect();
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         return Err(LlmError::ConfigError(format!(
-            "Invalid default_model '{}' format, expected 'provider/model' (e.g. 'deepseek/deepseek-chat')",
+            "Invalid 'provider/model' reference '{}', expected 'provider/model' (e.g. 'deepseek/deepseek-chat')",
             default_model
         )));
     }
     Ok((parts[0].to_string(), parts[1].to_string()))
+}
+
+/// Resolve the vision model to use for the `read_image` tool.
+///
+/// Requires `default_vision_model` ("provider/model" format) to be configured
+/// and pointing at a model defined in the regular `providers` section. Without
+/// it, the `read_image` tool is not registered.
+///
+/// Unlike `resolve_profile` with an explicit provider name (which falls back to
+/// that provider's first model), this resolves the exact "provider/model" pair.
+pub fn resolve_vision_model(config: &RobitConfig) -> Result<ResolvedModel, LlmError> {
+    let default = config.default_vision_model.as_ref().ok_or_else(|| {
+        LlmError::ConfigError(
+            "default_vision_model is not configured. Set it to \"provider/model\" \
+             (e.g. \"qwen/qwen-vl-max\") to enable the read_image tool."
+                .to_string(),
+        )
+    })?;
+
+    let (provider_key, model_id) = parse_default_model(default)?;
+    resolve_provider_model(config, &provider_key, &model_id)
 }
 
 // ============================================================================
@@ -889,7 +927,7 @@ mod tests {
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("Invalid default_model"));
+            .contains("Invalid 'provider/model' reference"));
     }
 
     #[test]
@@ -905,6 +943,97 @@ mod tests {
         let config: RobitConfig = toml::from_str(toml_str).unwrap();
         let result = resolve_profile(&config, None);
         assert!(result.is_err());
+    }
+
+    fn make_vision_test_config(default_vision_model: Option<&str>) -> RobitConfig {
+        let toml_str = format!(
+            r#"
+            default_model = "deepseek/deepseek-chat"
+            default_vision_model = "{}"
+
+            [providers.deepseek]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.deepseek.models]]
+            id = "deepseek-chat"
+
+            [providers.qwen]
+            base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            api_key = "sk-qwen-test"
+
+            [[providers.qwen.models]]
+            id = "qwen-max"
+
+            [[providers.qwen.models]]
+            id = "qwen-vl-max"
+            supports_images = true
+        "#,
+            default_vision_model.unwrap_or("")
+        );
+        let mut config: RobitConfig = toml::from_str(&toml_str).unwrap();
+        if default_vision_model.is_none() {
+            config.default_vision_model = None;
+        }
+        config
+    }
+
+    #[test]
+    fn test_resolve_vision_model_exact_model() {
+        // qwen's first model is qwen-max; resolve_vision_model must pick the
+        // exact referenced model, not the first one.
+        let config = make_vision_test_config(Some("qwen/qwen-vl-max"));
+        let resolved = resolve_vision_model(&config).unwrap();
+        assert_eq!(resolved.profile_name, "qwen");
+        assert_eq!(resolved.model_id, "qwen-vl-max");
+        assert_eq!(
+            resolved.base_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        );
+        assert!(resolved.supports_images);
+    }
+
+    #[test]
+    fn test_resolve_vision_model_not_configured() {
+        let config = make_vision_test_config(None);
+        let err = resolve_vision_model(&config).unwrap_err().to_string();
+        assert!(err.contains("default_vision_model is not configured"));
+    }
+
+    #[test]
+    fn test_resolve_vision_model_invalid_format() {
+        let config = make_vision_test_config(Some("no-slash"));
+        let err = resolve_vision_model(&config).unwrap_err().to_string();
+        assert!(err.contains("Invalid 'provider/model' reference"));
+    }
+
+    #[test]
+    fn test_resolve_vision_model_provider_not_found() {
+        let config = make_vision_test_config(Some("nonexistent/qwen-vl-max"));
+        assert!(resolve_vision_model(&config).is_err());
+    }
+
+    #[test]
+    fn test_resolve_vision_model_model_not_found() {
+        let config = make_vision_test_config(Some("qwen/nonexistent-model"));
+        let err = resolve_vision_model(&config).unwrap_err().to_string();
+        assert!(err.contains("not found in provider"));
+    }
+
+    #[test]
+    fn test_resolve_vision_model_empty_api_key() {
+        let toml_str = r#"
+            default_vision_model = "qwen/qwen-vl-max"
+
+            [providers.qwen]
+            base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            api_key = ""
+
+            [[providers.qwen.models]]
+            id = "qwen-vl-max"
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert!(resolve_vision_model(&config).is_err());
     }
 
     #[test]

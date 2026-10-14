@@ -66,6 +66,7 @@ supports_tools = true
 | 字段 | 类型 | 必填 | 说明 |
 | ---- | ------ | ---- | ---- |
 | `default_model` | `string` | 否 | 默认模型，格式为 `provider/model`（如 `deepseek/deepseek-chat`） |
+| `default_vision_model` | `string` | 否 | 默认识图模型，格式为 `provider/model`（如 `qwen/qwen-vl-max`），用于 `read_image` 工具。模型需定义在普通 `providers` 段中且 `supports_images = true`；仅当主模型不支持图片输入时生效 |
 | `providers` | `table` | 是 | 提供商配置集合 |
 
 ### Provider 字段

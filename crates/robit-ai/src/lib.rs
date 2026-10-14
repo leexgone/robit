@@ -26,7 +26,7 @@ pub use config::{
     load_config, load_env, AppConfig, BotConfig, ChannelsConfig, ConfirmKeywordsConfig,
     ContextConfig, ImageCallMode, ImageModelConfig, ImageProtocol, ImageProviderConfig, ModelConfig,
     ProviderConfig, QqBotConfig, ResolvedImageProvider, ResolvedModel, RetryConfig, RobitConfig,
-    resolve_image_provider,
+    resolve_image_provider, resolve_vision_model,
 };
 pub use error::LlmError;
 pub use logging::{init_logging, init_logging_silent};

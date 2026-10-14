@@ -161,6 +161,7 @@ mod tests {
             channels: None,
             default_image_model: None,
             image_providers: HashMap::new(),
+            default_vision_model: None,
         }
     }
 

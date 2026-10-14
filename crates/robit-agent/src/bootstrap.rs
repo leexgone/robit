@@ -7,8 +7,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use robit_ai::config::{
-    resolve_image_provider, resolve_memory_mode, resolve_profile, MemoryMode, RobitConfig,
+    resolve_image_provider, resolve_memory_mode, resolve_profile, resolve_vision_model,
+    MemoryMode, RobitConfig,
 };
+use robit_ai::LlmClient;
 
 use crate::image_gen::ImageGenClient;
 use crate::skill::{load_skills, Skill, SkillRegistry};
@@ -22,6 +24,7 @@ use crate::tool::ls::LsTool;
 use crate::tool::memory::{ForgetTool, ListMemoriesTool, MemorizeTool, RecallTool};
 use crate::tool::query_task::QueryTaskTool;
 use crate::tool::read::ReadTool;
+use crate::tool::read_image::ReadImageTool;
 use crate::tool::search_history::SearchHistoryTool;
 use crate::tool::write::WriteTool;
 use crate::tool::ToolRegistry;
@@ -159,6 +162,21 @@ pub fn create_tools_from_config(
     // providers are configured (the tool is simply not registered in that case).
     let mut image_client = build_image_client(config);
 
+    // The read_image tool is only useful when the main model cannot see
+    // images itself. When the main model supports images, `read` already
+    // injects them into the context and read_image would be redundant.
+    let mut vision_client = if supports_images {
+        if config.default_vision_model.is_some() {
+            tracing::info!(
+                "Main model supports image inputs; default_vision_model is ignored and \
+                 the read_image tool is not registered"
+            );
+        }
+        None
+    } else {
+        build_vision_client(config)
+    };
+
     // Get enabled tools from config
     let enabled_tools = config.app.as_ref().and_then(|a| a.enabled_tools.as_ref());
 
@@ -194,6 +212,18 @@ pub fn create_tools_from_config(
                              is configured, skipping"
                         ),
                     },
+                    "read_image" => match vision_client.take() {
+                        Some(client) => tools.register(ReadImageTool::new(
+                            client,
+                            max_image_dimension,
+                            max_bytes,
+                        )),
+                        None => tracing::warn!(
+                            "read_image listed in enabled_tools but unavailable (main model \
+                             supports images, or default_vision_model is not configured/invalid), \
+                             skipping"
+                        ),
+                    },
                     _ => tracing::warn!("Unknown tool in enabled_tools config: {}", tool_name),
                 }
             }
@@ -208,6 +238,9 @@ pub fn create_tools_from_config(
             tools.register(GrepTool::new(max_lines, max_bytes));
             if let Some(client) = image_client.take() {
                 tools.register(GenerateImageTool::new(client));
+            }
+            if let Some(client) = vision_client.take() {
+                tools.register(ReadImageTool::new(client, max_image_dimension, max_bytes));
             }
         }
     }
@@ -278,6 +311,42 @@ fn build_image_client(config: &RobitConfig) -> Option<ImageGenClient> {
     }
 }
 
+/// Build the vision model client used by the `read_image` tool.
+///
+/// Returns `None` (without warning) when `default_vision_model` is absent —
+/// a normal "user doesn't need image recognition" state. Returns `None` with
+/// a warning only when the configuration is present but invalid.
+fn build_vision_client(config: &RobitConfig) -> Option<LlmClient> {
+    if config.default_vision_model.is_none() {
+        return None;
+    }
+    match resolve_vision_model(config) {
+        Ok(resolved) => {
+            // ModelConfig.supports_images defaults to false, so a user adding
+            // e.g. qwen-vl-max may have forgotten to mark it. Warn but don't
+            // refuse — the model id is what matters here.
+            if !resolved.supports_images {
+                tracing::warn!(
+                    "Vision model '{}/{}' is not marked supports_images = true in config.toml; \
+                     the read_image tool may fail if the model cannot process images",
+                    resolved.profile_name,
+                    resolved.model_id
+                );
+            }
+            tracing::info!(
+                "Vision model configured: {}/{} (for the read_image tool)",
+                resolved.profile_name,
+                resolved.model_id
+            );
+            Some(LlmClient::from_resolved(resolved))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to resolve vision model: {}", e);
+            None
+        }
+    }
+}
+
 /// Log any skill load errors as warnings.
 ///
 /// Convenience function for frontends to log errors without duplicating code.
@@ -294,7 +363,7 @@ pub fn log_skill_errors(errors: &[SkillLoadError]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use robit_ai::config::{AppConfig, MemoryMode, RobitConfig};
+    use robit_ai::config::{AppConfig, MemoryMode, ModelConfig, ProviderConfig, RobitConfig};
     use std::collections::HashMap;
 
     const MEMORY_TOOL_NAMES: [&str; 4] = ["memorize", "recall", "forget", "list_memories"];
@@ -310,6 +379,7 @@ mod tests {
             channels: None,
             default_image_model: None,
             image_providers: HashMap::new(),
+            default_vision_model: None,
         }
     }
 
@@ -379,5 +449,90 @@ mod tests {
         assert_eq!(missing_file_memory_tools(&["read", "edit"]), vec!["write"]);
         assert_eq!(missing_file_memory_tools(&["read", "write"]), vec!["edit"]);
         assert_eq!(missing_file_memory_tools(&["read"]), vec!["write", "edit"]);
+    }
+
+    /// Config with a valid main model (image support configurable) and an
+    /// optional `default_vision_model` referencing "test/vl-model".
+    fn vision_test_config(
+        main_supports_images: bool,
+        vision_model: Option<&str>,
+        enabled_tools: Option<Vec<String>>,
+    ) -> RobitConfig {
+        let model = |id: &str, supports_images: bool| ModelConfig {
+            id: id.to_string(),
+            name: None,
+            context_window: None,
+            max_output_tokens: None,
+            temperature: None,
+            max_tokens: None,
+            supports_images: Some(supports_images),
+            supports_tools: Some(true),
+        };
+        RobitConfig {
+            default_model: Some("test/main-chat".to_string()),
+            providers: HashMap::from([(
+                "test".to_string(),
+                ProviderConfig {
+                    name: None,
+                    base_url: "https://example.com/v1".to_string(),
+                    api_key: "sk-test".to_string(),
+                    models: vec![
+                        model("main-chat", main_supports_images),
+                        model("vl-model", true),
+                    ],
+                },
+            )]),
+            app: Some(AppConfig {
+                enabled_tools,
+                ..Default::default()
+            }),
+            channels: None,
+            default_image_model: None,
+            image_providers: HashMap::new(),
+            default_vision_model: vision_model.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn read_image_not_registered_when_not_configured() {
+        // Main model lacks image support but no default_vision_model → skip.
+        let config = vision_test_config(false, None, None);
+        assert!(!registry_for(&config).tool_names().contains(&"read_image"));
+    }
+
+    #[test]
+    fn read_image_registered_when_main_model_lacks_image_support() {
+        let config = vision_test_config(false, Some("test/vl-model"), None);
+        assert!(registry_for(&config).tool_names().contains(&"read_image"));
+    }
+
+    #[test]
+    fn read_image_registered_via_enabled_tools_list() {
+        let config =
+            vision_test_config(false, Some("test/vl-model"), Some(vec!["read_image".into()]));
+        assert!(registry_for(&config).tool_names().contains(&"read_image"));
+    }
+
+    #[test]
+    fn read_image_not_registered_when_main_model_supports_images() {
+        // Main model sees images itself → read is enough, vision model ignored.
+        let config = vision_test_config(true, Some("test/vl-model"), None);
+        assert!(!registry_for(&config).tool_names().contains(&"read_image"));
+    }
+
+    #[test]
+    fn read_image_not_registered_when_reference_invalid() {
+        // default_vision_model points at a model that doesn't exist → warn + skip.
+        let config = vision_test_config(false, Some("test/nonexistent"), None);
+        assert!(!registry_for(&config).tool_names().contains(&"read_image"));
+    }
+
+    #[test]
+    fn read_image_skipped_in_enabled_tools_when_unavailable() {
+        // Listed in enabled_tools but the main model supports images → skip
+        // with a warning, no panic.
+        let config =
+            vision_test_config(true, Some("test/vl-model"), Some(vec!["read_image".into()]));
+        assert!(!registry_for(&config).tool_names().contains(&"read_image"));
     }
 }

@@ -120,13 +120,15 @@ robit uses a unified `config.toml` file. The lookup order is:
 
 API keys support `${ENV_VAR}` substitution. robit also attempts to load `~/.robit/.env` automatically.
 
-> **toml note**: top-level keys such as `default_model` and `default_image_model` must appear **before** any `[section]` (e.g. `[providers.*]`, `[app]`). Placing a top-level key after a `[[providers.*.models]]` array entry silently attaches it to that model instead of the root, and it will be ignored.
+> **toml note**: top-level keys such as `default_model`, `default_image_model` and `default_vision_model` must appear **before** any `[section]` (e.g. `[providers.*]`, `[app]`). Placing a top-level key after a `[[providers.*.models]]` array entry silently attaches it to that model instead of the root, and it will be ignored.
 
 Minimal configuration example:
 
 ```toml
 default_model = "deepseek/deepseek-chat"
 # default_image_model = "wanxiang/wan2.7-image"  # optional, top-level, enables generate_image
+# default_vision_model = "qwen/qwen-vl-max"      # optional, top-level, enables read_image
+                                                 # when the main model cannot see images
 
 [providers.deepseek]
 name = "DeepSeek"
@@ -223,6 +225,7 @@ Built-in tools:
 | Tool | Description |
 | --- | --- |
 | `read` | Read file contents with output truncation |
+| `read_image` | Describe an image via a vision model and return the text (requires `default_vision_model`; registered only when the main model lacks image support) |
 | `bash` | Execute shell commands |
 | `write` | Create or overwrite files |
 | `edit` | Perform exact find-and-replace edits |
@@ -233,7 +236,7 @@ Built-in tools:
 | `query_task` | Query async background task status; always enabled |
 | `load_skill` | Load skill content; always enabled |
 
-`read`, `load_skill`, `query_task`, and the memory/history tools are always registered. Other tools can be controlled through `[app].enabled_tools`. `generate_image` requires `image_providers` + `default_image_model` configuration.
+`read`, `load_skill`, `query_task`, and the memory/history tools are always registered. Other tools can be controlled through `[app].enabled_tools`. `generate_image` requires `image_providers` + `default_image_model` configuration. `read_image` requires `default_vision_model` (a `supports_images = true` model in the regular `providers` section) and is registered only when the main model does not support image inputs.
 
 ## Skill System
 

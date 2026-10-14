@@ -66,6 +66,7 @@
 | 工具 | 说明 | 默认启用 | 需用户确认 |
 | ------ | ------ | ---------- | ------------ |
 | `read` | 读取文件内容，支持图片（图片按 `max_image_dimension` 压缩后注入上下文） | 是 | 否 |
+| `read_image` | 识图工具：主模型不支持图片输入时，调用 `default_vision_model` 指定的多模态模型识别图片并返回文本描述（支持自定义识别指令 `prompt`） | 否（需配置 `default_vision_model` 且主模型 `supports_images = false`） | 否 |
 | `bash` | 执行 Shell 命令，流式输出 | 是 | 是 |
 | `edit` | 精确查找替换，支持多处并行编辑 | 是 | 是 |
 | `write` | 创建/覆盖文件，自动创建父目录 | 是 | 是 |
@@ -116,6 +117,9 @@
 default_model = "deepseek/deepseek-chat"
 # 默认生图模型（可选，格式 "provider/model"，用于 generate_image 工具）
 default_image_model = "wanxiang/wan2.7-image-pro"
+# 默认识图模型（可选，格式 "provider/model"，模型定义于 providers 中且 supports_images = true；
+# 仅当主模型 supports_images = false 时启用 read_image 工具，主模型支持图片时忽略）
+default_vision_model = "qwen/qwen-vl-max"
 
 # 提供商定义
 [providers.deepseek]

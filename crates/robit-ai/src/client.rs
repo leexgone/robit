@@ -295,18 +295,23 @@ impl LlmClient {
         profile_name: Option<&str>,
     ) -> Result<Self, LlmError> {
         let resolved = resolve_profile(config, profile_name)?;
+        Ok(Self::from_resolved(resolved))
+    }
 
+    /// Create a client from a pre-resolved model (e.g. from `resolve_vision_model`).
+    /// Infallible: resolution and validation already happened.
+    pub fn from_resolved(resolved: ResolvedModel) -> Self {
         let oc = OpenAIConfig::new()
             .with_api_base(&resolved.base_url)
             .with_api_key(&resolved.api_key);
 
         let client = async_openai::Client::with_config(oc);
 
-        Ok(Self {
+        Self {
             client,
             model: resolved.model_id.clone(),
             resolved,
-        })
+        }
     }
 
     /// Streaming chat completion. Returns an async stream of response chunks.
