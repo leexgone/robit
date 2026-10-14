@@ -25,7 +25,7 @@ robit-agent = { path = "crates/robit-agent", version = "0.1.25" }
 robit-chatbot = { path = "crates/robit-chatbot", version = "0.1.25" }
 
 # 异步运行时（按需启用 feature，避免 full 带来的冗余编译）
-tokio = { version = "1", features = [
+tokio = { version = "1.53", features = [
     "rt-multi-thread",  # 多线程运行时
     "macros",           # #[tokio::main] / #[tokio::test]
     "sync",             # mpsc, Mutex, RwLock, oneshot 等同步原语
@@ -54,7 +54,7 @@ serde_yaml = "0.9"
 toml = "1.1"
 
 # LLM API
-async-openai = { version = "0.42.0", features = ["chat-completion"] }
+async-openai = { version = "0.42", features = ["chat-completion"] }
 
 # 日志
 tracing = "0.1"
@@ -67,7 +67,7 @@ anyhow = "1.0"
 # 工具库
 dirs = "7.0"
 dotenvy = "0.15"
-uuid = { version = "1.26", features = ["v4"] }
+uuid = { version = "1.28", features = ["v4"] }
 globset = "0.4"
 regex = "1.13"
 time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
