@@ -14,6 +14,10 @@
 
 - **robit-agent / robit-ai**：新增 `read_image` 识图工具。主对话模型不支持图片输入（`supports_images = false`，如 deepseek-v4-pro）时，`read` 读图片只能拿到文件名/大小的占位文本；配置顶层 `default_vision_model = "provider/model"`（指向普通 `providers` 段中 `supports_images = true` 的多模态模型，如 `qwen/qwen-vl-max`）后，`read_image` 工具自动注册——Agent 传入图片路径与可选识别指令 `prompt`（如"提取图中文字"，缺省为详细描述），工具内部将图片（经 `max_image_dimension` 压缩）发送给该多模态模型，把文本描述返回给主模型。主模型支持图片时该工具不注册（`default_vision_model` 被忽略并打 info 日志）。配套变更：`resolve_profile` 的 provider/model 查找逻辑提取为共享的 `resolve_provider_model`；新增 `resolve_vision_model`（支持精确到 "provider/具体model_id"，不受"显式 provider 名只取第一个 model"的限制）与 `LlmClient::from_resolved` 构造入口。
 
+### Fixed
+
+- **构建**：发版 CI 的 GUI 三平台构建失败——`tauri-plugin-shell`（Rust crate 2.4.0）与 CI 全新安装的 npm `@tauri-apps/plugin-shell`（2.5.0）major/minor 不一致被 Tauri CLI 拒绝。`cargo update` 对齐 Rust 侧至 2.5.0（tauri 2.12.3 等依赖同步更新）。
+
 ## [0.1.24] - 2026-09-30
 
 ### Added
