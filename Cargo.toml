@@ -6,6 +6,7 @@ members = [
     "crates/robit-gui",
     "crates/robit-chatbot",
     "crates/robit-qq",
+    "crates/robit-web",
     "examples/robit-chat",
     "examples/robit-agent",
 ]
@@ -23,6 +24,7 @@ homepage = "https://github.com/leexgone/robit"
 robit-ai = { path = "crates/robit-ai", version = "0.1.25" }
 robit-agent = { path = "crates/robit-agent", version = "0.1.25" }
 robit-chatbot = { path = "crates/robit-chatbot", version = "0.1.25" }
+robit-web = { path = "crates/robit-web", version = "0.1.25" }
 
 # 异步运行时（按需启用 feature，避免 full 带来的冗余编译）
 tokio = { version = "1.53", features = [

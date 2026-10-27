@@ -19,6 +19,7 @@
 | `crates/robit-chatbot` | 多会话 Bot 基础设施，提供 `PlatformAdapter` trait 和 `ChatbotManager`。QQ 和飞书等平台接入的共享基座。依赖 `robit-agent`、`robit-ai` |
 | `crates/robit-feishu` | _（计划）_ 飞书前端，实现 `PlatformAdapter` trait |
 | `crates/robit-qq` | QQ 前端，实现 `PlatformAdapter` trait（QQ 官方 Bot WebSocket 网关 + HTTP 发消息），二进制名 `robit-qq`。依赖 `robit-chatbot` |
+| `crates/robit-web` | Web 前端桥基座：`AgentEvent` 官方 JSON 序列化 schema（`WebEvent`）、broadcast 扇出 + 工具确认槽位的通用 `Frontend` 实现（`WebFrontend`）、消息注入与接线约定（`WebBridge`）。SSE/WS 编码留给宿主，无 HTTP 框架依赖。依赖 `robit-agent` |
 
 ### 验证工程（`examples/`）
 
@@ -243,7 +244,7 @@ reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
 - 全仓库统一版本，所有 crate 用 `version.workspace = true`，遵循[语义化版本](https://semver.org/lang/zh-CN/)（bug 修复 patch、新功能 minor、不兼容 major）。
 - bump 版本时**三处都要改**（第 2 处最易漏）：
   1. 根 `Cargo.toml` 中 `[workspace.package]` 的 `version`
-  2. 根 `Cargo.toml` 中 `[workspace.dependencies]` 里 3 个内部 crate 的 `version`（`robit-ai` / `robit-agent` / `robit-chatbot`）
+  2. 根 `Cargo.toml` 中 `[workspace.dependencies]` 里 4 个内部 crate 的 `version`（`robit-ai` / `robit-agent` / `robit-chatbot` / `robit-web`）
   3. 运行 `cargo check` 让 `Cargo.lock` 同步更新（各 workspace 成员的版本号）
 - 各 crate 的 `Cargo.toml` 用 `robit-xxx.workspace = true` 引用内部依赖，不要硬编码版本。
 - `crates/robit-gui/tauri.conf.json` **不要**写 `version` 字段：Tauri 会自动从 Cargo.toml 读版本（经 `CARGO_PKG_VERSION` 跟随 workspace），GUI 产物名（`Robit_X.Y.Z_*`）与运行时版本显示均由此而来。曾因硬编码 `0.1.1` 导致产物名长期停在 `Robit_0.1.1_*`，切勿加回。

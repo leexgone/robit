@@ -12,6 +12,7 @@ robit（robo it）是一个基于 LLM 的 AI 自动化代理框架。它提供�
 - **桌面 GUI**：`robit-gui` 基于 Tauri v2 + React，提供桌面应用体验。
 - **多会话 Bot 框架**：`robit-chatbot` 提供平台无关的 Bot 基础设施，支持每个对话独立的 Agent 会话。
 - **QQ Bot 前端**：`robit-qq` 实现 QQ 官方 Bot 接入（WebSocket 网关 + HTTP 发消息），支持群聊和私聊。
+- **Web 前端桥**：`robit-web` 提供 `AgentEvent` 的官方 JSON 序列化 schema、broadcast 扇出 + 工具确认槽位的通用 `Frontend` 实现，以及供 Web 宿主（axum/actix 等）接入的消息注入约定。
 - **工具系统**：内置 `read`、`bash`、`write`、`edit`、`grep`、`find`、`ls` 等工具，可通过配置启用/禁用。
 - **技能系统**：支持将预定义提示词模板作为 Markdown/YAML 技能加载，并通过斜杠命令触发。
 - **项目/全局配置**：支持项目本地 `.robit/config.toml` 覆盖全局 `~/.robit/config.toml`。
@@ -26,6 +27,7 @@ crates/
   robit-gui      # 桌面 GUI 前端（Tauri v2 + React）
   robit-chatbot  # 多会话 Bot 基础设施（PlatformAdapter trait、ChatbotManager）
   robit-qq       # QQ 官方 Bot 前端（WebSocket + HTTP API），二进制命令 robit-qq
+  robit-web      # Web 前端桥（AgentEvent JSON schema、SSE/WS 可用的 Frontend、确认槽位）
 examples/
   robit-chat     # LLM API 层验证用 REPL
   robit-agent    # Agent 运行时验证用 stdin/stdout 前端

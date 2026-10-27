@@ -18,6 +18,7 @@ crates=(
     "crates/robit-ai:robit-ai"
     "crates/robit-agent:robit-agent"
     "crates/robit-chatbot:robit-chatbot"
+    "crates/robit-web:robit-web"
     "crates/robit-tui:robit"
     "crates/robit-qq:robit-qq"
 )

@@ -12,6 +12,7 @@ This repository is a Rust monorepo focused on personal automation, programming a
 - **Desktop GUI**: `robit-gui` is built with Tauri v2 and React for a native desktop experience.
 - **Multi-session Bot framework**: `robit-chatbot` provides platform-agnostic Bot infrastructure with independent Agent sessions per chat.
 - **QQ Bot frontend**: `robit-qq` implements QQ Official Bot integration (WebSocket gateway + HTTP messaging), supporting both group and private chats.
+- **Web frontend bridge**: `robit-web` provides an official JSON wire schema for `AgentEvent`, a broadcast fan-out `Frontend` with tool-confirmation slots, and a message-injection contract for web hosts (axum/actix/…).
 - **Tool system**: Built-in tools include `read`, `bash`, `write`, `edit`, `grep`, `find`, and `ls`; tools can be enabled or disabled through configuration.
 - **Skill system**: Load predefined prompt templates from Markdown/YAML files and trigger them with slash commands.
 - **Project/global configuration**: Project-local `.robit/config.toml` can override the global `~/.robit/config.toml`.
@@ -26,6 +27,7 @@ crates/
   robit-gui      # Desktop GUI frontend (Tauri v2 + React)
   robit-chatbot  # Multi-session Bot infrastructure (PlatformAdapter trait, ChatbotManager)
   robit-qq       # QQ Official Bot frontend (WebSocket + HTTP API), binary command robit-qq
+  robit-web      # Web frontend bridge (AgentEvent JSON schema, SSE/WS-ready Frontend, confirmation slots)
 examples/
   robit-chat     # REPL for validating the LLM API layer
   robit-agent    # stdin/stdout frontend for validating the agent runtime
