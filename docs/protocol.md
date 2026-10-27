@@ -48,8 +48,29 @@ pub struct ToolCall {
 |------|------|
 | `UserInput(String)` | 用户新消息 |
 | `Cancel` | 取消当前操作（取消所有进行中的异步后台任务） |
-| `ConfirmationResponse { id, approved }` | 工具调用确认回复 |
+| `ConfirmationResponse { id, approved }` | 工具调用确认回复（**保留变体**：现行实现的确认走 `Frontend::request_tool_confirmation` 的返回值，Agent 收到此消息只 warn） |
 | `CancelTask { task_id }` | 取消指定的异步后台任务 |
+
+## Web JSON 协议（`robit-web`）
+
+`robit-web` 为 `AgentEvent` 提供官方 JSON 序列化 schema（`WebEvent`），是 Web 客户端（JS/TS）与 robit 之间的稳定 wire 契约。每个事件一个 JSON 对象，内部 `type` 标签、snake_case 命名：
+
+| wire 事件（`type`） | 字段 | 来源 |
+|---|---|---|
+| `text_delta` | `text` | `AgentEvent::TextDelta` |
+| `tool_call` | `tool_call_id` `name` `arguments` | `AgentEvent::ToolCallRequested` |
+| `tool_result` | `tool_call_id` `is_error` `content` | `AgentEvent::ToolCallResult` |
+| `skill_triggered` | `name` `description` | `AgentEvent::SkillTriggered` |
+| `async_tool_completed` | `task_id` `tool_call_id` `is_error` | `AgentEvent::AsyncToolCompleted` |
+| `confirm_request` | `tool_call_id` `name` `arguments` | 桥内 `request_tool_confirmation` 被调用时推送（非 AgentEvent 投影） |
+| `turn_complete` | — | `AgentEvent::TurnComplete` |
+| `error` | `message` | `AgentEvent::Error`（Display 文案） |
+
+**确认握手**：客户端收到 `confirm_request` 后经宿主自己的 HTTP 端点把答复送回；宿主调用 `WebBridge::resolve_confirm(tool_call_id, approved)` 唤醒挂起的 `request_tool_confirmation`（Web 路径不使用 `FrontendMessage::ConfirmationResponse`）。responder 被 drop（新请求顶替、`reject_pending_confirms`、桥销毁）一律按**拒绝**处理。
+
+**消息注入**：用户输入由宿主经 `WebBridge::send_user_text` / `send_message` 注入（内部构造 `FrontendMessage`）；Agent 循环退出后注入返回 `FrontendGone`，宿主应据此降级（如 HTTP 503）。
+
+**宿主职责边界**：SSE/WS 编码、keep-alive、断线重连、`connected` 等元数据首帧都在宿主侧——`robit-web` 零 HTTP 框架依赖，只保证事件投影与通道语义。
 
 ## 消息流向
 

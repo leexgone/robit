@@ -45,7 +45,7 @@ pub trait Frontend: Send + Sync {
 }
 ```
 
-前端通过独立 channel 向 Agent 推送 `FrontendMessage`（`UserInput` / `Cancel` / `ConfirmationResponse`），由 `Agent::run(message_rx)` 消费。
+前端通过独立 channel 向 Agent 推送 `FrontendMessage`（`UserInput` / `Cancel` / `CancelTask`；`ConfirmationResponse` 为保留变体——现行实现的工具确认走 `request_tool_confirmation` 的返回值，Agent 收到该消息只 warn），由 `Agent::run(message_rx)` 消费。
 
 **各前端实现：**
 
@@ -55,13 +55,14 @@ pub trait Frontend: Send + Sync {
 | `robit-gui` | Tauri IPC 命令 | Tauri 事件推送 → React 渲染（流式） | UI 按钮点击 |
 | `robit-chatbot` | 平台消息推送 | 平台 API 发送消息（智能分段） | 内联关键字回复 |
 | `robit-qq` | QQ WebSocket 推送 | QQ API 发送消息 | 内联关键字回复 |
+| `robit-web` | 宿主注入（`WebBridge::send_user_text` / `send_message`，如 HTTP POST） | `WebEvent` JSON broadcast 扇出（SSE/WS 编码由宿主做） | 宿主回填 `WebBridge::resolve_confirm(tool_call_id, approved)` |
 | `robit-feishu`（计划） | 飞书 WebSocket 推送 | 飞书 API 发送消息 | 消息卡片按钮 |
 
 **TUI 与消息平台的差异处理：**
 
-- 流式输出：TUI/GUI 逐字显示；Bot 平台采用智能分段 + 消息编辑实现近似流式体验
-- 会话模型：TUI 单进程单会话；GUI 多会话；Bot 平台天然多用户多会话
-- 工具确认：TUI/GUI 同步弹窗；Bot 平台异步内联消息 + 超时机制
+- 流式输出：TUI/GUI 逐字显示；Bot 平台采用智能分段 + 消息编辑实现近似流式体验；Web 宿主逐帧收 `text_delta`（缓冲策略归前端）
+- 会话模型：TUI 单进程单会话；GUI 多会话；Bot 平台天然多用户多会话；`robit-web` 单会话一桥，多会话由宿主按会话建桥
+- 工具确认：TUI/GUI 同步弹窗；Bot 平台异步内联消息 + 超时机制；Web 走推送/回填握手（`confirm_request` 事件挂起 oneshot 槽位，responder 被 drop 按拒绝）
 
 **Bot 平台分层架构（`robit-chatbot` + `robit-qq`）：**
 
@@ -87,6 +88,23 @@ robit-chatbot (共享基座)
 
 详见 [`docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md`](docs/superpowers/specs/2026-06-18-robit-chatbot-qq-design.md)。
 
+**Web 桥（`robit-web`，v0.1.26 起）：**
+
+```txt
+宿主（axum / actix / … 任意 HTTP 框架）
+  ├── WebBridge（宿主接线端子，单会话一桥）
+  │     ├── send_user_text / send_message → Agent::run 消息注入
+  │     │     （Agent 循环退出后返回 FrontendGone）
+  │     ├── subscribe() → broadcast<WebEvent>（SSE/WS 编码由宿主做）
+  │     └── resolve_confirm / reject_pending_confirms → 确认回填
+  └── WebFrontend（Frontend trait 实现）
+        ├── on_event：AgentEvent → WebEvent（官方 JSON schema）→ broadcast 扇出
+        └── request_tool_confirmation：推 confirm_request 事件，
+              挂起在单槽位 oneshot 上等宿主回填；drop 一律按拒绝
+```
+
+crate 零 HTTP 框架依赖；`connected` 等宿主元数据帧由宿主自行序列化后并入流。wire 格式见 [`docs/protocol.md`](protocol.md) 的「Web JSON 协议」。首个消费者：子木 StockAgent 的 `zimu-server`（两工程共同演进产物）。
+
 ## 会话管理
 
 会话由 `SessionId`（UUID v4）唯一标识。不同前端采用不同的会话模型：
@@ -94,6 +112,7 @@ robit-chatbot (共享基座)
 - **TUI**：单进程单会话
 - **GUI**：多会话，每个会话一个 `Agent` 实例（`Arc` 共享 `LlmClient`/`ToolRegistry`/`SkillRegistry`）
 - **Bot 平台**（`robit-chatbot`）：每个聊天（群/私聊）一个 `Agent` 实例，由 `ChatbotManager` 按 `chat_id` 路由
+- **Web 宿主**（`robit-web`）：每个会话一个 `WebBridge` + 独立 `Agent` 任务，路由（会话 id → 桥）由宿主负责
 
 ```rust
 pub struct AgentSession {

@@ -90,6 +90,7 @@
 - [x] QQ 前端实现（`robit-qq`）— QQ 官方 Bot WebSocket 网关 + HTTP 发消息，多会话管理
 - [x] Bot 共享基座设计（`robit-chatbot`）— 提取 QQ/飞书的通用多会话 Bot 逻辑
 - [x] Bot 共享基座实现（`robit-chatbot`）— `PlatformAdapter` trait + `ChatbotManager` + `ChatbotFrontend` + `Confirmer` + Markdown 清洗
+- [x] Web 前端桥（`robit-web`）— `AgentEvent` 官方 JSON schema（`WebEvent`）+ `WebFrontend`（broadcast 扇出 / 工具确认槽位）+ `WebBridge`（消息注入）；SSE/WS 编码留给宿主（v0.1.26，源自子木 StockAgent 共同演进沉淀）
 
 ### 基础设施
 
