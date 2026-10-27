@@ -8,6 +8,12 @@
 
 ## [Unreleased]
 
+## [0.1.26] - 2026-10-27
+
+### Added
+
+- **robit-web**：新增 Web 前端桥 crate（来自子木 StockAgent P2-T3 SSE 桥的通用化沉淀，应两工程共同演进需求 R1）。`WebEvent` 为 `AgentEvent` 提供官方 JSON 序列化 schema（内部 `type` 标签、snake_case 变体，如 `{"type":"text_delta","text":"…"}`），作为 Web 客户端（JS/TS）与 robit 之间的稳定 wire 契约；`WebFrontend` 是通用 `Frontend` 实现——事件经 `tokio::sync::broadcast` 扇出（多客户端可同时观看，慢消费者 `Lagged` 由宿主透出而非断流），工具确认改为推送/回填握手：`request_tool_confirmation` 挂起在单槽位 oneshot 上并推送 `confirm_request` 事件，宿主调用 `WebBridge::resolve_confirm(tool_call_id, approved)` 后 Agent 继续；responder 被 drop（新请求顶替、`reject_pending_confirms`、桥销毁）一律按拒绝处理。`WebBridge` 承载宿主接线：消息注入（`send_user_text` / `send_message`，Agent 循环退出后返回 `FrontendGone`）、`subscribe()` 订阅事件流、`take_message_rx()` 交出接收端给 `Agent::run`。SSE/WS 编码、keep-alive 与传输层关注点刻意留在宿主，crate 零 HTTP 框架依赖；`connected` 等宿主元数据帧由宿主自行序列化后并入流。单会话一桥，多会话宿主按会话各建一桥。单元测试 9 项（事件投影 ×3、确认握手 ×4、注入 ×1、扇出 ×1）。
+
 ## [0.1.25] - 2026-10-14
 
 ### Added
