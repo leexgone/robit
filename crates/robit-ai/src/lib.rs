@@ -29,4 +29,6 @@ pub use config::{
     resolve_image_provider, resolve_vision_model,
 };
 pub use error::LlmError;
-pub use logging::{init_logging, init_logging_silent};
+pub use logging::{
+    build_log_filter, init_logging, init_logging_silent, install_panic_hook, log_file_layer,
+};

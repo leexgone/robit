@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-pub use loader::{load_skills, parse_skill_file, SkillLoadError};
+pub use loader::{load_skills, load_skills_from_dirs, parse_skill_file, SkillLoadError};
 pub use registry::SkillRegistry;
 
 // ============================================================================

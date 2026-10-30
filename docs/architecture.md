@@ -200,6 +200,10 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     pub fn register(&mut self, tool: impl Tool + 'static) { ... }
 
+    /// 注册已装箱的工具（宿主装配持有的 Box<dyn Tool> 用这个；
+    /// bootstrap_with 的 extra_tools 内部即走此入口）
+    pub fn register_boxed(&mut self, tool: Box<dyn Tool>) { ... }
+
     /// 生成所有工具的 schema，注入到 LLM 请求中
     pub fn tool_schemas(&self) -> Vec<serde_json::Value> { ... }
 
@@ -212,6 +216,23 @@ impl ToolRegistry {
     ) -> Result<ToolResult> { ... }
 }
 ```
+
+### 宿主工具错误处理（与 anyhow 互操作）
+
+宿主（外部 crate）实现 `Tool::execute` 时，内部调用常用 `anyhow::Result`；但 `execute` 的错误类型是 robit 的 `AgentError`，宿主既不该也无法为它实现 `From`（孤儿规则）。robit 侧提供了官方转换，宿主不再需要自写 `store_try!` 之类的宏：
+
+- **`impl From<anyhow::Error> for AgentError`**（`AgentError::External` 变体）：宿主工具内可直接 `?`——错误经 `ToolRegistry::execute` 兜底转换为 `ToolResult::error("Tool execution error: …")`，模型可见完整错误链；
+- **`impl From<anyhow::Error> for ToolResult`**：把 `anyhow` 错误（含 `{:#}` 展开的整条 cause 链）直接转为错误 `ToolResult`，适合 `map_err` 后手动构造结果的场景。
+
+```rust
+async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolResult> {
+    // 直接 ? ：anyhow 错误自动转 AgentError::External
+    let holdings = self.store.portfolio().await?;
+    Ok(ToolResult::success(serde_json::to_string(&holdings)?))
+}
+```
+
+**推荐模式**：错误信息对模型有转发价值（如"行情 sidecar 不可达，请稍后重试"）时用 `?` 直接传播；错误细节不该喂给模型（如 SQL 报错原文，避免泄露内部结构）时，宿主应自行 `tracing::error!` 记录细节并返回脱敏文案的 `ToolResult::error(…)`——`?` 与手工构造可以按调用点混用。
 
 ### 工具参数定义
 
@@ -348,7 +369,10 @@ enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 - **不配置 `enabled_tools`**：自动启用所有工具
 - **配置 `enabled_tools`**：只启用列表中指定的工具
 - **`read` 和 `load_skill`**：始终启用（基础功能必需）
+- **其余标准工具**（含 `search_history`、`query_task`、记忆工具）：仅出现在列表中才注册——白名单即最终工具面。记忆工具另受 `memory_mode = "tools"` 约束（列出但模式不符时打 warning 跳过）
 - **`read_image`**：仅当主模型 `supports_images = false` 且顶层 `default_vision_model`（指向普通 `providers` 中的多模态模型）已配置并解析成功时注册。主模型支持图片时 `read` 已直接注入图片，`read_image` 不注册（`default_vision_model` 被忽略并打 info 日志）。
+
+宿主也可以在代码侧传入白名单（优先级高于 `enabled_tools` 配置），见 [Bootstrap 模块](#bootstrap-模块)的 `create_tools_from_config_with` / `BootstrapOptions`。
 
 ### 记忆机制（memory_mode）
 
@@ -371,10 +395,43 @@ Bot 平台（QQ 多会话）下所有聊天共享同一份 `memory.md`，不做�
 | 函数 | 说明 |
 | ---- | ---- |
 | `bootstrap(config, working_dir, base_tool_names)` | 一站式启动：加载技能 → 过滤启用技能 → 创建 `SkillRegistry` → 创建 `ToolRegistry` → 返回 `BootstrapResult` |
+| `bootstrap_with(config, working_dir, base_tool_names, options)` | `bootstrap` 的宿主组合形态：接受 `BootstrapOptions`（追加领域工具、标准工具白名单、额外技能目录），`BootstrapOptions::new()` 时与 `bootstrap` 等价 |
 | `load_all_skills(working_dir)` | 从全局 `~/.robit/skills/` 和项目 `{working_dir}/.robit/skills/` 加载技能 |
+| `load_all_skills_with(working_dir, extra_skill_dirs)` | 同上，额外接受宿主自定义技能目录（在标准目录之后加载、按名覆盖，优先级最高） |
+| `load_skills_from_dirs(dirs)` | 按目录列表加载技能的通用形式（后者覆盖前者同名技能），`load_skills` 的推广 |
 | `filter_skills_by_config(skills, config)` | 根据 `config.app.enabled_skills` 过滤技能列表 |
 | `create_tools_from_config(config, skill_registry)` | 从配置创建完整 `ToolRegistry`，包含所有标准工具 |
+| `create_tools_from_config_with(config, skill_registry, standard_tools)` | 同上，但可用显式白名单覆盖 `config.app.enabled_tools`（宿主选取部分标准工具的程序化入口） |
 | `log_skill_errors(errors)` | 记录技能加载警告（非致命错误） |
+
+### BootstrapOptions（宿主组合形态）
+
+server 类宿主（如子木 StockAgent）常见诉求：保留 skill 加载与部分通用工具（如 `read`），排除危险工具（如 `bash`），再追加领域工具——过去只能在宿主侧复刻 bootstrap 编排。`BootstrapOptions` 让这类组合一步到位：
+
+```rust
+use robit_agent::{bootstrap_with, BootstrapOptions};
+
+let result = bootstrap_with(
+    &config,
+    &working_dir,
+    &["read", "load_skill", "get_quote"],
+    BootstrapOptions::new()
+        // 技能随仓库走：仓库根 skills/ 目录（按名覆盖全局/项目同名技能）
+        .with_extra_skill_dirs([repo_root.join("skills")])
+        // 标准工具只要 read + load_skill（覆盖 config 的 enabled_tools；
+        // read/load_skill 始终注册，其余标准工具含 search_history/query_task
+        // 仅在列出时注册）
+        .with_standard_tools(["read", "load_skill"])
+        // 领域工具追加注册（注册在标准工具之后，可按名覆盖标准工具）
+        .with_extra_tools(vec![Box::new(GetQuoteTool) as Box<dyn Tool>]),
+);
+```
+
+要点：
+
+- `extra_skill_dirs`：技能作为产品资产随仓库版本化的官方入口，宿主不再需要自写 loader；
+- `standard_tools`：白名单语义与 `config.app.enabled_tools` 一致（`read`/`load_skill` 始终注册），但优先级更高；未列出即不注册——含 `search_history`、`query_task` 与记忆工具（记忆工具仍受 `memory_mode = "tools"` 约束）；
+- `extra_tools`：领域工具名会自动并入 `SkillRegistry` 校验 `tools_required` 的可用工具清单（与 `base_tool_names` 合并），声明了领域工具依赖的技能不会误报 warning。
 
 ### BootstrapResult
 
@@ -981,6 +1038,14 @@ pub enum AgentError {
     #[error("配置错误: {0}")]
     ConfigError(String),
 
+    #[error("工具执行错误: {0}")]
+    ToolError(String),
+
+    /// 宿主领域错误：宿主工具 execute 里 `?` 传播的 anyhow 错误
+    /// （robit 提供 From<anyhow::Error>，宿主无需自写转换）
+    #[error(transparent)]
+    External(#[from] anyhow::Error),
+
     #[error("上下文溢出: 当前 {current} tokens，上限 {max} tokens")]
     ContextOverflow { current: usize, max: usize },
 
@@ -997,3 +1062,36 @@ pub enum AgentError {
 | LLM API 错误 | 对话区域 | 系统消息，红色显示 |
 | 配置错误 | 启动日志 | 终端输出 + 修复建议 |
 | 重试中 | 状态栏 | `⟳ 重试中 (2/3)...` |
+
+## 日志系统
+
+`robit-ai` 提供 `init_logging` / `init_logging_silent` 便捷封装（robit 自家前端在用），以及三个可组合原语，供自建 subscriber 的宿主（server 形态）使用。
+
+### 宿主自组合形态
+
+`init_logging` 内部 `.init()` 独占全局 subscriber，宿主无法叠加自己的 fmt 层；其过滤器也只放行单一 target crate。宿主应改用以下三个原语组合出等价能力（格式、target 均自管）：
+
+| API | 说明 |
+| --- | --- |
+| `build_log_filter(app_config, host_targets, additional_directives)` | 构造 `EnvFilter`：`host_targets` 中每个 crate 取 `app.log_level` 级别（缺省 `info`），robit 三 crate（`robit_ai`/`robit_agent`/`robit_chatbot`）始终同级别（与 host_targets 去重），第三方嘈杂 crate（reqwest/hyper/tokio 等）压到 `warn`；`RUST_LOG` 环境变量设置时整体让位 |
+| `log_file_layer(app_config, working_dir, filter)` | robit 文件日志层：`{working_dir}/.robit/logs/robit-YYYY-MM-DD.log`（本地日期轮转、无 ANSI、按 `log_retention_days` 清理）。`app.log_file != true` 或文件打开失败时返回 `None`（`Option<L>` 本身实现 `Layer`，直接 `.with(...)` 即可） |
+| `install_panic_hook()` | panic 钩子：panic 经 tracing 落入日志后再链回原钩子（stderr）。须在 `.init()` 之后调用 |
+
+```rust
+use robit_ai::{build_log_filter, install_panic_hook, log_file_layer};
+use tracing_subscriber::prelude::*;
+
+// 单一初始化路径：自己的 fmt 格式 + robit 文件日志 + 全 workspace crate 可见
+let filter = build_log_filter(
+    config.app.as_ref(),
+    &["zimu_server", "zimu_agent", "zimu_market"],  // 宿主 workspace crate 清单
+    &["tower_http=debug"],
+);
+tracing_subscriber::registry()
+    .with(tracing_subscriber::fmt::layer().with_filter(filter.clone()))
+    .with(log_file_layer(config.app.as_ref(), &working_dir, filter))
+    .init();
+install_panic_hook();
+```
+
+不再需要：按「有无 robit 配置」二选一分支、手工拼 `"{crate}={level}"` 追加 directive、在宿主侧复刻文件日志轮转。

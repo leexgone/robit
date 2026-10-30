@@ -21,8 +21,9 @@ pub mod tool;
 
 pub use agent::Agent;
 pub use bootstrap::{
-    bootstrap, create_tools_from_config, filter_skills_by_config, load_all_skills,
-    log_skill_errors, BootstrapResult,
+    bootstrap, bootstrap_with, create_tools_from_config, create_tools_from_config_with,
+    filter_skills_by_config, load_all_skills, load_all_skills_with, log_skill_errors,
+    BootstrapOptions, BootstrapResult,
 };
 pub use error::AgentError;
 pub use event::{AgentEvent, FrontendMessage, MediaAttachment, SessionId};
@@ -31,7 +32,7 @@ pub use lock::{DirectoryLock, LockError, LockInfo};
 pub use media::{download_and_encode_base64, download_media, MediaError};
 pub use memory::{build_memory_section, resolve_memory_settings, MemorySettings, MAX_MEMORY_INJECT_BYTES};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
-pub use skill::{Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
+pub use skill::{load_skills_from_dirs, Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
 pub use storage::{
     activate_session, delete_session, delete_memory_permanently, deactivate_memory,
     find_memories_by_title, find_session_by_chat_id, get_memory, get_session,

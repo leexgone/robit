@@ -142,6 +142,23 @@ impl ToolResult {
     }
 }
 
+impl From<anyhow::Error> for ToolResult {
+    /// Convert a host-side error into an error result the LLM can read.
+    ///
+    /// robit owns `ToolResult`, so this impl is legal here while a host crate
+    /// could not write it (orphan rule). Hosts that want the error text (with
+    /// its whole `anyhow` cause chain, `{:#}` format) to reach the model can
+    /// use this conversion directly; hosts that prefer to sanitize what the
+    /// model sees should keep building `ToolResult::error(...)` manually.
+    ///
+    /// Note: this does **not** enable `?` inside `Tool::execute` (whose error
+    /// type is `AgentError`) — for that, robit also provides
+    /// `From<anyhow::Error> for AgentError`.
+    fn from(err: anyhow::Error) -> Self {
+        Self::error(format!("{err:#}"))
+    }
+}
+
 // ============================================================================
 // Shared helpers
 // ============================================================================
@@ -222,7 +239,15 @@ impl ToolRegistry {
 
     /// Register a tool. Overwrites any existing tool with the same name.
     pub fn register(&mut self, tool: impl Tool + 'static) {
-        self.tools.insert(tool.name().to_string(), Box::new(tool));
+        self.register_boxed(Box::new(tool));
+    }
+
+    /// Register an already-boxed tool. Overwrites any existing tool with the
+    /// same name. Host assemblies that collect `Box<dyn Tool>` (e.g.
+    /// [`crate::bootstrap::BootstrapOptions::extra_tools`]) use this; for a
+    /// concrete tool type, [`ToolRegistry::register`] is more convenient.
+    pub fn register_boxed(&mut self, tool: Box<dyn Tool>) {
+        self.tools.insert(tool.name().to_string(), tool);
     }
 
     /// Get a list of all registered tool names.
@@ -343,5 +368,22 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `From<anyhow::Error> for ToolResult` — robit owns ToolResult, so hosts
+    /// get this conversion without touching the orphan rule. `{:#}` flattens
+    /// the whole cause chain into the model-visible text.
+    #[test]
+    fn tool_result_from_anyhow_error_includes_cause_chain() {
+        let err = anyhow::anyhow!("root cause").context("outer operation failed");
+        let result = ToolResult::from(err);
+        assert!(result.is_error);
+        assert!(result.content.contains("root cause"));
+        assert!(result.content.contains("outer operation failed"));
     }
 }

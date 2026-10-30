@@ -137,17 +137,35 @@ pub fn load_skills(
     global_dir: Option<PathBuf>,
     project_dir: Option<PathBuf>,
 ) -> (Vec<Skill>, Vec<SkillLoadError>) {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = global_dir {
+        dirs.push(dir);
+    }
+    if let Some(dir) = project_dir {
+        dirs.push(dir);
+    }
+    load_skills_from_dirs(&dirs)
+}
+
+/// Load skills from an ordered list of skill directories.
+///
+/// Directories are loaded in order; a skill loaded from a later directory
+/// overrides a same-named skill from an earlier one (so the last directory has
+/// the highest priority). Only skills with `enabled: true` (or default) are
+/// included.
+///
+/// This is the general form of [`load_skills`]; hosts that ship skills as
+/// versioned repo assets (e.g. a `skills/` dir at the repository root) pass
+/// their directory after the standard global/project ones.
+///
+/// Returns a tuple of (loaded skills, load errors). Errors are non-fatal —
+/// the caller can log them and proceed with successfully loaded skills.
+pub fn load_skills_from_dirs(dirs: &[PathBuf]) -> (Vec<Skill>, Vec<SkillLoadError>) {
     let mut skills_by_name: HashMap<String, Skill> = HashMap::new();
     let mut errors: Vec<SkillLoadError> = Vec::new();
 
-    // Load global skills first (lower priority)
-    if let Some(dir) = global_dir {
-        load_from_directory(&dir, &mut skills_by_name, &mut errors);
-    }
-
-    // Load project skills second (higher priority, overrides by name)
-    if let Some(dir) = project_dir {
-        load_from_directory(&dir, &mut skills_by_name, &mut errors);
+    for dir in dirs {
+        load_from_directory(dir, &mut skills_by_name, &mut errors);
     }
 
     // Filter out disabled skills
@@ -417,5 +435,33 @@ This is the body content."#;
         assert!(errors.iter().any(|e| matches!(e, SkillLoadError::MissingSkillFile { .. })));
 
         std::fs::remove_dir_all(temp).ok();
+    }
+
+    #[test]
+    fn test_load_skills_from_dirs_later_dir_overrides() {
+        let base = std::env::temp_dir().join(format!("robit_test_dirs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        let low = base.join("low");
+        let high = base.join("high");
+        std::fs::create_dir_all(&low).unwrap();
+        std::fs::create_dir_all(&high).unwrap();
+
+        write_skill_dir(&low, "shared", "---\nname: shared\ndescription: low version\n---\nlow body");
+        write_skill_dir(&low, "only-low", "---\nname: only-low\ndescription: low only\n---\nbody");
+        write_skill_dir(&high, "shared", "---\nname: shared\ndescription: high version\n---\nhigh body");
+
+        let (skills, errors) = load_skills_from_dirs(&[low.clone(), high.clone()]);
+        assert!(errors.is_empty());
+        assert_eq!(skills.len(), 2);
+
+        let shared = skills.iter().find(|s| s.frontmatter.name == "shared").unwrap();
+        // Later directory wins: content and source both come from `high`
+        assert_eq!(shared.content, "high body");
+        assert!(shared.source_path.starts_with(&high));
+        assert!(skills.iter().any(|s| s.frontmatter.name == "only-low"));
+
+        std::fs::remove_dir_all(&base).ok();
     }
 }

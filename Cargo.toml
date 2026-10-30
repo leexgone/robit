@@ -13,7 +13,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.26"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/leexgone/robit"
@@ -21,10 +21,10 @@ homepage = "https://github.com/leexgone/robit"
 
 [workspace.dependencies]
 # 内部 crates
-robit-ai = { path = "crates/robit-ai", version = "0.1.26" }
-robit-agent = { path = "crates/robit-agent", version = "0.1.26" }
-robit-chatbot = { path = "crates/robit-chatbot", version = "0.1.26" }
-robit-web = { path = "crates/robit-web", version = "0.1.26" }
+robit-ai = { path = "crates/robit-ai", version = "0.2.0" }
+robit-agent = { path = "crates/robit-agent", version = "0.2.0" }
+robit-chatbot = { path = "crates/robit-chatbot", version = "0.2.0" }
+robit-web = { path = "crates/robit-web", version = "0.2.0" }
 
 # 异步运行时（按需启用 feature，避免 full 带来的冗余编译）
 tokio = { version = "1.53", features = [

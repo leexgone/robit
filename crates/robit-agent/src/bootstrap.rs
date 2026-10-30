@@ -3,7 +3,7 @@
 //! This module provides reusable functions for frontends (robit-tui, robit-gui, etc.)
 //! to avoid duplicating skill loading and tool creation code.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use robit_ai::config::{
@@ -13,7 +13,7 @@ use robit_ai::config::{
 use robit_ai::LlmClient;
 
 use crate::image_gen::ImageGenClient;
-use crate::skill::{load_skills, Skill, SkillRegistry};
+use crate::skill::{load_skills_from_dirs, Skill, SkillRegistry};
 use crate::tool::bash::BashTool;
 use crate::tool::edit::EditTool;
 use crate::tool::find::FindTool;
@@ -27,7 +27,7 @@ use crate::tool::read::ReadTool;
 use crate::tool::read_image::ReadImageTool;
 use crate::tool::search_history::SearchHistoryTool;
 use crate::tool::write::WriteTool;
-use crate::tool::ToolRegistry;
+use crate::tool::{Tool, ToolRegistry};
 use crate::SkillLoadError;
 
 // ============================================================================
@@ -44,6 +44,114 @@ pub struct BootstrapResult {
     pub total_skills_loaded: usize,
     /// Any errors that occurred during skill loading (non-fatal).
     pub skill_load_errors: Vec<SkillLoadError>,
+}
+
+// ============================================================================
+// BootstrapOptions
+// ============================================================================
+
+/// Extra assembly options for [`bootstrap_with`] — the composition cases
+/// [`bootstrap`] cannot express:
+///
+/// - appending host domain tools next to (a subset of) the standard tools,
+///   instead of choosing between "all standard tools" and "fully hand-rolled
+///   `ToolRegistry`";
+/// - restricting the standard tool surface via a whitelist (e.g. a server
+///   host that must not expose `bash`);
+/// - loading skills from extra directories (e.g. skills shipped as versioned
+///   repo assets).
+///
+/// All fields default to empty/`None`, so `BootstrapOptions::new()` makes
+/// [`bootstrap_with`] behave exactly like [`bootstrap`].
+///
+/// ```no_run
+/// use std::path::{Path, PathBuf};
+/// use robit_agent::{bootstrap_with, BootstrapOptions, AgentError, Tool, ToolContext, ToolResult};
+/// use robit_ai::RobitConfig;
+/// use serde_json::Value;
+///
+/// // A minimal domain tool (real hosts put actual logic here)
+/// # use async_trait::async_trait;
+/// struct QuoteTool;
+/// #[async_trait]
+/// impl Tool for QuoteTool {
+///     fn name(&self) -> &str { "get_quote" }
+///     fn description(&self) -> &str { "Get the latest quote for a symbol" }
+///     fn parameters_schema(&self) -> Value {
+///         serde_json::json!({"type": "object", "properties": {"symbol": {"type": "string"}}})
+///     }
+///     fn requires_confirmation(&self) -> bool { false }
+///     async fn execute(&self, _args: Value, _ctx: &ToolContext)
+///         -> Result<ToolResult, AgentError> {
+///         Ok(ToolResult::success("..."))
+///     }
+/// }
+///
+/// # fn assemble(config: &RobitConfig, working_dir: &Path) {
+/// let result = bootstrap_with(
+///     config,
+///     working_dir,
+///     &["read", "load_skill", "get_quote"],
+///     BootstrapOptions::new()
+///         // Skills shipped in the host repo (override same-named global/project skills)
+///         .with_extra_skill_dirs([PathBuf::from("skills")])
+///         // read + load_skill only — no bash/write/… for this server host
+///         .with_standard_tools(["read", "load_skill"])
+///         // Domain tools registered on top
+///         .with_extra_tools(vec![Box::new(QuoteTool) as Box<dyn Tool>]),
+/// );
+/// # }
+/// ```
+#[derive(Default)]
+pub struct BootstrapOptions {
+    /// Additional skill search directories, loaded after the standard global
+    /// (`~/.robit/skills`) and project (`<working_dir>/.robit/skills`)
+    /// directories. Later directories override same-named skills from earlier
+    /// ones, so entries here have the highest priority.
+    pub extra_skill_dirs: Vec<PathBuf>,
+
+    /// Domain tools registered after the standard tools. A domain tool may
+    /// override a standard tool by name (it is registered last). Their names
+    /// are also added to the tool list the [`SkillRegistry`] validates
+    /// `tools_required` against, alongside `base_tool_names`.
+    pub extra_tools: Vec<Box<dyn Tool>>,
+
+    /// Whitelist of standard (robit built-in) tools to register, overriding
+    /// `app.enabled_tools` from config. `None` follows config. `read` and
+    /// `load_skill` are always registered (required for the skill mechanism);
+    /// every other standard tool — including `search_history` and
+    /// `query_task` — is only registered when listed.
+    pub standard_tools: Option<Vec<String>>,
+}
+
+impl BootstrapOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add extra skill search directories (loaded after the standard ones).
+    pub fn with_extra_skill_dirs(
+        mut self,
+        dirs: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
+        self.extra_skill_dirs.extend(dirs);
+        self
+    }
+
+    /// Add domain tools to register after the standard tools.
+    pub fn with_extra_tools(mut self, tools: impl IntoIterator<Item = Box<dyn Tool>>) -> Self {
+        self.extra_tools.extend(tools);
+        self
+    }
+
+    /// Set the standard-tool whitelist (overrides `app.enabled_tools`).
+    pub fn with_standard_tools(
+        mut self,
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.standard_tools = Some(names.into_iter().map(Into::into).collect());
+        self
+    }
 }
 
 // ============================================================================
@@ -64,17 +172,50 @@ pub fn bootstrap(
     working_dir: &PathBuf,
     base_tool_names: &[&str],
 ) -> BootstrapResult {
-    let (skills, skill_load_errors) = load_all_skills(working_dir);
+    bootstrap_with(config, working_dir, base_tool_names, BootstrapOptions::new())
+}
+
+/// Bootstrap with host composition options — see [`BootstrapOptions`].
+///
+/// Identical to [`bootstrap`] for `BootstrapOptions::new()`; additionally
+/// supports extra skill directories, a standard-tool whitelist, and domain
+/// tools appended to the registry. Existing `bootstrap()` callers are
+/// unaffected.
+pub fn bootstrap_with(
+    config: &RobitConfig,
+    working_dir: &Path,
+    base_tool_names: &[&str],
+    options: BootstrapOptions,
+) -> BootstrapResult {
+    let (skills, skill_load_errors) =
+        load_all_skills_with(working_dir, &options.extra_skill_dirs);
     let total_skills_loaded = skills.len();
 
     let filtered_skills = filter_skills_by_config(skills, config);
 
-    let skill_registry = Arc::new(SkillRegistry::new(filtered_skills, base_tool_names));
-    let tool_registry = Arc::new(create_tools_from_config(config, Arc::clone(&skill_registry)));
+    // Domain tool names join the available-tool list so skills declaring
+    // `tools_required` against them don't warn spuriously.
+    let mut available_tools: Vec<&str> = base_tool_names.to_vec();
+    for tool in &options.extra_tools {
+        let name = tool.name();
+        if !available_tools.contains(&name) {
+            available_tools.push(name);
+        }
+    }
+
+    let skill_registry = Arc::new(SkillRegistry::new(filtered_skills, &available_tools));
+    let mut tool_registry = create_tools_from_config_with(
+        config,
+        Arc::clone(&skill_registry),
+        options.standard_tools.as_deref(),
+    );
+    for tool in options.extra_tools {
+        tool_registry.register_boxed(tool);
+    }
 
     BootstrapResult {
         skill_registry,
-        tool_registry,
+        tool_registry: Arc::new(tool_registry),
         total_skills_loaded,
         skill_load_errors,
     }
@@ -84,10 +225,29 @@ pub fn bootstrap(
 ///
 /// Returns (loaded_skills, load_errors).
 pub fn load_all_skills(working_dir: &PathBuf) -> (Vec<Skill>, Vec<SkillLoadError>) {
-    let global_skills_dir = dirs::home_dir().map(|h| h.join(".robit/skills"));
-    let project_skills_dir = Some(working_dir.join(".robit/skills"));
+    load_all_skills_with(working_dir, &[])
+}
 
-    load_skills(global_skills_dir, project_skills_dir)
+/// Load skills from the standard locations plus extra directories.
+///
+/// `extra_skill_dirs` are loaded after the global and project directories
+/// (highest priority, overriding same-named skills). For hosts that ship
+/// skills as versioned repo assets instead of installing them into
+/// `~/.robit/skills` or `<working_dir>/.robit/skills`.
+///
+/// Returns (loaded_skills, load_errors).
+pub fn load_all_skills_with(
+    working_dir: &Path,
+    extra_skill_dirs: &[PathBuf],
+) -> (Vec<Skill>, Vec<SkillLoadError>) {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".robit/skills"));
+    }
+    dirs.push(working_dir.join(".robit/skills"));
+    dirs.extend(extra_skill_dirs.iter().cloned());
+
+    load_skills_from_dirs(&dirs)
 }
 
 /// Filter skills by the enabled_skills list in config, if present.
@@ -113,6 +273,28 @@ pub fn filter_skills_by_config(skills: Vec<Skill>, config: &RobitConfig) -> Vec<
 pub fn create_tools_from_config(
     config: &RobitConfig,
     skill_registry: Arc<SkillRegistry>,
+) -> ToolRegistry {
+    create_tools_from_config_with(config, skill_registry, None)
+}
+
+/// Create a ToolRegistry with an explicit standard-tool whitelist.
+///
+/// Same as [`create_tools_from_config`], but `standard_tools` (when `Some`)
+/// overrides `app.enabled_tools` from config — the programmatic entry point
+/// for hosts assembling a partial standard tool surface (e.g. `read` +
+/// `load_skill` without `bash`) without hand-rolling the registry. Host
+/// domain tools can then be appended with
+/// [`ToolRegistry::register_boxed`] (or supplied via
+/// [`BootstrapOptions::extra_tools`] when using [`bootstrap_with`]).
+///
+/// When a whitelist is in effect the registry contains exactly the
+/// always-on tools (`read`, `load_skill`) plus the whitelisted ones —
+/// `search_history` / `query_task` / memory tools are only registered when
+/// listed.
+pub fn create_tools_from_config_with(
+    config: &RobitConfig,
+    skill_registry: Arc<SkillRegistry>,
+    standard_tools: Option<&[String]>,
 ) -> ToolRegistry {
     let mut tools = ToolRegistry::new();
     let context_config = config.app.as_ref().and_then(|a| a.context.as_ref());
@@ -140,8 +322,29 @@ pub fn create_tools_from_config(
     let memory_mode = resolve_memory_mode(config);
     let memory_tools_enabled = memory_mode == MemoryMode::Tools;
 
-    // Always register read, load_skill, history, and query_task tools
-    // (required for basic functionality / async task visibility)
+    // Register a single memory tool by name (only effective in "tools" mode;
+    // warns and skips otherwise). Split out of the match arms below so each
+    // whitelisted memory tool name registers exactly that tool.
+    let register_memory_tool = |tools: &mut ToolRegistry, name: &str| {
+        if !memory_tools_enabled {
+            tracing::warn!(
+                "memory tool {} listed in enabled_tools but memory_mode \
+                 != \"tools\", skipping",
+                name
+            );
+            return;
+        }
+        match name {
+            "memorize" => tools.register(MemorizeTool::new()),
+            "recall" => tools.register(RecallTool::new()),
+            "forget" => tools.register(ForgetTool::new()),
+            "list_memories" => tools.register(ListMemoriesTool::new()),
+            _ => {}
+        }
+    };
+
+    // Always register read and load_skill (required for basic functionality:
+    // file access and the skill mechanism).
     tools.register(ReadTool::new(
         max_lines,
         max_bytes,
@@ -149,14 +352,6 @@ pub fn create_tools_from_config(
         max_image_dimension,
     ));
     tools.register(LoadSkillTool::new(skill_registry));
-    if memory_tools_enabled {
-        tools.register(MemorizeTool::new());
-        tools.register(RecallTool::new());
-        tools.register(ForgetTool::new());
-        tools.register(ListMemoriesTool::new());
-    }
-    tools.register(SearchHistoryTool::new());
-    tools.register(QueryTaskTool::new());
 
     // Try to build the image generation client. Returns None when no image
     // providers are configured (the tool is simply not registered in that case).
@@ -177,28 +372,28 @@ pub fn create_tools_from_config(
         build_vision_client(config)
     };
 
-    // Get enabled tools from config
-    let enabled_tools = config.app.as_ref().and_then(|a| a.enabled_tools.as_ref());
+    // Effective whitelist: the explicit parameter overrides config.
+    let enabled_tools: Option<&[String]> = match standard_tools {
+        Some(list) => Some(list),
+        None => config
+            .app
+            .as_ref()
+            .and_then(|a| a.enabled_tools.as_ref())
+            .map(|v| v.as_slice()),
+    };
 
     match enabled_tools {
         Some(list) => {
-            // Configured: only register specified tools (always available tools already registered)
+            // Whitelisted: register only the listed tools (read/load_skill
+            // are already registered above).
             for tool_name in list {
                 match tool_name.as_str() {
-                    "read" => {} // already registered
-                    "load_skill" => {} // already registered
+                    "read" | "load_skill" => {} // already registered
                     "memorize" | "recall" | "forget" | "list_memories" => {
-                        // Only effective in "tools" mode; skipped otherwise.
-                        if !memory_tools_enabled {
-                            tracing::warn!(
-                                "memory tool {} listed in enabled_tools but memory_mode \
-                                 != \"tools\", skipping",
-                                tool_name
-                            );
-                        }
+                        register_memory_tool(&mut tools, tool_name);
                     }
-                    "search_history" => {} // already registered
-                    "query_task" => {} // already registered
+                    "search_history" => tools.register(SearchHistoryTool::new()),
+                    "query_task" => tools.register(QueryTaskTool::new()),
                     "bash" => tools.register(BashTool::new(max_bytes)),
                     "write" => tools.register(WriteTool::new()),
                     "edit" => tools.register(EditTool::new()),
@@ -230,6 +425,14 @@ pub fn create_tools_from_config(
         }
         None => {
             // Not configured: register all remaining tools
+            if memory_tools_enabled {
+                tools.register(MemorizeTool::new());
+                tools.register(RecallTool::new());
+                tools.register(ForgetTool::new());
+                tools.register(ListMemoriesTool::new());
+            }
+            tools.register(SearchHistoryTool::new());
+            tools.register(QueryTaskTool::new());
             tools.register(BashTool::new(max_bytes));
             tools.register(WriteTool::new());
             tools.register(EditTool::new());
@@ -363,6 +566,7 @@ pub fn log_skill_errors(errors: &[SkillLoadError]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::ToolResult;
     use robit_ai::config::{AppConfig, MemoryMode, ModelConfig, ProviderConfig, RobitConfig};
     use std::collections::HashMap;
 
@@ -395,6 +599,113 @@ mod tests {
         for tool in MEMORY_TOOL_NAMES {
             assert!(names.contains(&tool), "missing {}", tool);
         }
+        // No whitelist in effect → all standard tools on the surface
+        for tool in ["search_history", "query_task", "bash"] {
+            assert!(names.contains(&tool), "missing {}", tool);
+        }
+    }
+
+    /// Minimal domain tool for extra_tools tests.
+    struct DomainEchoTool;
+
+    #[async_trait::async_trait]
+    impl Tool for DomainEchoTool {
+        fn name(&self) -> &str {
+            "domain_echo"
+        }
+        fn description(&self) -> &str {
+            "test domain tool"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn requires_confirmation(&self) -> bool {
+            false
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &crate::tool::ToolContext,
+        ) -> crate::error::Result<ToolResult> {
+            Ok(ToolResult::success("echo"))
+        }
+    }
+
+    fn registry_for_with(
+        config: &RobitConfig,
+        standard_tools: Option<&[String]>,
+    ) -> ToolRegistry {
+        let skills = Arc::new(SkillRegistry::new(Vec::new(), &[]));
+        create_tools_from_config_with(config, skills, standard_tools)
+    }
+
+    fn whitelist(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn whitelist_registers_only_listed_standard_tools() {
+        // read + load_skill only — the server-host composition (no bash etc.)
+        let config = config_with_memory_mode(None);
+        let registry =
+            registry_for_with(&config, Some(&whitelist(&["read", "load_skill"])));
+        let mut names = registry.tool_names();
+        names.sort_unstable();
+        assert_eq!(names, vec!["load_skill", "read"]);
+    }
+
+    #[test]
+    fn whitelist_gates_search_history_and_query_task() {
+        let config = config_with_memory_mode(None);
+        let registry =
+            registry_for_with(&config, Some(&whitelist(&["read", "search_history"])));
+        let names = registry.tool_names();
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"search_history"));
+        assert!(!names.contains(&"query_task"));
+        assert!(!names.contains(&"bash"));
+    }
+
+    #[test]
+    fn whitelist_overrides_config_enabled_tools() {
+        // Param wins over app.enabled_tools: config asks for bash, whitelist doesn't
+        let mut config = config_with_memory_mode(None);
+        config.app.as_mut().unwrap().enabled_tools =
+            Some(vec!["read".into(), "bash".into()]);
+        let registry =
+            registry_for_with(&config, Some(&whitelist(&["read", "load_skill"])));
+        assert!(!registry.tool_names().contains(&"bash"));
+    }
+
+    #[test]
+    fn whitelist_memory_tools_register_per_name_in_tools_mode() {
+        let config = config_with_memory_mode(Some(MemoryMode::Tools));
+        let registry = registry_for_with(&config, Some(&whitelist(&["read", "memorize"])));
+        let names = registry.tool_names();
+        assert!(names.contains(&"memorize"));
+        for tool in ["recall", "forget", "list_memories"] {
+            assert!(!names.contains(&tool), "{} should not be registered", tool);
+        }
+    }
+
+    #[test]
+    fn bootstrap_with_registers_extra_tools_without_standard_surface() {
+        // The acceptance composition: read + load_skill (no bash) + domain
+        // tools + skill loading, in one call, without replicating bootstrap.
+        let config = config_with_memory_mode(None);
+        let result = bootstrap_with(
+            &config,
+            &std::path::PathBuf::from("."),
+            &[],
+            BootstrapOptions::new()
+                .with_standard_tools(["read", "load_skill"])
+                .with_extra_tools(vec![Box::new(DomainEchoTool) as Box<dyn Tool>]),
+        );
+        let names = result.tool_registry.tool_names();
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"load_skill"));
+        assert!(names.contains(&"domain_echo"));
+        assert!(!names.contains(&"bash"));
     }
 
     #[test]

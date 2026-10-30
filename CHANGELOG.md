@@ -8,6 +8,21 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-31
+
+来自子木 StockAgent 消费反馈的宿主形态适配（R2–R5，R1 已随 robit-web 0.1.26 闭环）。均为通用形态能力，不涉及领域逻辑；现有 `bootstrap()` / `init_logging()` / `load_skills()` API 保持兼容。
+
+### Added
+
+- **robit-agent / bootstrap 组合形态（R2）**：新增 `bootstrap_with(config, working_dir, base_tool_names, options)` 与 `BootstrapOptions`——追加式装配一步到位，宿主不再需要在「全部标准工具」与「完全手搓 `ToolRegistry`」之间二选一，也不必复刻 bootstrap 编排。`BootstrapOptions` 三项能力：`extra_tools`（领域工具追加注册，注册在标准工具之后、可按名覆盖；工具名自动并入 `SkillRegistry` 校验 `tools_required` 的可用工具清单）、`standard_tools`（标准工具白名单，覆盖 `app.enabled_tools`——server 宿主可组合出「read + load_skill（不含 bash）+ 领域工具」的精确工具面）、`extra_skill_dirs`（见 R4）。配套新增 `create_tools_from_config_with`（白名单的程序化入口）与 `ToolRegistry::register_boxed`（注册 `Box<dyn Tool>`）。`BootstrapOptions::new()` 时 `bootstrap_with` 与 `bootstrap` 行为完全一致。
+- **robit-agent / 额外技能目录（R4）**：新增 `load_all_skills_with(working_dir, extra_skill_dirs)` 与 `load_skills_from_dirs(dirs)`（通用形式，后者覆盖前者同名技能）。技能作为产品资产随仓库版本化（如仓库根 `skills/`）的宿主有了官方入口，不再需要在宿主侧抄一遍 loader 的目录逻辑；`bootstrap_with` 经 `extra_skill_dirs` 直通。坏文件仍为非致命逐条上报。
+- **robit-ai / 日志可组合原语（R3）**：新增三个公开 API，宿主可单一初始化路径拿到「自己的 fmt 格式 + robit 文件日志 + 全 workspace crate 可见」，不再需要按「有无 robit 配置」二选一分支、手工拼 `"{crate}={level}"` directive：`build_log_filter(app_config, host_targets, additional_directives)`（`EnvFilter`——`host_targets` 声明宿主 workspace crate 清单，robit 三 crate 始终同级别放行，`RUST_LOG` 仍整体优先）；`log_file_layer(app_config, working_dir, filter)`（robit 文件日志层：本地日期轮转、无 ANSI、保留期清理；未启用或打开失败返回 `None`，`Option<L>` 自身实现 `Layer` 可直接 `.with(...)`）；`install_panic_hook()`（panic 经 tracing 落日志后链回原钩子，须在 `.init()` 后调用）。`init_logging` / `init_logging_silent` 保留为便捷封装，行为不变。
+- **robit-agent / anyhow 互操作（R5）**：`AgentError` 新增 `External(#[from] anyhow::Error)` 变体、`ToolResult` 新增 `From<anyhow::Error>`（含 `{:#}` 整条 cause 链）。宿主工具的 `execute` 里可直接 `?` 返回 anyhow 错误——robit 拥有这两个类型故 impl 合法，宿主不再需要自写 `store_try!` 之类转换宏。推荐模式（见 `docs/architecture.md`）：错误信息对模型有转发价值时 `?` 直接传播；细节不该喂给模型时（如 SQL 原文）宿主自行记日志并返回脱敏的 `ToolResult::error(…)`。
+
+### Changed
+
+- **robit-agent / enabled_tools 白名单语义收紧**：配置 `enabled_tools`（或 `BootstrapOptions::standard_tools` / `create_tools_from_config_with` 白名单）后，`search_history`、`query_task` 与记忆工具此前无视清单始终注册，现改为仅出现在清单中才注册（与文档「启用的工具列表」语义一致）；不配置清单时行为不变（全部注册）。记忆工具仍受 `memory_mode = "tools"` 约束，且按名精确注册（清单只列 `memorize` 时不再连带注册其余三个）。
+
 ## [0.1.26] - 2026-10-27
 
 ### Added

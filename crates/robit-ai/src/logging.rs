@@ -16,8 +16,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use time::format_description;
 use time::UtcOffset;
+use tracing::Subscriber;
 use tracing_subscriber::fmt::time::OffsetTime;
+use tracing_subscriber::layer::Layer;
 use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{filter::Directive, EnvFilter};
 
 /// Get the log file path: {working_dir}/.robit/logs/robit-YYYY-MM-DD.log
@@ -25,7 +28,7 @@ use tracing_subscriber::{filter::Directive, EnvFilter};
 /// Creates the directory if it doesn't exist. The date uses `offset` (local
 /// time by default) so the file rolls at local midnight, not UTC midnight.
 fn get_log_file_path(
-    working_dir: &PathBuf,
+    working_dir: &Path,
     offset: UtcOffset,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let logs_dir = working_dir.join(".robit").join("logs");
@@ -125,9 +128,26 @@ fn cleanup_old_logs(logs_dir: &Path, retention_days: u32) {
 }
 
 /// Build the EnvFilter from config and defaults.
-fn build_filter(
+///
+/// This is the composable form of the filter robit's own `init_logging`
+/// builds — hosts that assemble their own subscriber registry (own fmt
+/// format, own layers) call this instead of `init_logging` so their whole
+/// workspace is visible without hand-writing `"{crate}={level}"` directives:
+///
+/// - `RUST_LOG` env var, when set, takes full precedence (returned as-is);
+/// - otherwise every target in `host_targets` gets the level from
+///   `app.log_level` (default `info`) — list the host workspace's crate
+///   names here (e.g. `&["zimu_server", "zimu_agent", "zimu_market"]`);
+/// - the robit crates (`robit_ai` / `robit_agent` / `robit_chatbot`) are
+///   always added at the same level (deduplicated against `host_targets`);
+/// - `additional_directives` are appended verbatim (e.g. `"tower_http=debug"`)
+///   for anything else;
+/// - noisy third-party crates (reqwest/hyper/tokio/…) default to `warn`.
+///
+/// Also used as the filter for robit's file layer — see [`log_file_layer`].
+pub fn build_log_filter(
     app_config: Option<&AppConfig>,
-    target_crate: &str,
+    host_targets: &[&str],
     additional_directives: &[&str],
 ) -> EnvFilter {
     let mut filter = EnvFilter::from_default_env();
@@ -139,14 +159,16 @@ fn build_filter(
             .and_then(|c| c.log_level.as_deref())
             .unwrap_or("info");
 
-        // Add target crate directive
-        if let Ok(dir) = format!("{}={}", target_crate, global_level).parse() {
-            filter = filter.add_directive(dir);
+        // Add host target directives
+        for target in host_targets {
+            if let Ok(dir) = format!("{}={}", target, global_level).parse() {
+                filter = filter.add_directive(dir);
+            }
         }
 
         // Also set robit crates to the same level
         for robit_crate in &["robit_agent", "robit_chatbot", "robit_ai"] {
-            if robit_crate != &target_crate {
+            if !host_targets.contains(robit_crate) {
                 if let Ok(dir) = format!("{}={}", robit_crate, global_level).parse() {
                     filter = filter.add_directive(dir);
                 }
@@ -179,6 +201,87 @@ fn build_filter(
     filter
 }
 
+/// Build robit's file-logging layer for a host-managed subscriber registry.
+///
+/// Hosts that compose their own `tracing_subscriber::registry()` (own console
+/// format, own layers) can add this layer to get the same file logging
+/// `init_logging` provides: `{working_dir}/.robit/logs/robit-YYYY-MM-DD.log`
+/// (daily rotation by local date, no ANSI escapes, TRACE-level writer) plus
+/// best-effort retention cleanup (`app.log_retention_days`, default 14).
+///
+/// The filter is passed in — typically
+/// [`build_log_filter`](crate::build_log_filter) with the host's workspace
+/// crate list — so the host decides which targets reach the file.
+///
+/// Returns `None` (without failing the host) when `app.log_file` is not
+/// enabled or the log file cannot be created/opened: `Option<L>` itself
+/// implements `Layer`, so the common pattern is simply
+///
+/// ```no_run
+/// use robit_ai::{build_log_filter, log_file_layer};
+/// use std::path::Path;
+/// use tracing_subscriber::prelude::*;
+///
+/// # let (app_config, working_dir) = (None, Path::new(".").to_path_buf());
+/// let filter = build_log_filter(app_config.as_ref(), &["host_crate"], &[]);
+/// tracing_subscriber::registry()
+///     // host's own console format, sharing the same filter
+///     .with(tracing_subscriber::fmt::layer().with_filter(filter.clone()))
+///     // robit file logging; None (disabled / open failed) is a valid layer
+///     .with(log_file_layer(app_config.as_ref(), &working_dir, filter))
+///     .init();
+/// ```
+///
+/// Note: unlike `init_logging`, the log path is not announced via
+/// `tracing::info!` here — the subscriber is usually not installed yet while
+/// layers are being built, so that event would be dropped.
+pub fn log_file_layer<S>(
+    app_config: Option<&AppConfig>,
+    working_dir: &Path,
+    filter: EnvFilter,
+) -> Option<Box<dyn Layer<S> + Send + Sync + 'static>>
+where
+    S: Subscriber + Send + Sync + 'static + for<'a> LookupSpan<'a>,
+{
+    let log_file_enabled = app_config.and_then(|c| c.log_file).unwrap_or(false);
+    if !log_file_enabled {
+        return None;
+    }
+
+    let offset = local_utc_offset();
+    let log_path = get_log_file_path(working_dir, offset).ok()?;
+    let file = match OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "Failed to open log file: {}. Skipping file logging.",
+                e
+            );
+            return None;
+        }
+    };
+
+    let file_writer =
+        tracing_subscriber::fmt::writer::MakeWriterExt::with_max_level(file, tracing::Level::TRACE);
+    let timer = local_timer(offset);
+
+    let layer = tracing_subscriber::fmt::layer()
+        .with_writer(file_writer)
+        .with_ansi(false)
+        .with_timer(timer)
+        .with_filter(filter);
+
+    // Best-effort cleanup of old daily log files.
+    let retention = app_config
+        .and_then(|c| c.log_retention_days)
+        .unwrap_or(14);
+    if let Some(dir) = log_path.parent() {
+        cleanup_old_logs(dir, retention);
+    }
+
+    Some(Box::new(layer))
+}
+
 /// Install a panic hook that records panics through the tracing subscriber
 /// (so they land in the log file) before chaining to the previous hook (which
 /// prints to stderr).
@@ -197,7 +300,11 @@ fn build_filter(
 /// installs its terminal-restore hook after `init_logging_silent`, so its
 /// `take_hook` captures this one and the chain becomes: TUI restore -> tracing
 /// log -> default stderr.
-fn install_panic_hook() {
+///
+/// Public so hosts that compose their own subscriber registry (instead of
+/// using `init_logging`) can install the same panic capture - call it right
+/// after `.init()`.
+pub fn install_panic_hook() {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         // Best-effort message extraction. `panic!("literal")` yields `&'static str`,
@@ -255,7 +362,7 @@ pub fn init_logging(
     working_dir: &PathBuf,
     additional_directives: &[&str],
 ) {
-    let filter = build_filter(app_config, target_crate, additional_directives);
+    let filter = build_log_filter(app_config, &[target_crate], additional_directives);
 
     // Local time offset, used for both the timestamp format and the daily log
     // file name. Falls back to UTC if undeterminable.
@@ -349,7 +456,7 @@ pub fn init_logging_silent(
     working_dir: &PathBuf,
     additional_directives: &[&str],
 ) {
-    let filter = build_filter(app_config, target_crate, additional_directives);
+    let filter = build_log_filter(app_config, &[target_crate], additional_directives);
 
     let offset = local_utc_offset();
     let timer = local_timer(offset);
@@ -458,5 +565,61 @@ mod tests {
         assert!(old2.exists(), "retention_days=0 should disable cleanup");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `build_log_filter` reflects the configured level across the whole
+    /// surface it governs (host targets + robit crates). Skipped when
+    /// `RUST_LOG` is set in the environment — it takes full precedence, so
+    /// there is nothing deterministic to assert.
+    #[test]
+    fn build_log_filter_reflects_configured_level() {
+        if std::env::var("RUST_LOG").is_ok() {
+            return;
+        }
+
+        let app = AppConfig {
+            log_level: Some("error".to_string()),
+            ..Default::default()
+        };
+        let filter = build_log_filter(Some(&app), &["host_a", "host_b"], &[]);
+        let directives = filter.to_string();
+        // Host targets and robit crates all follow the configured level
+        for target in ["host_a=error", "host_b=error", "robit_ai=error", "robit_agent=error"] {
+            assert!(directives.contains(target), "missing {} in {}", target, directives);
+        }
+
+        // Default (no config) is info
+        let filter = build_log_filter(None, &["host_a"], &[]);
+        let directives = filter.to_string();
+        assert!(directives.contains("host_a=info"), "in {}", directives);
+        assert!(directives.contains("robit_ai=info"), "in {}", directives);
+    }
+
+    /// A host target that IS a robit crate is not added twice; additional
+    /// directives pass through verbatim; third-party crates default to warn.
+    #[test]
+    fn build_log_filter_dedupes_and_passes_directives() {
+        if std::env::var("RUST_LOG").is_ok() {
+            return;
+        }
+
+        let filter = build_log_filter(None, &["robit_ai"], &["other_crate=trace"]);
+        let directives = filter.to_string();
+        assert!(directives.contains("other_crate=trace"), "in {}", directives);
+        assert!(directives.contains("tokio=warn"), "in {}", directives);
+
+        // The directive list is a Display of `Directive`s; count occurrences
+        // of "robit_ai=" to verify the robit crate wasn't duplicated.
+        let count = directives.matches("robit_ai=").count();
+        assert_eq!(count, 1, "in {}", directives);
+    }
+
+    /// The file layer is opt-in (`app.log_file`).
+    #[test]
+    fn log_file_layer_disabled_returns_none() {
+        let filter = build_log_filter(None, &[], &[]);
+        assert!(
+            log_file_layer::<tracing_subscriber::Registry>(None, Path::new("."), filter).is_none()
+        );
     }
 }
