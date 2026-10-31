@@ -27,7 +27,7 @@ robit-chatbot = { path = "crates/robit-chatbot", version = "0.1.27" }
 robit-web = { path = "crates/robit-web", version = "0.1.27" }
 
 # 异步运行时（按需启用 feature，避免 full 带来的冗余编译）
-tokio = { version = "1.53", features = [
+tokio = { version = "1.54", features = [
     "rt-multi-thread",  # 多线程运行时
     "macros",           # #[tokio::main] / #[tokio::test]
     "sync",             # mpsc, Mutex, RwLock, oneshot 等同步原语
@@ -69,11 +69,11 @@ anyhow = "1.0"
 # 工具库
 dirs = "7.0"
 dotenvy = "0.15"
-uuid = { version = "1.28", features = ["v4"] }
+uuid = { version = "1.29", features = ["v4"] }
 globset = "0.4"
 regex = "1.13"
 time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
-rusqlite = { version = "0.40", features = ["bundled", "bundled-full"] }
+rusqlite = { version = "0.41", features = ["bundled", "bundled-full"] }
 fs2 = "0.4"
 
 # TUI
