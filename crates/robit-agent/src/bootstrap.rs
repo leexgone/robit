@@ -116,11 +116,12 @@ pub struct BootstrapOptions {
     /// `tools_required` against, alongside `base_tool_names`.
     pub extra_tools: Vec<Box<dyn Tool>>,
 
-    /// Whitelist of standard (robit built-in) tools to register, overriding
-    /// `app.enabled_tools` from config. `None` follows config. `read` and
-    /// `load_skill` are always registered (required for the skill mechanism);
-    /// every other standard tool — including `search_history` and
-    /// `query_task` — is only registered when listed.
+    /// Whitelist of general-purpose standard tools to register, overriding
+    /// `app.enabled_tools` from config. `None` follows config. Only gates the
+    /// general-purpose tools (`bash`/`write`/`edit`/`ls`/`find`/`grep`/
+    /// `generate_image`/`read_image`); system tools (`read`, `load_skill`,
+    /// `search_history`, `query_task`, and the memory tools in
+    /// `memory_mode = "tools"`) are always registered.
     pub standard_tools: Option<Vec<String>>,
 }
 
@@ -144,7 +145,8 @@ impl BootstrapOptions {
         self
     }
 
-    /// Set the standard-tool whitelist (overrides `app.enabled_tools`).
+    /// Set the general-purpose tool whitelist (overrides `app.enabled_tools`;
+    /// gates only general tools — system tools stay registered).
     pub fn with_standard_tools(
         mut self,
         names: impl IntoIterator<Item = impl Into<String>>,
@@ -265,11 +267,17 @@ pub fn filter_skills_by_config(skills: Vec<Skill>, config: &RobitConfig) -> Vec<
 
 /// Create a ToolRegistry with tools filtered by config.enabled_tools.
 ///
-/// - If enabled_tools is not specified: all tools are registered
-/// - If enabled_tools is specified: only register tools in the list
-/// - `read` and `load_skill` are always registered (required for basic functionality)
-/// - Memory tools (`memorize`/`recall`/`forget`/`list_memories`) are registered
-///   only when `memory_mode = "tools"`; `file`/`off` modes skip them entirely.
+/// Tools fall into two classes:
+///
+/// - **System tools** — the agent's own machinery (`read`, `load_skill`,
+///   `search_history`, `query_task`, plus the memory tools
+///   `memorize`/`recall`/`forget`/`list_memories`). Always registered
+///   regardless of any whitelist; the memory tools additionally require
+///   `memory_mode = "tools"` (`file`/`off` modes skip them entirely).
+/// - **General-purpose tools** — `bash`, `write`, `edit`, `ls`, `find`,
+///   `grep`, `generate_image`, `read_image`. When `enabled_tools` is not
+///   specified all of them are registered; when specified, only the listed
+///   ones are.
 pub fn create_tools_from_config(
     config: &RobitConfig,
     skill_registry: Arc<SkillRegistry>,
@@ -277,20 +285,18 @@ pub fn create_tools_from_config(
     create_tools_from_config_with(config, skill_registry, None)
 }
 
-/// Create a ToolRegistry with an explicit standard-tool whitelist.
+/// Create a ToolRegistry with an explicit general-tool whitelist.
 ///
 /// Same as [`create_tools_from_config`], but `standard_tools` (when `Some`)
 /// overrides `app.enabled_tools` from config — the programmatic entry point
-/// for hosts assembling a partial standard tool surface (e.g. `read` +
-/// `load_skill` without `bash`) without hand-rolling the registry. Host
-/// domain tools can then be appended with
-/// [`ToolRegistry::register_boxed`] (or supplied via
+/// for hosts assembling a partial tool surface (e.g. excluding `bash`)
+/// without hand-rolling the registry. Host domain tools can then be appended
+/// with [`ToolRegistry::register_boxed`] (or supplied via
 /// [`BootstrapOptions::extra_tools`] when using [`bootstrap_with`]).
 ///
-/// When a whitelist is in effect the registry contains exactly the
-/// always-on tools (`read`, `load_skill`) plus the whitelisted ones —
-/// `search_history` / `query_task` / memory tools are only registered when
-/// listed.
+/// The whitelist gates only the general-purpose tools; system tools
+/// (`read`/`load_skill`/`search_history`/`query_task`, and the memory tools
+/// in `memory_mode = "tools"`) are always registered.
 pub fn create_tools_from_config_with(
     config: &RobitConfig,
     skill_registry: Arc<SkillRegistry>,
@@ -322,29 +328,13 @@ pub fn create_tools_from_config_with(
     let memory_mode = resolve_memory_mode(config);
     let memory_tools_enabled = memory_mode == MemoryMode::Tools;
 
-    // Register a single memory tool by name (only effective in "tools" mode;
-    // warns and skips otherwise). Split out of the match arms below so each
-    // whitelisted memory tool name registers exactly that tool.
-    let register_memory_tool = |tools: &mut ToolRegistry, name: &str| {
-        if !memory_tools_enabled {
-            tracing::warn!(
-                "memory tool {} listed in enabled_tools but memory_mode \
-                 != \"tools\", skipping",
-                name
-            );
-            return;
-        }
-        match name {
-            "memorize" => tools.register(MemorizeTool::new()),
-            "recall" => tools.register(RecallTool::new()),
-            "forget" => tools.register(ForgetTool::new()),
-            "list_memories" => tools.register(ListMemoriesTool::new()),
-            _ => {}
-        }
-    };
-
-    // Always register read and load_skill (required for basic functionality:
-    // file access and the skill mechanism).
+    // System tools are registered up front, independent of any whitelist —
+    // they implement the agent's own machinery, not host- or user-facing
+    // capabilities, so the whitelist (BootstrapOptions::standard_tools /
+    // config enabled_tools) does not gate them:
+    //   read / load_skill / search_history / query_task — always on;
+    //   memorize / recall / forget / list_memories — memory tools, on only
+    //   in memory_mode = "tools" (gated by that config, not the whitelist).
     tools.register(ReadTool::new(
         max_lines,
         max_bytes,
@@ -352,6 +342,14 @@ pub fn create_tools_from_config_with(
         max_image_dimension,
     ));
     tools.register(LoadSkillTool::new(skill_registry));
+    if memory_tools_enabled {
+        tools.register(MemorizeTool::new());
+        tools.register(RecallTool::new());
+        tools.register(ForgetTool::new());
+        tools.register(ListMemoriesTool::new());
+    }
+    tools.register(SearchHistoryTool::new());
+    tools.register(QueryTaskTool::new());
 
     // Try to build the image generation client. Returns None when no image
     // providers are configured (the tool is simply not registered in that case).
@@ -372,7 +370,9 @@ pub fn create_tools_from_config_with(
         build_vision_client(config)
     };
 
-    // Effective whitelist: the explicit parameter overrides config.
+    // Effective whitelist: the explicit parameter overrides config. It gates
+    // only the general-purpose tools (bash/write/edit/ls/find/grep/
+    // generate_image/read_image) — system tools are already registered above.
     let enabled_tools: Option<&[String]> = match standard_tools {
         Some(list) => Some(list),
         None => config
@@ -384,16 +384,24 @@ pub fn create_tools_from_config_with(
 
     match enabled_tools {
         Some(list) => {
-            // Whitelisted: register only the listed tools (read/load_skill
-            // are already registered above).
+            // Whitelisted: register only the listed general-purpose tools
+            // (system tools are already registered above).
             for tool_name in list {
                 match tool_name.as_str() {
-                    "read" | "load_skill" => {} // already registered
+                    // System tools: already registered above; whitelist has no effect.
+                    "read" | "load_skill" | "search_history" | "query_task" => {}
                     "memorize" | "recall" | "forget" | "list_memories" => {
-                        register_memory_tool(&mut tools, tool_name);
+                        // Memory tools are system tools: registered above when
+                        // memory_mode = "tools"; listing them in another mode is
+                        // a config mistake worth surfacing.
+                        if !memory_tools_enabled {
+                            tracing::warn!(
+                                "memory tool {} listed in enabled_tools but memory_mode \
+                                 != \"tools\", skipping",
+                                tool_name
+                            );
+                        }
                     }
-                    "search_history" => tools.register(SearchHistoryTool::new()),
-                    "query_task" => tools.register(QueryTaskTool::new()),
                     "bash" => tools.register(BashTool::new(max_bytes)),
                     "write" => tools.register(WriteTool::new()),
                     "edit" => tools.register(EditTool::new()),
@@ -424,15 +432,7 @@ pub fn create_tools_from_config_with(
             }
         }
         None => {
-            // Not configured: register all remaining tools
-            if memory_tools_enabled {
-                tools.register(MemorizeTool::new());
-                tools.register(RecallTool::new());
-                tools.register(ForgetTool::new());
-                tools.register(ListMemoriesTool::new());
-            }
-            tools.register(SearchHistoryTool::new());
-            tools.register(QueryTaskTool::new());
+            // Not configured: register all general-purpose tools
             tools.register(BashTool::new(max_bytes));
             tools.register(WriteTool::new());
             tools.register(EditTool::new());
@@ -644,26 +644,15 @@ mod tests {
     }
 
     #[test]
-    fn whitelist_registers_only_listed_standard_tools() {
-        // read + load_skill only — the server-host composition (no bash etc.)
+    fn whitelist_gates_general_tools_but_not_system_tools() {
+        // Whitelist ["read", "load_skill"]: system tools stay registered,
+        // general-purpose tools (bash etc.) are all excluded.
         let config = config_with_memory_mode(None);
         let registry =
             registry_for_with(&config, Some(&whitelist(&["read", "load_skill"])));
         let mut names = registry.tool_names();
         names.sort_unstable();
-        assert_eq!(names, vec!["load_skill", "read"]);
-    }
-
-    #[test]
-    fn whitelist_gates_search_history_and_query_task() {
-        let config = config_with_memory_mode(None);
-        let registry =
-            registry_for_with(&config, Some(&whitelist(&["read", "search_history"])));
-        let names = registry.tool_names();
-        assert!(names.contains(&"read"));
-        assert!(names.contains(&"search_history"));
-        assert!(!names.contains(&"query_task"));
-        assert!(!names.contains(&"bash"));
+        assert_eq!(names, vec!["load_skill", "query_task", "read", "search_history"]);
     }
 
     #[test]
@@ -678,20 +667,25 @@ mod tests {
     }
 
     #[test]
-    fn whitelist_memory_tools_register_per_name_in_tools_mode() {
+    fn system_memory_tools_registered_in_tools_mode_despite_whitelist() {
+        // Memory tools are system tools: in "tools" mode all four register
+        // regardless of the whitelist (which doesn't even list them).
         let config = config_with_memory_mode(Some(MemoryMode::Tools));
-        let registry = registry_for_with(&config, Some(&whitelist(&["read", "memorize"])));
+        let registry = registry_for_with(&config, Some(&whitelist(&["read"])));
         let names = registry.tool_names();
-        assert!(names.contains(&"memorize"));
-        for tool in ["recall", "forget", "list_memories"] {
-            assert!(!names.contains(&tool), "{} should not be registered", tool);
+        for tool in MEMORY_TOOL_NAMES {
+            assert!(names.contains(&tool), "missing {}", tool);
         }
+        assert!(names.contains(&"search_history"));
+        assert!(names.contains(&"query_task"));
+        assert!(!names.contains(&"bash"));
     }
 
     #[test]
-    fn bootstrap_with_registers_extra_tools_without_standard_surface() {
-        // The acceptance composition: read + load_skill (no bash) + domain
-        // tools + skill loading, in one call, without replicating bootstrap.
+    fn bootstrap_with_registers_extra_tools_without_general_surface() {
+        // The acceptance composition: system tools (read / load_skill /
+        // search_history / query_task, no bash) + domain tools + skill
+        // loading, in one call, without replicating bootstrap.
         let config = config_with_memory_mode(None);
         let result = bootstrap_with(
             &config,
@@ -704,6 +698,8 @@ mod tests {
         let names = result.tool_registry.tool_names();
         assert!(names.contains(&"read"));
         assert!(names.contains(&"load_skill"));
+        assert!(names.contains(&"search_history"));
+        assert!(names.contains(&"query_task"));
         assert!(names.contains(&"domain_echo"));
         assert!(!names.contains(&"bash"));
     }

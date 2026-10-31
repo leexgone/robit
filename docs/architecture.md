@@ -365,14 +365,13 @@ Agent 收到 LLM 的 tool_call
 enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 ```
 
-**规则：**
-- **不配置 `enabled_tools`**：自动启用所有工具
-- **配置 `enabled_tools`**：只启用列表中指定的工具
-- **`read` 和 `load_skill`**：始终启用（基础功能必需）
-- **其余标准工具**（含 `search_history`、`query_task`、记忆工具）：仅出现在列表中才注册——白名单即最终工具面。记忆工具另受 `memory_mode = "tools"` 约束（列出但模式不符时打 warning 跳过）
-- **`read_image`**：仅当主模型 `supports_images = false` 且顶层 `default_vision_model`（指向普通 `providers` 中的多模态模型）已配置并解析成功时注册。主模型支持图片时 `read` 已直接注入图片，`read_image` 不注册（`default_vision_model` 被忽略并打 info 日志）。
+**规则（工具分两类）：**
 
-宿主也可以在代码侧传入白名单（优先级高于 `enabled_tools` 配置），见 [Bootstrap 模块](#bootstrap-模块)的 `create_tools_from_config_with` / `BootstrapOptions`。
+- **系统工具**：`read`、`load_skill`、`search_history`、`query_task` 与记忆工具（`memorize` / `recall` / `forget` / `list_memories`）。始终注册、不受 `enabled_tools` / 白名单控制——它们是 Agent 自身机制（文件读取、技能加载、会话历史检索、异步任务可见性）的一部分。记忆工具属系统工具但另受 `memory_mode = "tools"` 约束，非该模式时不注册
+- **通用工具**：`bash`、`write`、`edit`、`ls`、`find`、`grep`、`generate_image`、`read_image`。不配置 `enabled_tools` 时全部注册；配置后仅注册列表中列出的
+- **`read_image`**：属通用工具，且仅当主模型 `supports_images = false` 且顶层 `default_vision_model`（指向普通 `providers` 中的多模态模型）已配置并解析成功时才可注册。主模型支持图片时 `read` 已直接注入图片，`read_image` 不注册（`default_vision_model` 被忽略并打 info 日志）
+
+宿主也可以在代码侧传入白名单（语义同上、优先级高于 `enabled_tools` 配置），见 [Bootstrap 模块](#bootstrap-模块)的 `create_tools_from_config_with` / `BootstrapOptions`。
 
 ### 记忆机制（memory_mode）
 
@@ -418,9 +417,9 @@ let result = bootstrap_with(
     BootstrapOptions::new()
         // 技能随仓库走：仓库根 skills/ 目录（按名覆盖全局/项目同名技能）
         .with_extra_skill_dirs([repo_root.join("skills")])
-        // 标准工具只要 read + load_skill（覆盖 config 的 enabled_tools；
-        // read/load_skill 始终注册，其余标准工具含 search_history/query_task
-        // 仅在列出时注册）
+        // 通用工具白名单：server 宿主排除 bash 等通用工具（覆盖 config 的
+        // enabled_tools；系统工具 read/load_skill/search_history/query_task
+        // 及记忆工具不受白名单控制，始终按自身规则注册）
         .with_standard_tools(["read", "load_skill"])
         // 领域工具追加注册（注册在标准工具之后，可按名覆盖标准工具）
         .with_extra_tools(vec![Box::new(GetQuoteTool) as Box<dyn Tool>]),
@@ -430,7 +429,7 @@ let result = bootstrap_with(
 要点：
 
 - `extra_skill_dirs`：技能作为产品资产随仓库版本化的官方入口，宿主不再需要自写 loader；
-- `standard_tools`：白名单语义与 `config.app.enabled_tools` 一致（`read`/`load_skill` 始终注册），但优先级更高；未列出即不注册——含 `search_history`、`query_task` 与记忆工具（记忆工具仍受 `memory_mode = "tools"` 约束）；
+- `standard_tools`：白名单语义与 `config.app.enabled_tools` 一致但优先级更高，只控制**通用工具**（`bash`/`write`/`edit`/`ls`/`find`/`grep`/`generate_image`/`read_image`）；**系统工具**（`read`/`load_skill`/`search_history`/`query_task` 与记忆工具）始终注册，不受白名单影响，记忆工具仍由 `memory_mode = "tools"` 决定；
 - `extra_tools`：领域工具名会自动并入 `SkillRegistry` 校验 `tools_required` 的可用工具清单（与 `base_tool_names` 合并），声明了领域工具依赖的技能不会误报 warning。
 
 ### BootstrapResult
