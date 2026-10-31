@@ -8,7 +8,7 @@
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-31
+## [0.1.27] - 2026-10-31
 
 来自子木 StockAgent 消费反馈的宿主形态适配（R2–R5，R1 已随 robit-web 0.1.26 闭环）。均为通用形态能力，不涉及领域逻辑；现有 `bootstrap()` / `init_logging()` / `load_skills()` API 保持兼容。
 
