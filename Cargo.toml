@@ -57,6 +57,8 @@ toml = "1.1"
 
 # LLM API
 async-openai = { version = "0.42", features = ["chat-completion"] }
+# SSE 分帧（robit-ai 流式旁路；与 async-openai 传递依赖同版本，零编译增量）
+eventsource-stream = "0.2"
 
 # 日志
 tracing = "0.1"

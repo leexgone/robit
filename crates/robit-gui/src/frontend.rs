@@ -39,6 +39,10 @@ impl Frontend for GuiFrontend {
                 session_id: self.session_id.clone(),
                 delta,
             },
+            AgentEvent::ThinkingDelta(delta) => UiEvent::ThinkingDelta {
+                session_id: self.session_id.clone(),
+                delta,
+            },
             AgentEvent::ToolCallRequested {
                 tool_call_id,
                 name,

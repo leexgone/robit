@@ -197,6 +197,8 @@ fn render_event(event: &AgentEvent) {
             print!("{}", text);
             let _ = std::io::stdout().flush();
         }
+        // 思考增量：本版不渲染（GUI 为唯一渲染启用面），静默忽略。
+        AgentEvent::ThinkingDelta(_) => {}
         AgentEvent::ToolCallRequested {
             name, arguments, ..
         } => {

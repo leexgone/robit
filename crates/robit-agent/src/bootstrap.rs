@@ -774,6 +774,7 @@ mod tests {
             max_tokens: None,
             supports_images: Some(supports_images),
             supports_tools: Some(true),
+            thinking: None,
         };
         RobitConfig {
             default_model: Some("test/main-chat".to_string()),

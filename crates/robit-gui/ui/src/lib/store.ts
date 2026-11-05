@@ -17,6 +17,12 @@ interface AppStore {
   // Streaming text buffer per session
   streamingBuffer: Record<string, string>;
 
+  // Streaming thinking/reasoning buffer per session.
+  // Display-only: never persisted to the session database (same lifecycle
+  // as the streaming buffer itself — cleared when the next user message is
+  // sent).
+  thinkingBuffer: Record<string, string>;
+
   // Agent status per session
   agentStatus: Record<string, "idle" | "ready" | "running">;
 
@@ -39,6 +45,8 @@ interface AppStore {
   appendStreaming: (sessionId: string, delta: string) => void;
   commitStreaming: (sessionId: string) => void;
   clearStreaming: (sessionId: string) => void;
+  appendThinking: (sessionId: string, delta: string) => void;
+  clearThinking: (sessionId: string) => void;
   setAgentStatus: (
     sessionId: string,
     status: "idle" | "ready" | "running"
@@ -63,6 +71,7 @@ export const useStore = create<AppStore>((set, get) => ({
   activeSessionId: null,
   messages: {},
   streamingBuffer: {},
+  thinkingBuffer: {},
   agentStatus: {},
   toolCalls: {},
   pendingConfirms: {},
@@ -130,6 +139,25 @@ export const useStore = create<AppStore>((set, get) => ({
       if (!state.streamingBuffer[sessionId]) return {};
       return {
         streamingBuffer: { ...state.streamingBuffer, [sessionId]: "" },
+      };
+    }),
+
+  appendThinking: (sessionId, delta) =>
+    set((state) => {
+      const current = state.thinkingBuffer[sessionId] || "";
+      return {
+        thinkingBuffer: {
+          ...state.thinkingBuffer,
+          [sessionId]: current + delta,
+        },
+      };
+    }),
+
+  clearThinking: (sessionId) =>
+    set((state) => {
+      if (!state.thinkingBuffer[sessionId]) return {};
+      return {
+        thinkingBuffer: { ...state.thinkingBuffer, [sessionId]: "" },
       };
     }),
 

@@ -12,6 +12,7 @@ function App() {
   const setConfig = useStore((s) => s.setConfig);
   const appendStreaming = useStore((s) => s.appendStreaming);
   const commitStreaming = useStore((s) => s.commitStreaming);
+  const appendThinking = useStore((s) => s.appendThinking);
   const setAgentStatus = useStore((s) => s.setAgentStatus);
   const addToolCard = useStore((s) => s.addToolCard);
   const updateToolCard = useStore((s) => s.updateToolCard);
@@ -45,6 +46,10 @@ function App() {
       switch (payload.type) {
         case "TextDelta":
           appendStreaming(sid, payload.delta);
+          break;
+
+        case "ThinkingDelta":
+          appendThinking(sid, payload.delta);
           break;
 
         case "ToolCallRequested":
@@ -130,7 +135,7 @@ function App() {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [appendStreaming, commitStreaming, setAgentStatus, addToolCard, updateToolCard, updateSessionTitle, setMessages]);
+  }, [appendStreaming, appendThinking, commitStreaming, setAgentStatus, addToolCard, updateToolCard, updateSessionTitle, setMessages]);
 
   return (
     <div className="h-dvh w-screen min-h-0 min-w-0 overflow-hidden flex flex-col bg-background text-foreground">

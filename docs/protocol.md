@@ -34,7 +34,8 @@ pub struct ToolCall {
 
 | 事件 | 说明 |
 |------|------|
-| `TextDelta(String)` | 流式文本片段，前端逐段渲染 |
+| `TextDelta(String)` | 流式文本片段，前端逐段渲染。空串增量不会发射（provider 思考阶段的 `content:""` 外壳帧在发射端收口） |
+| `ThinkingDelta(String)` | 流式思考增量（思考型模型的 `delta.reasoning_content`）。展示性单向输出：不写回会话历史、不计入响应文本；可能先于或与 `TextDelta` 交错到达，无显式结束标记——消费方在 `TurnComplete` 收口未闭思考段即可；不渲染思考的前端可安全忽略 |
 | `ToolCallRequested { tool_call_id, name, arguments }` | LLM 请求调用工具，等待前端确认 |
 | `ToolCallResult { tool_call_id, result }` | 工具执行结果，回填到对话历史。`result.is_pending=true` 时为异步任务占位，实际结果后续由 `AsyncToolCompleted` 送达 |
 | `TurnComplete` | 本轮对话结束，Agent 等待新输入 |
@@ -58,6 +59,7 @@ pub struct ToolCall {
 | wire 事件（`type`） | 字段 | 来源 |
 |---|---|---|
 | `text_delta` | `text` | `AgentEvent::TextDelta` |
+| `thinking_delta` | `text` | `AgentEvent::ThinkingDelta`（additive：只认已知 type 的 JSON 消费方向后兼容） |
 | `tool_call` | `tool_call_id` `name` `arguments` | `AgentEvent::ToolCallRequested` |
 | `tool_result` | `tool_call_id` `is_error` `content` | `AgentEvent::ToolCallResult` |
 | `skill_triggered` | `name` `description` | `AgentEvent::SkillTriggered` |

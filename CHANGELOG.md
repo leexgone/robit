@@ -8,6 +8,21 @@
 
 ## [Unreleased]
 
+来自子木 StockAgent 消费反馈的思考过程输出能力（R7，含 R6 空白帧了断）。设计记录见 `docs/robit-design-thinking-output.md`。
+
+### Added
+
+- **robit-ai / 流式双路径与思考增量捕获**：模型级新配置 `thinking = "auto" | "on" | "off"`（默认 `auto`）。`auto` 走 async-openai 传统 typed 流式路径，请求与解析行为与旧版本字节级一致；`on`/`off` 走自建 SSE 旁路（reqwest + eventsource-stream，标准字段仍委托 async-openai 类型反序列化）：请求体注入 `enable_thinking`（DashScope 兼容面拼写，typed 请求结构装不下该厂商扩展字段），响应侧逐帧捕获 `delta.reasoning_content`（async-openai 的流式 delta 类型无此字段也无未知字段兜底，serde 在其内部反序列化时静默丢弃；上游对该类字段政策性拒收，PR #525 等三次尝试均未合并）。新增公开类型 `StreamChunk`（`response` + `reasoning`，`Deref` 到 async-openai 帧类型保持既有访问路径）与 `RobitChatStream`；`LlmError::from_sse_payload` 复用既有语料分类器（内容审核/网关 HTML/提供商错误），流内 `{"error":…}` 帧与 HTTP 错误的友好提示行为不变。wiremock 集成测试 6 项 + 帧解析单测 9 项。
+- **robit-agent / `AgentEvent::ThinkingDelta(String)`**：思考增量事件，在流循环中与 `TextDelta` 同点发射（思考帧先发）。展示性单向输出：不写回 `session.history`、不计入响应文本与 token 估算。无显式结束标记，消费方在 `TurnComplete` 收口。投影逻辑抽为纯函数 `chunk_deltas` 并配交错矩阵单测（子木验收 2 的等价形态）。
+- **robit-web / `thinking_delta` wire 帧**：`WebEvent::ThinkingDelta { text }` → `{"type":"thinking_delta","text":"…"}`，additive 变更（穷举 match 的宿主编译期可见；只认已知 type 的 JSON 消费方向后兼容）。golden 测试与 `docs/protocol.md` 同步。
+- **robit-gui / 思考过程渲染（唯一渲染启用面）**：`UiEvent::ThinkingDelta` 经事件桥独立 50ms 批处理送达 React；新增 `ThinkingPanel` 组件——思考阶段自动展开流式灰字（替代空转的 thinking indicator），正文/工具事件到达自动折叠，回合结束定稿可点击回看；下一条用户消息发送时清空。思考文本不写 SQLite（无 schema 迁移），与框架「展示性单向」语义一致。
+
+### Changed
+
+- **空白 `text_delta` 帧收口（子木 R6）**：`content` 为空串的增量不再发射 `TextDelta`（此前 provider 思考阶段的 `content:""` 外壳帧会原样上行成空白帧）。收口在 agent 发射端，TUI/GUI/Bot/Web 全前端一次性生效；Web 消费方已有的空白帧守卫变为惰性，可移除亦可保留。
+- **robit-ai `chat_stream` 返回类型**（对直接调用 robit-ai 流式 API 的消费者为 breaking surface；经 robit-agent/robit-web 消费的宿主不受影响）：`ChatCompletionResponseStream` → `RobitChatStream`，Item 为 `Result<StreamChunk, LlmError>`（错误已在源头分类，不再需要调用方套 `from_openai_error`）；`StreamChunk` 经 `Deref` 保持 `chunk.choices` / `chunk.usage` 等既有访问形态。
+- TUI / robit-chatbot（QQ 等 Bot 平台）对 `ThinkingDelta` 显式忽略（本版不渲染思考过程；Bot 面因平台消息长度限制暂不启用）。
+
 ## [0.1.27] - 2026-10-31
 
 来自子木 StockAgent 消费反馈的宿主形态适配（R2–R5，R1 已随 robit-web 0.1.26 闭环）。均为通用形态能力，不涉及领域逻辑；现有 `bootstrap()` / `init_logging()` / `load_skills()` API 保持兼容。

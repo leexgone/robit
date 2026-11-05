@@ -90,6 +90,31 @@ supports_tools = true
 | `max_tokens` | `integer` | 否 | 最大生成 token 数，运行时参数 |
 | `supports_images` | `bool` | 否 | 是否支持图片输入，默认 `false` |
 | `supports_tools` | `bool` | 否 | 是否支持工具调用，默认 `false` |
+| `thinking` | `string` | 否 | 思考过程输出控制：`auto`（默认）/ `on` / `off`，见下节 |
+
+## 思考过程输出（thinking）
+
+思考型模型（QWen3 系、DeepSeek-R1、Kimi 等 OpenAI 兼容面）流式输出时会在 `delta.reasoning_content` 下发思考增量。robit 的捕获与配置分两层：
+
+- **响应侧捕获**：与配置无关——只要 provider 下发了 `reasoning_content`，`thinking = "on"/"off"` 的模型走 robit 自建 SSE 旁路捕获并以 `AgentEvent::ThinkingDelta` / wire `thinking_delta` 帧送达前端（GUI 渲染为可折叠的「思考过程」面板；TUI/Bot 暂不渲染）。思考文本不写回会话历史、不持久化。
+- **请求侧开关**（`enable_thinking` body 字段，DashScope 兼容面拼写）：
+
+| 取值 | 行为 |
+| ---- | ---- |
+| `auto`（默认） | 不发送 `enable_thinking`，请求体与旧版本字节级一致；走 async-openai 传统流式路径。**对未知字段报错的网关（如 DeepSeek）必须保持 `auto`** |
+| `on` | 注入 `"enable_thinking": true`，显式开启思考增量下发 |
+| `off` | 注入 `"enable_thinking": false`，显式关闭（对默认开启思考的模型，如 QWen3 系） |
+
+```toml
+[[providers.qwen.models]]
+id = "qwen3-max"
+name = "Qwen3 Max"
+context_window = 262144
+supports_tools = true
+thinking = "on"        # 显式开启思考过程输出
+```
+
+> 注：部分 profile 在未显式设置时也会默认下发思考增量（以实际网关为准）。`auto` 下这些增量会被传统路径丢弃（与旧版本行为一致）；需要捕获请配置 `on`。
 
 ## 模型引用格式
 

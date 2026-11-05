@@ -5,6 +5,7 @@ import { useStore } from "@/lib/store";
 import { UserMessage } from "./UserMessage";
 import { AssistantMessage } from "./AssistantMessage";
 import { ToolCard } from "./ToolCard";
+import { ThinkingPanel } from "./ThinkingPanel";
 import type { ToolCallInfo, MessageData } from "@/lib/types";
 
 // Memoized message components
@@ -132,6 +133,7 @@ function MessageListComponent() {
   const activeSessionId = useStore((s) => s.activeSessionId);
   const messages = useStore((s) => activeSessionId ? s.messages[activeSessionId] : null);
   const streamingBuffer = useStore((s) => activeSessionId ? s.streamingBuffer[activeSessionId] : null);
+  const thinkingBuffer = useStore((s) => activeSessionId ? s.thinkingBuffer[activeSessionId] : null);
   const agentStatus = useStore((s) => activeSessionId ? s.agentStatus[activeSessionId] : null);
   const pendingConfirms = useStore((s) => s.pendingConfirms);
 
@@ -141,12 +143,15 @@ function MessageListComponent() {
   // Memoized values to avoid recalculation on every render
   const messageList = useMemo(() => messages || [], [messages]);
   const currentStreamingBuffer = useMemo(() => streamingBuffer || "", [streamingBuffer]);
+  const currentThinking = useMemo(() => thinkingBuffer || "", [thinkingBuffer]);
   const currentAgentStatus = useMemo(() => agentStatus || "idle", [agentStatus]);
 
-  // Determine if we should show the thinking indicator
+  // Determine if we should show the thinking indicator. Real thinking text
+  // (ThinkingPanel) supersedes the generic spinner.
   const showThinkingIndicator = useMemo(() => {
     if (currentAgentStatus !== "running") return false;
     if (currentStreamingBuffer) return false;
+    if (currentThinking) return false;
 
     const lastMsg = messageList[messageList.length - 1];
     if (!lastMsg) return true;
@@ -165,7 +170,7 @@ function MessageListComponent() {
     }
 
     return false;
-  }, [currentAgentStatus, currentStreamingBuffer, messageList]);
+  }, [currentAgentStatus, currentStreamingBuffer, currentThinking, messageList]);
 
   // Auto-scroll function - debounced and smarter
   const scrollToBottom = useCallback(() => {
@@ -206,7 +211,7 @@ function MessageListComponent() {
   useEffect(() => {
     const timer = setTimeout(scrollToBottom, 10);
     return () => clearTimeout(timer);
-  }, [messageList.length, currentStreamingBuffer, showThinkingIndicator, scrollToBottom]);
+  }, [messageList.length, currentStreamingBuffer, currentThinking, showThinkingIndicator, scrollToBottom]);
 
   if (!activeSessionId) {
     return (
@@ -228,6 +233,14 @@ function MessageListComponent() {
         ))}
 
         {showThinkingIndicator && <ThinkingIndicator />}
+
+        {currentThinking && (
+          <ThinkingPanel
+            content={currentThinking}
+            active={currentAgentStatus === "running"}
+            hasAnswer={currentStreamingBuffer.length > 0}
+          />
+        )}
 
         {currentStreamingBuffer && (
           <MemoizedAssistantMessage content={currentStreamingBuffer} isStreaming />

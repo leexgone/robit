@@ -11,6 +11,7 @@ export function InputArea() {
   const setAgentStatus = useStore((s) => s.setAgentStatus);
   const setMessages = useStore((s) => s.setMessages);
   const messagesStore = useStore((s) => s.messages);
+  const clearThinking = useStore((s) => s.clearThinking);
 
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -40,6 +41,10 @@ export function InputArea() {
       created_at: new Date().toISOString(),
     };
     setMessages(activeSessionId, [...currentMessages, userMessage]);
+
+    // New turn: the previous turn's thinking text is display-only and stays
+    // reviewable until here — drop it now (never persisted).
+    clearThinking(activeSessionId);
 
     // Clear value, useEffect will handle focus
     setValue("");

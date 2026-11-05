@@ -17,6 +17,13 @@ pub enum WebEvent {
     /// Streaming text delta from the LLM response.
     TextDelta { text: String },
 
+    /// Streaming thinking/reasoning delta from thinking models
+    /// (`delta.reasoning_content`). Display-only and additive: JSON consumers
+    /// that only recognize known types can safely ignore this frame. There is
+    /// no explicit end marker — close any open thinking segment on
+    /// `turn_complete`.
+    ThinkingDelta { text: String },
+
     /// The LLM requested a tool call. Clients may display name/arguments.
     ToolCall {
         tool_call_id: String,
@@ -61,6 +68,7 @@ impl WebEvent {
     pub fn from_agent(event: &AgentEvent) -> Self {
         match event {
             AgentEvent::TextDelta(text) => WebEvent::TextDelta { text: text.clone() },
+            AgentEvent::ThinkingDelta(text) => WebEvent::ThinkingDelta { text: text.clone() },
             AgentEvent::ToolCallRequested {
                 tool_call_id,
                 name,
@@ -119,8 +127,22 @@ mod tests {
     }
 
     #[test]
+    fn thinking_delta_wire_shape() {
+        // Golden value for the wire schema (docs/protocol.md).
+        let e = WebEvent::from_agent(&AgentEvent::ThinkingDelta("思考甲".into()));
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({"type": "thinking_delta", "text": "思考甲"})
+        );
+    }
+
+    #[test]
     fn every_agent_event_variant_projects() {
         let cases = [
+            (
+                AgentEvent::ThinkingDelta("reasoning".into()),
+                json!({"type": "thinking_delta", "text": "reasoning"}),
+            ),
             (
                 AgentEvent::ToolCallRequested {
                     tool_call_id: "tc1".into(),

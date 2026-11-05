@@ -306,6 +306,7 @@ mod tests {
             context_window: None,
             supports_images: true,
             supports_tools: false,
+            thinking: Default::default(),
         }
     }
 

@@ -148,6 +148,9 @@ impl App {
                 self.is_agent_busy = true;
                 self.current_assistant_text.push_str(&text);
             }
+            // 思考增量暂不渲染（本版 GUI 为唯一渲染启用面），静默忽略。
+            // 后续如启用，建议以弱样式（灰字/斜体）与正文区分。
+            AgentEvent::ThinkingDelta(_) => {}
             AgentEvent::ToolCallRequested {
                 tool_call_id,
                 name,

@@ -12,6 +12,12 @@ categories = ["api-bindings", "config"]
 
 [dependencies]
 async-openai.workspace = true
+# 流式旁路：自收 SSE 帧以捕获 async-openai typed 结构装不下的厂商扩展字段
+# （reasoning_content 等）；标准字段仍委托 async-openai 类型反序列化。
+reqwest = { workspace = true, features = ["stream"] }
+eventsource-stream.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -24,3 +30,7 @@ dirs.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true
+tokio.workspace = true
+wiremock = "0.6"
+futures-util.workspace = true
+serde_json.workspace = true

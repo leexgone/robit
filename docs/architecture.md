@@ -61,6 +61,7 @@ pub trait Frontend: Send + Sync {
 **TUI 与消息平台的差异处理：**
 
 - 流式输出：TUI/GUI 逐字显示；Bot 平台采用智能分段 + 消息编辑实现近似流式体验；Web 宿主逐帧收 `text_delta`（缓冲策略归前端）
+- 思考增量（v0.1.28 起）：模型配置 `thinking = "on"/"off"` 时，robit-ai 走自建 SSE 旁路捕获 `delta.reasoning_content`（async-openai typed 结构装不下该厂商扩展字段，上游政策性拒收，见 `docs/robit-design-thinking-output.md`），以 `ThinkingDelta` / `thinking_delta` 帧送达前端。GUI 渲染为可折叠「思考过程」面板（唯一渲染启用面）；TUI/Bot 忽略。`thinking = "auto"`（默认）走 async-openai 传统路径，行为与旧版一致。思考文本展示性单向：不写回历史、不持久化
 - 会话模型：TUI 单进程单会话；GUI 多会话；Bot 平台天然多用户多会话；`robit-web` 单会话一桥，多会话由宿主按会话建桥
 - 工具确认：TUI/GUI 同步弹窗；Bot 平台异步内联消息 + 超时机制；Web 走推送/回填握手（`confirm_request` 事件挂起 oneshot 槽位，responder 被 drop 按拒绝）
 

@@ -42,6 +42,7 @@ export interface ToolCallInfo {
 
 export type UiEvent =
   | { type: "TextDelta"; session_id: string; delta: string }
+  | { type: "ThinkingDelta"; session_id: string; delta: string }
   | {
       type: "ToolCallRequested";
       session_id: string;

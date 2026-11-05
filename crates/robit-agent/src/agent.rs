@@ -656,13 +656,13 @@ impl Agent {
             let chunk = match chunk_result {
                 Ok(c) => c,
                 Err(e) => {
-                    // Providers sometimes push `{"error": ...}` events (e.g.
-                    // content moderation) into the stream; recover the real
-                    // cause from the raw payload instead of surfacing a bare
-                    // JSON deserialization failure.
-                    let llm_error = robit_ai::LlmError::from_openai_error(e);
-                    tracing::error!("Stream chunk error: {}", llm_error);
-                    return Err(AgentError::LlmError(llm_error));
+                    // Stream items already carry classified LlmError values:
+                    // provider error events pushed into the stream (e.g.
+                    // content moderation) and gateway HTML pages were
+                    // recovered from the raw payload inside robit-ai (see
+                    // robit_ai::stream), same friendly surfaces as before.
+                    tracing::error!("Stream chunk error: {}", e);
+                    return Err(AgentError::LlmError(e));
                 }
             };
             chunk_count += 1;
@@ -672,16 +672,26 @@ impl Agent {
                 api_usage = Some(usage.clone());
             }
 
-            if let Some(choice) = chunk.choices.first() {
-                // Text content
-                if let Some(content) = &choice.delta.content {
-                    full_text.push_str(content);
-                    let _ = self
-                        .frontend
-                        .on_event(AgentEvent::TextDelta(content.clone()))
-                        .await;
-                }
+            // Display deltas: thinking first (provider convention: during the
+            // thinking phase `content` is an empty shell while
+            // `reasoning_content` carries the text). Thinking is display-only:
+            // never written to history and never counted into `full_text`.
+            let (thinking, text) = chunk_deltas(&chunk);
+            if let Some(thinking) = thinking {
+                let _ = self
+                    .frontend
+                    .on_event(AgentEvent::ThinkingDelta(thinking.to_string()))
+                    .await;
+            }
+            if let Some(text) = text {
+                full_text.push_str(text);
+                let _ = self
+                    .frontend
+                    .on_event(AgentEvent::TextDelta(text.to_string()))
+                    .await;
+            }
 
+            if let Some(choice) = chunk.choices.first() {
                 // Tool call deltas
                 if let Some(tool_calls) = &choice.delta.tool_calls {
                     for tc in tool_calls {
@@ -1597,6 +1607,28 @@ impl ToolCallAccumulator {
     }
 }
 
+/// Project one streamed chunk into its display deltas: `(thinking, text)`.
+///
+/// - `thinking`: the frame's `reasoning_content` (thinking models), if
+///   non-empty.
+/// - `text`: `delta.content` of the first choice, **only if non-empty** —
+///   providers send `content:""` shells alongside thinking increments
+///   (DashScope compatible mode); emitting them used to produce blank
+///   `text_delta` frames on every frontend (子木 R6). Filtering here, at the
+///   emission site, keeps all consumers clean at once.
+///
+/// Pure projection; the event loop emits `ThinkingDelta` before `TextDelta`
+/// per chunk. Unit-tested in `chunk_deltas_*` below.
+fn chunk_deltas(chunk: &robit_ai::StreamChunk) -> (Option<&str>, Option<&str>) {
+    let thinking = chunk.reasoning.as_deref().filter(|s| !s.is_empty());
+    let text = chunk
+        .choices
+        .first()
+        .and_then(|c| c.delta.content.as_deref())
+        .filter(|s| !s.is_empty());
+    (thinking, text)
+}
+
 /// Truncate a string to at most `max_chars` characters for log output,
 /// appending a length note when truncated. Counts by `char` to avoid
 /// splitting multi-byte UTF-8 sequences (safe for CJK text).
@@ -1854,6 +1886,7 @@ mod tests {
                         max_tokens: None,
                         supports_images: Some(true),
                         supports_tools: Some(true),
+                        thinking: None,
                     }],
                 },
             )]),
@@ -2019,5 +2052,66 @@ mod tests {
             0,
             "second pass must find nothing and append no extra note"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // chunk_deltas: thinking/text projection matrix (子木 R7 acceptance 2,
+    // equivalent form — see docs/robit-design-thinking-output.md §D3)
+    // ------------------------------------------------------------------
+
+    fn chunk(content: &str, reasoning: Option<&str>) -> robit_ai::StreamChunk {
+        let raw = format!(
+            r#"{{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{{"index":0,"delta":{{"content":"{content}"}},"finish_reason":null}}]}}"#
+        );
+        robit_ai::StreamChunk {
+            response: serde_json::from_str(&raw).expect("frame parses"),
+            reasoning: reasoning.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn chunk_deltas_thinking_only_frame() {
+        // DashScope thinking phase: content:"" shell + reasoning text.
+        let c = chunk("", Some("思考甲"));
+        let (thinking, text) = chunk_deltas(&c);
+        assert_eq!(thinking, Some("思考甲"));
+        assert_eq!(text, None, "empty content shell must not become a TextDelta");
+    }
+
+    #[test]
+    fn chunk_deltas_text_only_frame() {
+        let c = chunk("正文乙", None);
+        let (thinking, text) = chunk_deltas(&c);
+        assert_eq!(thinking, None);
+        assert_eq!(text, Some("正文乙"));
+    }
+
+    #[test]
+    fn chunk_deltas_same_frame_mixed() {
+        let c = chunk("正文", Some("思考"));
+        let (thinking, text) = chunk_deltas(&c);
+        assert_eq!(thinking, Some("思考"));
+        assert_eq!(text, Some("正文"));
+    }
+
+    #[test]
+    fn chunk_deltas_filters_empty_strings_both_sides() {
+        let c = chunk("", Some(""));
+        let (thinking, text) = chunk_deltas(&c);
+        assert_eq!(thinking, None);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn chunk_deltas_usage_tail_frame_is_silent() {
+        // Final usage chunk: no choices at all → no display deltas.
+        let raw = r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#;
+        let c = robit_ai::StreamChunk {
+            response: serde_json::from_str(raw).expect("frame parses"),
+            reasoning: None,
+        };
+        let (thinking, text) = chunk_deltas(&c);
+        assert_eq!(thinking, None);
+        assert_eq!(text, None);
     }
 }

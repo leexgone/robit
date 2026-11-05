@@ -310,9 +310,38 @@ impl AppState {
 
             // TextDelta batching: accumulate deltas and send in batches
             let mut delta_buffer = String::new();
+            // ThinkingDelta batching: same cadence, separate buffer. Thinking
+            // text is display-only — it never joins `buffer` (the DB save
+            // accumulator), so it is not persisted to the session database.
+            let mut thinking_buffer = String::new();
             let mut last_delta_send = tokio::time::Instant::now();
             const DELTA_BATCH_MS: u64 = 50; // Batch deltas every 50ms
 
+            // Flush both batched buffers (thinking first, matching the
+            // emission order within a streamed chunk).
+            macro_rules! flush_deltas {
+                () => {{
+                    if !thinking_buffer.is_empty() {
+                        let ev = crate::events::UiEvent::ThinkingDelta {
+                            session_id: sid_clone.clone(),
+                            delta: std::mem::take(&mut thinking_buffer),
+                        };
+                        let _ = app_handle_clone.emit("agent-event", &ev);
+                    }
+                    if !delta_buffer.is_empty() {
+                        let ev = crate::events::UiEvent::TextDelta {
+                            session_id: sid_clone.clone(),
+                            delta: std::mem::take(&mut delta_buffer),
+                        };
+                        let _ = app_handle_clone.emit("agent-event", &ev);
+                    }
+                    last_delta_send = tokio::time::Instant::now();
+                }};
+            }
+
+            // The channel-closed branch flushes via the macro and then breaks,
+            // leaving the macro's timestamp update unread — expected, silenced.
+            #[allow(unused_assignments)]
             loop {
                 tokio::select! {
                     // Receive next event
@@ -324,6 +353,9 @@ impl AppState {
                                         delta_buffer.push_str(delta);
                                         buffer.push_str(delta);
                                     }
+                                    crate::events::UiEvent::ThinkingDelta { delta, .. } => {
+                                        thinking_buffer.push_str(delta);
+                                    }
                                     crate::events::UiEvent::ToolCallRequested {
                                         tool_call_id,
                                         name,
@@ -332,14 +364,7 @@ impl AppState {
                                         ..
                                     } => {
                                         // Flush any pending deltas first
-                                        if !delta_buffer.is_empty() {
-                                            let flush_event = crate::events::UiEvent::TextDelta {
-                                                session_id: sid_clone.clone(),
-                                                delta: std::mem::take(&mut delta_buffer),
-                                            };
-                                            let _ = app_handle_clone.emit("agent-event", &flush_event);
-                                            last_delta_send = tokio::time::Instant::now();
-                                        }
+                                        flush_deltas!();
 
                                         // Save accumulated text as assistant message BEFORE tool call
                                         if !buffer.is_empty() {
@@ -406,14 +431,7 @@ impl AppState {
                                         ..
                                     } => {
                                         // Flush any pending deltas first
-                                        if !delta_buffer.is_empty() {
-                                            let flush_event = crate::events::UiEvent::TextDelta {
-                                                session_id: sid_clone.clone(),
-                                                delta: std::mem::take(&mut delta_buffer),
-                                            };
-                                            let _ = app_handle_clone.emit("agent-event", &flush_event);
-                                            last_delta_send = tokio::time::Instant::now();
-                                        }
+                                        flush_deltas!();
 
                                         // Update tool message with result - merge with existing data
                                         let db = db_clone.lock().await;
@@ -457,13 +475,7 @@ impl AppState {
                                     }
                                     crate::events::UiEvent::TurnComplete { .. } => {
                                         // Flush any pending deltas first
-                                        if !delta_buffer.is_empty() {
-                                            let flush_event = crate::events::UiEvent::TextDelta {
-                                                session_id: sid_clone.clone(),
-                                                delta: std::mem::take(&mut delta_buffer),
-                                            };
-                                            let _ = app_handle_clone.emit("agent-event", &flush_event);
-                                        }
+                                        flush_deltas!();
 
                                         // Save assistant message to database
                                         if !buffer.is_empty() {
@@ -475,27 +487,14 @@ impl AppState {
                                     }
                                     _ => {
                                         // Flush any pending deltas first
-                                        if !delta_buffer.is_empty() {
-                                            let flush_event = crate::events::UiEvent::TextDelta {
-                                                session_id: sid_clone.clone(),
-                                                delta: std::mem::take(&mut delta_buffer),
-                                            };
-                                            let _ = app_handle_clone.emit("agent-event", &flush_event);
-                                            last_delta_send = tokio::time::Instant::now();
-                                        }
+                                        flush_deltas!();
                                         let _ = app_handle_clone.emit("agent-event", &event);
                                     }
                                 }
                             }
                             None => {
                                 // Channel closed, flush any remaining deltas
-                                if !delta_buffer.is_empty() {
-                                    let flush_event = crate::events::UiEvent::TextDelta {
-                                        session_id: sid_clone.clone(),
-                                        delta: std::mem::take(&mut delta_buffer),
-                                    };
-                                    let _ = app_handle_clone.emit("agent-event", &flush_event);
-                                }
+                                flush_deltas!();
                                 // Save any remaining buffer
                                 if !buffer.is_empty() {
                                     let db = db_clone.lock().await;
@@ -506,14 +505,9 @@ impl AppState {
                         }
                     }
 
-                    // Periodic flush of deltas
-                    _ = tokio::time::sleep_until(last_delta_send + tokio::time::Duration::from_millis(DELTA_BATCH_MS)), if !delta_buffer.is_empty() => {
-                        let flush_event = crate::events::UiEvent::TextDelta {
-                            session_id: sid_clone.clone(),
-                            delta: std::mem::take(&mut delta_buffer),
-                        };
-                        let _ = app_handle_clone.emit("agent-event", &flush_event);
-                        last_delta_send = tokio::time::Instant::now();
+                    // Periodic flush of deltas (both buffers, same cadence)
+                    _ = tokio::time::sleep_until(last_delta_send + tokio::time::Duration::from_millis(DELTA_BATCH_MS)), if !delta_buffer.is_empty() || !thinking_buffer.is_empty() => {
+                        flush_deltas!();
                     }
                 }
             }

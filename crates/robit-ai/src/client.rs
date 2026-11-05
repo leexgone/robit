@@ -3,12 +3,13 @@
 use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::{
     ChatCompletionMessageToolCalls, ChatCompletionRequestMessage,
-    ChatCompletionRequestToolMessage, ChatCompletionResponseStream,
-    ChatCompletionTools, CreateChatCompletionRequest, CreateChatCompletionResponse,
+    ChatCompletionRequestToolMessage, ChatCompletionTools, CreateChatCompletionRequest,
+    CreateChatCompletionResponse,
 };
 
-use crate::config::{resolve_profile, ResolvedModel, RobitConfig};
+use crate::config::{resolve_profile, ResolvedModel, RobitConfig, ThinkingMode};
 use crate::error::LlmError;
+use crate::stream::{classify_http_status, sse_stream, typed_stream, RobitChatStream};
 
 /// Validate that all messages are valid before sending to LLM.
 /// Returns a filtered list of messages with invalid messages removed.
@@ -284,6 +285,10 @@ pub struct LlmClient {
     client: async_openai::Client<OpenAIConfig>,
     model: String,
     resolved: ResolvedModel,
+    /// HTTP client for the streaming SSE bypass (`crate::stream` owns the
+    /// framing; the typed async-openai client remains for non-streaming
+    /// `chat()`).
+    http: reqwest::Client,
 }
 
 impl LlmClient {
@@ -311,15 +316,22 @@ impl LlmClient {
             client,
             model: resolved.model_id.clone(),
             resolved,
+            http: reqwest::Client::new(),
         }
     }
 
-    /// Streaming chat completion. Returns an async stream of response chunks.
+    /// Streaming chat completion. Returns an async stream of parsed chunks.
+    ///
+    /// The stream is *not* produced by async-openai's typed `create_stream`:
+    /// its delta type cannot carry `delta.reasoning_content` (no field, no
+    /// unknown-key catch-all), so SSE framing is owned by `crate::stream`
+    /// while standard fields still deserialize through async-openai's typed
+    /// model — see that module's doc for the full rationale.
     pub async fn chat_stream(
         &self,
         messages: Vec<ChatCompletionRequestMessage>,
         tools: Option<Vec<ChatCompletionTools>>,
-    ) -> Result<ChatCompletionResponseStream, LlmError> {
+    ) -> Result<RobitChatStream, LlmError> {
         // Validate and repair messages before sending to LLM. Interleave
         // repair must run before tool-pairing repair: it restores the
         // assistant → tool×N window so the pairing pass can then match, drop,
@@ -347,15 +359,65 @@ impl LlmClient {
             temperature: self.resolved.temperature,
             ..Default::default()
         };
-        let stream = self.client.chat().create_stream(request).await;
-        if let Err(e) = &stream {
-            tracing::error!("Chat stream creation failed: {:?}", e);
+        // Path selection by thinking mode (see crate::stream module docs):
+        // `auto` (default) keeps async-openai's legacy typed path with
+        // byte-identical behavior; `on`/`off` take the SSE bypass so
+        // `enable_thinking` can be injected and `reasoning_content` captured.
+        if self.resolved.thinking == ThinkingMode::Auto {
+            let stream = self.client.chat().create_stream(request).await;
+            if let Err(e) = &stream {
+                tracing::error!("Chat stream creation failed: {:?}", e);
+            }
+            // Map to a friendly error (e.g. content-moderation rejections
+            // carry a provider error code that deserves a clearer message
+            // than the raw "400 Bad Request ..." display).
+            let stream = stream.map_err(LlmError::from_openai_error)?;
+            return Ok(typed_stream(stream));
         }
-        // Map to a friendly error (e.g. content-moderation rejections carry a
-        // provider error code that deserves a clearer message than the raw
-        // "400 Bad Request ..." display).
-        let stream = stream.map_err(LlmError::from_openai_error)?;
-        Ok(stream)
+
+        // Thinking-controlled path: serialize the exact body async-openai
+        // would have POSTed (same Serialize impl), then add the vendor
+        // extension field the typed request struct has no room for.
+        let mut body = serde_json::to_value(&request).map_err(|e| {
+            LlmError::ParseError(format!("Failed to serialize chat completion request: {e}"))
+        })?;
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(
+                "enable_thinking".to_string(),
+                serde_json::json!(self.resolved.thinking == ThinkingMode::On),
+            );
+        }
+
+        let url = format!(
+            "{}/chat/completions",
+            self.resolved.base_url.trim_end_matches('/')
+        );
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.resolved.api_key)
+            .header("accept", "text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                // Transport-level failure before any frame arrives.
+                let err = LlmError::ConnectionError(e.to_string());
+                tracing::error!("Chat stream creation failed: {}", err);
+                err
+            })?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw = response.text().await.unwrap_or_default();
+            // Same classification as the old typed path: content-moderation
+            // rejections (HTTP 400 with a provider error code) keep their
+            // friendly display; gateway HTML and other bodies fall back to
+            // HTTP-status mapping.
+            let err = classify_http_status(status, &raw);
+            tracing::error!("Chat stream creation failed: {}", err);
+            return Err(err);
+        }
+        Ok(sse_stream(response.bytes_stream()))
     }
 
     /// Non-streaming chat completion. Returns the full response.

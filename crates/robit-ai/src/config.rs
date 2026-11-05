@@ -89,6 +89,30 @@ pub struct ModelConfig {
     /// Set to `false` for models that reject the OpenAI function-calling
     /// `tools` parameter (e.g. reasoning-only models).
     pub supports_tools: Option<bool>,
+    /// Thinking/reasoning output control (optional, default `auto`).
+    /// `on`/`off` inject the `enable_thinking` body field (DashScope-compatible
+    /// surfaces, e.g. QWen); `auto` sends nothing extra and keeps behavior
+    /// byte-identical to pre-thinking releases. Providers that reject unknown
+    /// body fields (e.g. DeepSeek) must stay on `auto`.
+    pub thinking: Option<ThinkingMode>,
+}
+
+/// Thinking/reasoning output control for a model (config `thinking` field).
+///
+/// Response-side capture of `delta.reasoning_content` is provider-agnostic and
+/// always on (see `crate::stream`); this enum only controls the *request-side*
+/// `enable_thinking` field. Some providers (e.g. QWen on DashScope compatible
+/// mode) emit thinking increments by default; `on`/`off` make it explicit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingMode {
+    /// Do not send `enable_thinking`; keep the request body unchanged.
+    #[default]
+    Auto,
+    /// Send `"enable_thinking": true` to opt into thinking output.
+    On,
+    /// Send `"enable_thinking": false` to opt out of thinking output.
+    Off,
 }
 
 // ============================================================================
@@ -327,6 +351,8 @@ pub struct ResolvedModel {
     pub supports_images: bool,
     /// Whether this model supports tool calling.
     pub supports_tools: bool,
+    /// Thinking/reasoning request-side control (`enable_thinking` injection).
+    pub thinking: ThinkingMode,
 }
 
 // ============================================================================
@@ -566,6 +592,10 @@ fn resolve_provider_model(
         // accept the `tools` parameter must keep working even when the config
         // omits this field. Models that reject it must opt out explicitly.
         supports_tools: model.supports_tools.unwrap_or(true),
+        // Default Auto: never send `enable_thinking` unless the model opts in
+        // explicitly — gateways that reject unknown body fields must keep
+        // working with an unconfigured `thinking`.
+        thinking: model.thinking.unwrap_or_default(),
     })
 }
 

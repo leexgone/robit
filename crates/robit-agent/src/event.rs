@@ -51,6 +51,16 @@ pub enum AgentEvent {
     /// Streaming text delta from LLM response.
     TextDelta(String),
 
+    /// Streaming thinking/reasoning delta (`delta.reasoning_content` from
+    /// thinking models). Display-only: never written back to session history
+    /// and never counted into response text. May arrive before or interleaved
+    /// with `TextDelta` in the same assistant segment; there is no explicit
+    /// end marker — consumers close any open thinking segment on
+    /// `TurnComplete` (rendering layers may additionally close on the first
+    /// `TextDelta`/`ToolCallRequested`). Frontends that do not render
+    /// thinking may safely ignore this event.
+    ThinkingDelta(String),
+
     /// LLM requested a tool call. Frontend should display and optionally wait for confirmation.
     ToolCallRequested {
         tool_call_id: String,

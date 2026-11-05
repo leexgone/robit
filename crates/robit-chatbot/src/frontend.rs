@@ -257,6 +257,16 @@ impl Frontend for ChatbotFrontend {
             AgentEvent::TextDelta(delta) => {
                 self.append_delta(&delta).await;
             }
+            AgentEvent::ThinkingDelta(delta) => {
+                // Silent by design: thinking text is long-form and would
+                // flood the platform's message segmentation (QQ 等消息长度
+                // 受限)，Bot 面本轮不渲染思考过程。
+                tracing::trace!(
+                    "[chatbot] ThinkingDelta received (not rendered): chat_id='{}', len={}",
+                    self.chat_id,
+                    delta.len()
+                );
+            }
             AgentEvent::ToolCallRequested { name, .. } => {
                 tracing::trace!(
                     "[chatbot] ToolCallRequested received: chat_id='{}', tool='{}' (auto_approve={})",

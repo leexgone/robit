@@ -108,6 +108,39 @@ impl LlmError {
             other => LlmError::OpenAiError(other),
         }
     }
+
+    /// Classify a raw error payload coming from a non-2xx streaming response
+    /// (the SSE bypass path in `crate::stream`, where async-openai's typed
+    /// `ApiError` parsing never runs). Reuses the same corpus-driven
+    /// classification as [`LlmError::from_openai_error`]: gateway HTML pages,
+    /// `{"error": ...}` JSON bodies (content moderation, provider errors),
+    /// and otherwise plain HTTP-status mapping.
+    pub fn from_sse_payload(status: Option<u16>, raw: &str) -> Self {
+        if let Some(gateway) = extract_gateway_error(raw) {
+            return gateway;
+        }
+        if let Some((code, message)) = extract_provider_error(raw) {
+            return match code {
+                Some(code) if is_content_moderation_code(&code) => {
+                    moderation_error(&code, &message)
+                }
+                Some(code) => LlmError::ProviderError { code, message },
+                None => LlmError::ProviderError {
+                    code: "unknown".to_string(),
+                    message,
+                },
+            };
+        }
+        match status {
+            Some(401) | Some(403) => LlmError::AuthenticationError,
+            Some(429) => LlmError::RateLimitError { retry_after: None },
+            Some(status) => LlmError::ServerError {
+                status,
+                message: truncate_raw(raw),
+            },
+            None => LlmError::ParseError(truncate_raw(raw)),
+        }
+    }
 }
 
 /// Build the right moderation error for a provider payload, distinguishing
@@ -162,6 +195,20 @@ fn extract_gateway_error(raw: &str) -> Option<LlmError> {
         "请求被服务商网关拒绝，请稍后重试或检查服务商状态".to_string()
     };
     Some(LlmError::GatewayError { title, hint })
+}
+
+/// Truncate a raw payload to at most 512 bytes on a char boundary (for error
+/// messages that embed provider bodies).
+fn truncate_raw(raw: &str) -> String {
+    const MAX: usize = 512;
+    if raw.len() <= MAX {
+        return raw.to_string();
+    }
+    let mut end = MAX;
+    while !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &raw[..end])
 }
 
 /// Extract the `<title>` text from an HTML error page. `<title>`/`</title>`

@@ -8,6 +8,9 @@ use serde::Serialize;
 pub enum UiEvent {
     /// Streaming text delta from LLM response.
     TextDelta { session_id: String, delta: String },
+    /// Streaming thinking/reasoning delta (display-only; not persisted to the
+    /// session database — same lifecycle as the streaming buffer itself).
+    ThinkingDelta { session_id: String, delta: String },
     /// LLM requested a tool call.
     ToolCallRequested {
         session_id: String,

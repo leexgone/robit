@@ -56,6 +56,7 @@
 | 字符编码 | `encoding_rs` | 处理非 UTF-8 文件 |
 | WebSocket | `tokio-tungstenite` | QQ Bot 网关连接（robit-qq） |
 | HTTP 客户端（Bot） | `reqwest` | QQ Bot HTTP 发消息 + access token 获取 |
+| SSE 分帧 | `eventsource-stream` | robit-ai 流式旁路（`thinking = on/off` 时自收 SSE，捕获 async-openai typed 结构装不下的 `reasoning_content` 等厂商扩展字段） |
 
 **后续版本待引入**：
 
@@ -158,6 +159,7 @@ context_window = 32768
 temperature = 0.7
 supports_images = true
 supports_tools = true
+thinking = "auto"                    # 可选，思考过程输出：auto（默认，不发 enable_thinking，走 async-openai 传统流式路径）/ on / off（注入 enable_thinking，走自建 SSE 旁路捕获 delta.reasoning_content，以 ThinkingDelta 事件送达前端；GUI 渲染折叠面板，TUI/Bot 暂不渲染）
 
 # 图片生成提供商配置（可选，用于 generate_image 工具）
 [image_providers.wanxiang]              # 万相（DashScope 协议）

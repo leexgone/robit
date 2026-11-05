@@ -8,6 +8,7 @@ pub mod client;
 pub mod config;
 pub mod error;
 pub mod logging;
+pub mod stream;
 
 // Re-export async-openai core types so downstream crates don't need to depend on async-openai directly.
 pub use async_openai::types::chat::{
@@ -17,7 +18,7 @@ pub use async_openai::types::chat::{
     ChatCompletionRequestUserMessageContentPart,
     ChatCompletionRequestMessageContentPartText,
     ChatCompletionRequestMessageContentPartImage,
-    ChatCompletionResponseStream, ChatCompletionTools,
+    ChatCompletionTools,
     CompletionUsage, CreateChatCompletionResponse, CreateChatCompletionStreamResponse, Role,
 };
 
@@ -26,8 +27,9 @@ pub use config::{
     load_config, load_env, AppConfig, BotConfig, ChannelsConfig, ConfirmKeywordsConfig,
     ContextConfig, ImageCallMode, ImageModelConfig, ImageProtocol, ImageProviderConfig, ModelConfig,
     ProviderConfig, QqBotConfig, ResolvedImageProvider, ResolvedModel, RetryConfig, RobitConfig,
-    resolve_image_provider, resolve_vision_model,
+    ThinkingMode, resolve_image_provider, resolve_vision_model,
 };
+pub use stream::{RobitChatStream, StreamChunk};
 pub use error::LlmError;
 pub use logging::{
     build_log_filter, init_logging, init_logging_silent, install_panic_hook, log_file_layer,
