@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.1.28] - 2026-11-06
+
 来自子木 StockAgent 消费反馈的思考过程输出能力（R7，含 R6 空白帧了断）。设计记录见 `docs/robit-design-thinking-output.md`。
 
 ### Added
