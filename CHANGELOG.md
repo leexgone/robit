@@ -8,6 +8,12 @@
 
 ## [Unreleased]
 
+## [0.1.29] - 2026-11-08
+
+### Fixed
+
+- **robit-chatbot / ThinkingDelta 日志刷屏（子木 StockAgent 消费反馈）**：Bot 前端此前对每个思考增量打一条 trace 日志（`ThinkingDelta received (not rendered): … len=N`），思考型模型的长思考流会灌满日志文件。改为事件臂内仅原子计数（`deltas` / `bytes`），回合收口（`TurnComplete` / `Error`）时汇总输出一条 trace：`thinking deltas received (not rendered): chat_id='…', deltas=N, bytes=M`。级别与其它事件臂保持一致（trace）；无思考增量的回合不输出。
+
 ## [0.1.28] - 2026-11-06
 
 来自子木 StockAgent 消费反馈的思考过程输出能力（R7，含 R6 空白帧了断）。设计记录见 `docs/robit-design-thinking-output.md`。
