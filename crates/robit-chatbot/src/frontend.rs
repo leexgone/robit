@@ -10,6 +10,7 @@
 //! place to create a "growing message" effect; otherwise segments are sent as
 //! separate messages.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -77,6 +78,11 @@ pub struct ChatbotFrontend {
     pub last_msg_id: Mutex<Option<String>>,
     /// Whether a progress hint has already been sent this turn (rate limit).
     pub progress_hint_sent: Mutex<bool>,
+    /// ThinkingDelta events seen this turn, counted for a single end-of-turn
+    /// summary log (per-delta logging would flood the log file).
+    pub thinking_deltas: AtomicUsize,
+    /// Total bytes of ThinkingDelta text seen this turn (same purpose).
+    pub thinking_bytes: AtomicUsize,
     /// Auto-approve all tool calls.
     pub auto_approve: bool,
 }
@@ -100,6 +106,8 @@ impl ChatbotFrontend {
             buffer: Mutex::new(String::new()),
             last_msg_id: Mutex::new(None),
             progress_hint_sent: Mutex::new(false),
+            thinking_deltas: AtomicUsize::new(0),
+            thinking_bytes: AtomicUsize::new(0),
             auto_approve,
         }
     }
@@ -155,6 +163,19 @@ impl ChatbotFrontend {
     async fn append_delta(&self, delta: &str) {
         let mut buffer = self.buffer.lock().await;
         buffer.push_str(delta);
+    }
+
+    /// Emit one log line summarizing this turn's (unrendered) thinking deltas,
+    /// then reset the counters. No-op if no thinking arrived.
+    fn log_thinking_summary(&self) {
+        let deltas = self.thinking_deltas.swap(0, Ordering::Relaxed);
+        let bytes = self.thinking_bytes.swap(0, Ordering::Relaxed);
+        if deltas > 0 {
+            tracing::trace!(
+                "[chatbot] thinking deltas received (not rendered): chat_id='{}', deltas={}, bytes={}",
+                self.chat_id, deltas, bytes
+            );
+        }
     }
 
     /// Flush the buffer: take all accumulated text, sanitize it, send it, and save to DB.
@@ -261,11 +282,10 @@ impl Frontend for ChatbotFrontend {
                 // Silent by design: thinking text is long-form and would
                 // flood the platform's message segmentation (QQ 等消息长度
                 // 受限)，Bot 面本轮不渲染思考过程。
-                tracing::trace!(
-                    "[chatbot] ThinkingDelta received (not rendered): chat_id='{}', len={}",
-                    self.chat_id,
-                    delta.len()
-                );
+                // Count only — a per-delta trace line floods the log file;
+                // `log_thinking_summary` emits one line at end of turn.
+                self.thinking_deltas.fetch_add(1, Ordering::Relaxed);
+                self.thinking_bytes.fetch_add(delta.len(), Ordering::Relaxed);
             }
             AgentEvent::ToolCallRequested { name, .. } => {
                 tracing::trace!(
@@ -312,6 +332,7 @@ impl Frontend for ChatbotFrontend {
                     self.chat_id
                 );
                 self.flush_buffer().await;
+                self.log_thinking_summary();
                 // Reset per-turn state.
                 *self.progress_hint_sent.lock().await = false;
                 *self.last_msg_id.lock().await = None;
@@ -322,6 +343,7 @@ impl Frontend for ChatbotFrontend {
                     self.chat_id, e
                 );
                 self.flush_buffer().await;
+                self.log_thinking_summary();
                 let msg = format!("❌ Error: {}", e);
                 if let Err(send_err) = self.platform_sender.send(&self.chat_id, &msg).await {
                     tracing::warn!(
