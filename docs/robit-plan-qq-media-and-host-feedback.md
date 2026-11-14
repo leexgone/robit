@@ -377,6 +377,12 @@ RFC §4 验收标准逐条落测试（单测为主，真机项标注）：
 - 批 1 发布后通知子木接 M1 消费路径（领域工具读 `local_path`）；批 2 发布后子木可撤 H6 的 `.gitignore` 例外与守护测试、接 H1 调度注入；批 3 发布后双实例部署解禁。
 - 本 RFC 评审状态回写：评审通过、13 项全收、H3 上调中级、分三批。
 
+## 10. 实现后记（v0.2.0 / v0.2.1，2026-11-14）
+
+- 三批按本方案落地，发布 v0.2.0；同日 v0.2.1 收尾 M1 最后一环：`describe_with_local(base)` 让标注行携带 `本地路径: media/xxx`（相对 working_dir），模型侧与档案/标题统一生效。
+- **工具面事实澄清**（评审时未显式区分，曾致误判）：§1.3「robit 不开系统 read 类工具」仅指**子木宿主的受限装配**（R2 拍板，因工作目录含 `.env`）。**robit-qq 默认装配**经 `create_tools_from_config` 注册全部通用工具（含 `bash`，需确认），且 `read` 是系统工具——始终注册、免确认、白名单管不住（`bootstrap.rs`）。因此 v0.2.1 后纯 robit-qq 部署即可闭环 M1+M2 验收：csv 凭标注路径直接 `read`，xlsx 经 `bash` 解析，无需宿主工具。
+- 部署安全提示：`read` 免确认意味着 robit-qq 工作目录内的任何文件（含密钥）对能 @ 到 bot 的人可读。生产部署应把 `.env` 置于 `~/.robit/` 而非工作目录；如需 Bot 形态可裁剪 read 的框架级开关，另立 R 系列诉求。
+
 ---
 
-**关联**：`docs/robit-rfc-qq-media-and-host-feedback.md`（移交件）；子木 `docs/07-backlog.md` R8/R10；回路历史 R1→v0.1.26 … R9→v0.1.29。
+**关联**：`docs/robit-rfc-qq-media-and-host-feedback.md`（移交件）；子木 `docs/07-backlog.md` R8/R10；回路历史 R1→v0.1.26 … R9→v0.1.29，R8/R10→v0.2.0+v0.2.1。
