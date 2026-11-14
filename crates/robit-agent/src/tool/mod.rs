@@ -181,6 +181,11 @@ pub fn resolve_path(file_path: &str, working_dir: &Path) -> PathBuf {
 pub struct ToolContext {
     /// Current working directory.
     pub working_dir: PathBuf,
+    /// Memory directory resolved from the host's storage scope
+    /// (`global_storage`): `<working_dir>/.robit/memory` or `~/.robit/memory`.
+    /// Memory tools derive their DB path from it so they always share the
+    /// session database the frontend opened.
+    pub memory_dir: PathBuf,
     /// Current session ID.
     pub session_id: SessionId,
     /// The tool call id this execution was triggered by. Needed by async tools

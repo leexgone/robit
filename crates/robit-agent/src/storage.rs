@@ -65,6 +65,9 @@ pub struct MessageData {
     pub tool_call_id: Option<String>,
     pub tool_info: Option<serde_json::Value>,
     pub created_at: String,
+    /// Origin marker for host-injected turns (e.g. "scheduler").
+    /// `None` = real user/platform message (all pre-v6 rows).
+    pub source: Option<String>,
 }
 
 /// Tool call info for storage in message.
@@ -79,7 +82,7 @@ pub struct ToolCallInfoData {
 }
 
 /// Current schema version. Increment when the schema changes.
-const CURRENT_SCHEMA_VERSION: i32 = 5;
+const CURRENT_SCHEMA_VERSION: i32 = 7;
 
 // ============================================================================
 // Memory data structures
@@ -274,7 +277,8 @@ fn create_all_tables(conn: &Connection) -> SqliteResult<()> {
             source      TEXT NOT NULL DEFAULT 'gui',
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL,
-            is_active   INTEGER DEFAULT 1
+            is_active   INTEGER DEFAULT 1,
+            namespace   TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -286,7 +290,8 @@ fn create_all_tables(conn: &Connection) -> SqliteResult<()> {
             tool_call_id TEXT,
             tool_info    TEXT,
             tokens       INTEGER,
-            created_at   TEXT NOT NULL
+            created_at   TEXT NOT NULL,
+            source       TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -294,7 +299,8 @@ fn create_all_tables(conn: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_messages_created
             ON messages(session_id, created_at);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_chat_id
-            ON sessions(chat_id) WHERE chat_id IS NOT NULL AND is_active = 1;
+            ON sessions(chat_id, source, namespace)
+            WHERE chat_id IS NOT NULL AND is_active = 1;
 
         CREATE TABLE IF NOT EXISTS memories (
             id           TEXT PRIMARY KEY,
@@ -352,6 +358,8 @@ fn migrate(conn: &Connection, from: i32, to: i32) -> SqliteResult<()> {
             2 => migrate_v2_to_v3(conn)?,
             3 => migrate_v3_to_v4(conn)?,
             4 => migrate_v4_to_v5(conn)?,
+            5 => migrate_v5_to_v6(conn)?,
+            6 => migrate_v6_to_v7(conn)?,
             other => {
                 return Err(rusqlite::Error::InvalidParameterName(format!(
                     "Unknown schema version: {}",
@@ -457,6 +465,36 @@ fn migrate_v4_to_v5(conn: &Connection) -> SqliteResult<()> {
     Ok(())
 }
 
+/// v5 → v6: add `messages.source` for host-injected turn markers (H1).
+///
+/// Nullable: existing rows (real user/platform messages) stay NULL; injected
+/// turns store a label such as "scheduler". `load_chat_messages` does not
+/// filter on it — injected content is part of the session history.
+fn migrate_v5_to_v6(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch("ALTER TABLE messages ADD COLUMN source TEXT;")?;
+    Ok(())
+}
+
+/// v6 → v7: scope session identity by `(chat_id, source, namespace)` (H4).
+///
+/// Before v7 the unique index covered `chat_id` alone, so two platforms (or
+/// two instances of one platform) sharing a working dir hijacked each other's
+/// sessions on id collision. `source` separates platforms; `namespace`
+/// (config `[app.bot] instance_id`, default `""`) separates instances of the
+/// same platform. Existing rows get namespace `""` — single-instance behavior
+/// is unchanged. The rebuild is safe: the old index guaranteed at most one
+/// active row per chat_id, hence none per (chat_id, source, namespace).
+fn migrate_v6_to_v7(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch(
+        "ALTER TABLE sessions ADD COLUMN namespace TEXT NOT NULL DEFAULT '';
+        DROP INDEX IF EXISTS idx_sessions_chat_id;
+        CREATE UNIQUE INDEX idx_sessions_chat_id
+            ON sessions(chat_id, source, namespace)
+            WHERE chat_id IS NOT NULL AND is_active = 1;",
+    )?;
+    Ok(())
+}
+
 // ============================================================================
 // Schema version helpers (private)
 // ============================================================================
@@ -494,12 +532,13 @@ pub fn insert_session(
     title: &str,
     model: &str,
     source: &str,
+    namespace: &str,
 ) -> SqliteResult<()> {
     let now = current_timestamp();
     conn.execute(
-        "INSERT INTO sessions (id, chat_id, title, model, source, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![id, chat_id, title, model, source, now, now],
+        "INSERT INTO sessions (id, chat_id, title, model, source, created_at, updated_at, namespace) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id, chat_id, title, model, source, now, now, namespace],
     )?;
     Ok(())
 }
@@ -528,48 +567,59 @@ pub fn list_sessions(
     rows.collect()
 }
 
-/// Find an active session by its platform chat identifier.
+/// Find an active session by its platform chat identifier, scoped to a
+/// platform `source` and instance `namespace` (H4). Pass `""` for namespace
+/// when the host runs a single instance.
 ///
 /// Returns `None` for GUI/TUI sessions (where `chat_id` is NULL).
 pub fn find_session_by_chat_id(
     conn: &Connection,
     chat_id: &str,
+    source: &str,
+    namespace: &str,
 ) -> SqliteResult<Option<SessionInfo>> {
     let mut stmt = conn.prepare(
         "SELECT id, chat_id, title, model, source, created_at, updated_at \
-         FROM sessions WHERE chat_id = ?1 AND is_active = 1",
+         FROM sessions WHERE chat_id = ?1 AND source = ?2 AND namespace = ?3 AND is_active = 1",
     )?;
-    let mut rows = stmt.query_map(params![chat_id], map_session_row)?;
+    let mut rows = stmt.query_map(params![chat_id, source, namespace], map_session_row)?;
     match rows.next() {
         Some(Ok(session)) => Ok(Some(session)),
         _ => Ok(None),
     }
 }
 
-/// List ALL sessions (including inactive ones) for a chat_id, ordered by most recent first.
+/// List ALL sessions (including inactive ones) for a chat_id within one
+/// platform/instance scope, ordered by most recent first.
 pub fn list_all_sessions_by_chat_id(
     conn: &Connection,
     chat_id: &str,
+    source: &str,
+    namespace: &str,
 ) -> SqliteResult<Vec<SessionInfo>> {
     let mut stmt = conn.prepare(
         "SELECT id, chat_id, title, model, source, created_at, updated_at \
-         FROM sessions WHERE chat_id = ?1 ORDER BY updated_at DESC",
+         FROM sessions WHERE chat_id = ?1 AND source = ?2 AND namespace = ?3 \
+         ORDER BY updated_at DESC",
     )?;
-    let rows = stmt.query_map(params![chat_id], map_session_row)?;
+    let rows = stmt.query_map(params![chat_id, source, namespace], map_session_row)?;
     rows.collect()
 }
 
-/// Activate a specific session and deactivate others for the same chat_id.
+/// Activate a specific session and deactivate others for the same chat_id
+/// within the same platform/instance scope (never touches other platforms).
 pub fn activate_session(
     conn: &Connection,
     session_id: &str,
     chat_id: &str,
+    source: &str,
+    namespace: &str,
 ) -> SqliteResult<()> {
     let now = current_timestamp();
-    // First deactivate all sessions for this chat_id
+    // First deactivate all sessions for this chat_id in this scope
     conn.execute(
-        "UPDATE sessions SET is_active = 0 WHERE chat_id = ?1",
-        params![chat_id],
+        "UPDATE sessions SET is_active = 0 WHERE chat_id = ?1 AND source = ?2 AND namespace = ?3",
+        params![chat_id, source, namespace],
     )?;
     // Then activate the target session and update its timestamp
     conn.execute(
@@ -644,11 +694,12 @@ pub fn insert_message(
     tool_name: Option<&str>,
     tool_call_id: Option<&str>,
     tool_info: Option<&str>,
+    source: Option<&str>,
 ) -> SqliteResult<i64> {
     let now = current_timestamp();
     conn.execute(
-        "INSERT INTO messages (session_id, role, content, tool_name, tool_call_id, tool_info, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![session_id, role, content, tool_name, tool_call_id, tool_info, now],
+        "INSERT INTO messages (session_id, role, content, tool_name, tool_call_id, tool_info, created_at, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![session_id, role, content, tool_name, tool_call_id, tool_info, now, source],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -656,7 +707,7 @@ pub fn insert_message(
 /// Get all messages for a session, ordered by creation time.
 pub fn get_messages(conn: &Connection, session_id: &str) -> SqliteResult<Vec<MessageData>> {
     let mut stmt = conn.prepare(
-        "SELECT id, role, content, tool_name, tool_call_id, tool_info, created_at FROM messages WHERE session_id = ?1 ORDER BY id ASC"
+        "SELECT id, role, content, tool_name, tool_call_id, tool_info, created_at, source FROM messages WHERE session_id = ?1 ORDER BY id ASC"
     )?;
     let rows = stmt.query_map(params![session_id], |row| {
         let tool_info_str: Option<String> = row.get(5)?;
@@ -669,6 +720,7 @@ pub fn get_messages(conn: &Connection, session_id: &str) -> SqliteResult<Vec<Mes
             tool_call_id: row.get(4)?,
             tool_info,
             created_at: row.get(6)?,
+            source: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -1298,6 +1350,7 @@ mod tests {
             "Test Session",
             "deepseek/deepseek-chat",
             "gui",
+            "",
         )
         .unwrap();
 
@@ -1327,12 +1380,13 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn).unwrap();
 
-        insert_session(&conn, "session-msg", None, "Chat Session", "model", "gui").unwrap();
+        insert_session(&conn, "session-msg", None, "Chat Session", "model", "gui", "").unwrap();
         let user_id = insert_message(
             &conn,
             "session-msg",
             "user",
             "Hello Robit",
+            None,
             None,
             None,
             None,
@@ -1343,6 +1397,7 @@ mod tests {
             "session-msg",
             "assistant",
             "Hello! How can I help?",
+            None,
             None,
             None,
             None,
@@ -1382,7 +1437,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn).unwrap();
 
-        insert_session(&conn, "session-tool", None, "Tool Session", "model", "gui").unwrap();
+        insert_session(&conn, "session-tool", None, "Tool Session", "model", "gui", "").unwrap();
         let initial = serde_json::json!({
             "tool_call_id": "tool-1",
             "name": "bash",
@@ -1399,6 +1454,7 @@ mod tests {
             Some("bash"),
             Some("tool-1"),
             Some(&initial),
+            None,
         )
         .unwrap();
 
@@ -1425,7 +1481,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn).unwrap();
 
-        insert_session(&conn, "gui-1", None, "GUI Session", "model", "gui").unwrap();
+        insert_session(&conn, "gui-1", None, "GUI Session", "model", "gui", "").unwrap();
         insert_session(
             &conn,
             "qq-1",
@@ -1433,6 +1489,7 @@ mod tests {
             "技术讨论群",
             "model",
             "qq",
+            "",
         )
         .unwrap();
         insert_session(
@@ -1442,17 +1499,18 @@ mod tests {
             "私聊",
             "model",
             "qq",
+            "",
         )
         .unwrap();
 
         // find_session_by_chat_id
-        let found = find_session_by_chat_id(&conn, "group:abc").unwrap().unwrap();
+        let found = find_session_by_chat_id(&conn, "group:abc", "qq", "").unwrap().unwrap();
         assert_eq!(found.id, "qq-1");
         assert_eq!(found.source, "qq");
         assert_eq!(found.chat_id.as_deref(), Some("group:abc"));
 
         // chat_id lookup returns None for GUI sessions (NULL chat_id)
-        assert!(find_session_by_chat_id(&conn, "does-not-exist")
+        assert!(find_session_by_chat_id(&conn, "does-not-exist", "qq", "")
             .unwrap()
             .is_none());
 
@@ -1481,10 +1539,11 @@ mod tests {
             "First",
             "model",
             "qq",
+            "",
         )
         .unwrap();
         // Inserting a second session with the same chat_id must fail (unique index).
-        let err = insert_session(&conn, "qq-2", Some("group:abc"), "Second", "model", "qq");
+        let err = insert_session(&conn, "qq-2", Some("group:abc"), "Second", "model", "qq", "");
         assert!(err.is_err());
     }
 
@@ -1493,17 +1552,17 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn).unwrap();
 
-        insert_session(&conn, "qq-1", Some("group:abc"), "First", "model", "qq").unwrap();
+        insert_session(&conn, "qq-1", Some("group:abc"), "First", "model", "qq", "").unwrap();
         // /new archives the old session (soft delete) before creating a new one.
         delete_session(&conn, "qq-1").unwrap();
-        insert_session(&conn, "qq-2", Some("group:abc"), "Second", "model", "qq").unwrap();
+        insert_session(&conn, "qq-2", Some("group:abc"), "Second", "model", "qq", "").unwrap();
 
         // Still only one ACTIVE session per chat_id.
-        let err = insert_session(&conn, "qq-3", Some("group:abc"), "Third", "model", "qq");
+        let err = insert_session(&conn, "qq-3", Some("group:abc"), "Third", "model", "qq", "");
         assert!(err.is_err());
 
         // Lookup by chat_id returns the active session only.
-        let active = find_session_by_chat_id(&conn, "group:abc").unwrap().unwrap();
+        let active = find_session_by_chat_id(&conn, "group:abc", "qq", "").unwrap().unwrap();
         assert_eq!(active.id, "qq-2");
     }
 
@@ -1526,6 +1585,17 @@ mod tests {
             );
             CREATE UNIQUE INDEX idx_sessions_chat_id
                 ON sessions(chat_id) WHERE chat_id IS NOT NULL;
+            CREATE TABLE messages (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT NOT NULL REFERENCES sessions(id),
+                role         TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                tool_name    TEXT,
+                tool_call_id TEXT,
+                tool_info    TEXT,
+                tokens       INTEGER,
+                created_at   TEXT NOT NULL
+            );
             INSERT INTO sessions (id, chat_id, title, model, source, created_at, updated_at, is_active)
             VALUES ('old-1', 'group:abc', 'Old', 'model', 'qq', '2020-01-01', '2020-01-01', 0);",
         )
@@ -1536,7 +1606,170 @@ mod tests {
         assert_eq!(read_schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
 
         // The archived session no longer blocks a new session for the same chat_id.
-        insert_session(&conn, "new-1", Some("group:abc"), "New", "model", "qq").unwrap();
+        insert_session(&conn, "new-1", Some("group:abc"), "New", "model", "qq", "").unwrap();
+    }
+
+    #[test]
+    fn migrates_v5_messages_to_source_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Simulate a v5 database: messages without the source column.
+        ensure_meta_table(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id          TEXT PRIMARY KEY,
+                chat_id     TEXT,
+                title       TEXT NOT NULL,
+                model       TEXT NOT NULL,
+                source      TEXT NOT NULL DEFAULT 'gui',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                is_active   INTEGER DEFAULT 1
+            );
+            CREATE TABLE messages (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT NOT NULL REFERENCES sessions(id),
+                role         TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                tool_name    TEXT,
+                tool_call_id TEXT,
+                tool_info    TEXT,
+                tokens       INTEGER,
+                created_at   TEXT NOT NULL
+            );
+            INSERT INTO sessions (id, chat_id, title, model, source, created_at, updated_at)
+            VALUES ('s-1', 'group:abc', 'T', 'model', 'qq', '2020-01-01', '2020-01-01');
+            INSERT INTO messages (session_id, role, content, created_at)
+            VALUES ('s-1', 'user', 'legacy row', '2020-01-01');",
+        )
+        .unwrap();
+        write_schema_version(&conn, 5).unwrap();
+
+        init_db(&conn).unwrap();
+        assert_eq!(read_schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+
+        // Legacy rows read back with source = None.
+        let messages = get_messages(&conn, "s-1").unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].source.is_none());
+
+        // New injected rows carry their marker.
+        insert_message(&conn, "s-1", "user", "injected", None, None, None, Some("scheduler"))
+            .unwrap();
+        let messages = get_messages(&conn, "s-1").unwrap();
+        assert_eq!(messages[1].source.as_deref(), Some("scheduler"));
+    }
+
+    #[test]
+    fn migrates_v6_sessions_to_namespace() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Simulate a v6 database: sessions without namespace, messages with source.
+        ensure_meta_table(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id          TEXT PRIMARY KEY,
+                chat_id     TEXT,
+                title       TEXT NOT NULL,
+                model       TEXT NOT NULL,
+                source      TEXT NOT NULL DEFAULT 'gui',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                is_active   INTEGER DEFAULT 1
+            );
+            CREATE UNIQUE INDEX idx_sessions_chat_id
+                ON sessions(chat_id) WHERE chat_id IS NOT NULL AND is_active = 1;
+            CREATE TABLE messages (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT NOT NULL REFERENCES sessions(id),
+                role         TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                tool_name    TEXT,
+                tool_call_id TEXT,
+                tool_info    TEXT,
+                tokens       INTEGER,
+                created_at   TEXT NOT NULL,
+                source       TEXT
+            );
+            INSERT INTO sessions (id, chat_id, title, model, source, created_at, updated_at)
+            VALUES ('s-1', 'group:abc', 'T', 'model', 'qq', '2020-01-01', '2020-01-01');",
+        )
+        .unwrap();
+        write_schema_version(&conn, 6).unwrap();
+
+        init_db(&conn).unwrap();
+        assert_eq!(read_schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+
+        // Legacy row keeps working under the default namespace…
+        let found = find_session_by_chat_id(&conn, "group:abc", "qq", "").unwrap().unwrap();
+        assert_eq!(found.id, "s-1");
+        // …and a second platform no longer collides with it.
+        insert_session(&conn, "s-2", Some("group:abc"), "T2", "model", "feishu", "").unwrap();
+        let found = find_session_by_chat_id(&conn, "group:abc", "feishu", "").unwrap().unwrap();
+        assert_eq!(found.id, "s-2");
+    }
+
+    #[test]
+    fn session_identity_is_scoped_by_source_and_namespace() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // Same chat_id across two platforms AND two instances of one platform.
+        insert_session(&conn, "qq-a", Some("group:abc"), "QQ A", "model", "qq", "inst-a").unwrap();
+        insert_session(&conn, "qq-b", Some("group:abc"), "QQ B", "model", "qq", "inst-b").unwrap();
+        insert_session(&conn, "fs-a", Some("group:abc"), "Feishu", "model", "feishu", "inst-a").unwrap();
+
+        // Each scope finds only its own session.
+        assert_eq!(
+            find_session_by_chat_id(&conn, "group:abc", "qq", "inst-a").unwrap().unwrap().id,
+            "qq-a"
+        );
+        assert_eq!(
+            find_session_by_chat_id(&conn, "group:abc", "qq", "inst-b").unwrap().unwrap().id,
+            "qq-b"
+        );
+        assert_eq!(
+            find_session_by_chat_id(&conn, "group:abc", "feishu", "inst-a").unwrap().unwrap().id,
+            "fs-a"
+        );
+        // The legacy default scope is empty now.
+        assert!(find_session_by_chat_id(&conn, "group:abc", "qq", "").unwrap().is_none());
+
+        // /list is scoped too.
+        let listed = list_all_sessions_by_chat_id(&conn, "group:abc", "qq", "inst-a").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "qq-a");
+
+        // /switch within one scope must not deactivate the others.
+        // Archive qq-a first (same-scope unique index allows one active row).
+        delete_session(&conn, "qq-a").unwrap();
+        insert_session(&conn, "qq-a2", Some("group:abc"), "QQ A2", "model", "qq", "inst-a").unwrap();
+        activate_session(&conn, "qq-a2", "group:abc", "qq", "inst-a").unwrap();
+        assert_eq!(
+            find_session_by_chat_id(&conn, "group:abc", "qq", "inst-a").unwrap().unwrap().id,
+            "qq-a2"
+        );
+        assert_eq!(
+            find_session_by_chat_id(&conn, "group:abc", "qq", "inst-b").unwrap().unwrap().id,
+            "qq-b",
+            "other instance must stay active"
+        );
+        assert_eq!(
+            find_session_by_chat_id(&conn, "group:abc", "feishu", "inst-a").unwrap().unwrap().id,
+            "fs-a",
+            "other platform must stay active"
+        );
+    }
+
+    #[test]
+    fn message_source_roundtrip_on_fresh_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        insert_session(&conn, "s-1", None, "T", "model", "gui", "").unwrap();
+        insert_message(&conn, "s-1", "user", "real", None, None, None, None).unwrap();
+        insert_message(&conn, "s-1", "user", "injected", None, None, None, Some("scheduler"))
+            .unwrap();
+        let messages = get_messages(&conn, "s-1").unwrap();
+        assert!(messages[0].source.is_none());
+        assert_eq!(messages[1].source.as_deref(), Some("scheduler"));
     }
 
     #[test]
@@ -1602,16 +1835,16 @@ mod tests {
 
     fn setup_search_test(conn: &Connection) {
         init_db(conn).unwrap();
-        insert_session(conn, "sess-1", None, "Session One", "model", "gui").unwrap();
-        insert_session(conn, "sess-2", None, "Session Two", "model", "gui").unwrap();
+        insert_session(conn, "sess-1", None, "Session One", "model", "gui", "").unwrap();
+        insert_session(conn, "sess-2", None, "Session Two", "model", "gui", "").unwrap();
 
-        insert_message(conn, "sess-1", "user", "Hello, how do I write Rust code?", None, None, None).unwrap();
-        insert_message(conn, "sess-1", "assistant", "To write Rust code, start with cargo new.", None, None, None).unwrap();
-        insert_message(conn, "sess-1", "user", "What about Python?", None, None, None).unwrap();
-        insert_message(conn, "sess-1", "assistant", "Python is also a great language.", None, None, None).unwrap();
+        insert_message(conn, "sess-1", "user", "Hello, how do I write Rust code?", None, None, None, None).unwrap();
+        insert_message(conn, "sess-1", "assistant", "To write Rust code, start with cargo new.", None, None, None, None).unwrap();
+        insert_message(conn, "sess-1", "user", "What about Python?", None, None, None, None).unwrap();
+        insert_message(conn, "sess-1", "assistant", "Python is also a great language.", None, None, None, None).unwrap();
 
-        insert_message(conn, "sess-2", "user", "How to deploy a Rust application?", None, None, None).unwrap();
-        insert_message(conn, "sess-2", "assistant", "You can deploy Rust apps with Docker.", None, None, None).unwrap();
+        insert_message(conn, "sess-2", "user", "How to deploy a Rust application?", None, None, None, None).unwrap();
+        insert_message(conn, "sess-2", "assistant", "You can deploy Rust apps with Docker.", None, None, None, None).unwrap();
     }
 
     #[test]

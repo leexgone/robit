@@ -274,6 +274,7 @@ impl AppState {
             session_id_obj,
             history_messages,
             memory,
+            None,
         );
 
         let cancel_token = CancellationToken::new();
@@ -300,6 +301,7 @@ impl AppState {
                         sid,
                         "assistant",
                         buffer,
+                        None,
                         None,
                         None,
                         None,
@@ -410,6 +412,7 @@ impl AppState {
                                             None,
                                             Some(tool_call_id),
                                             Some(&assistant_tool_info_str),
+                                            None,
                                         );
                                         let _ = crate::db::insert_message(
                                             &db,
@@ -419,6 +422,7 @@ impl AppState {
                                             Some(name),
                                             Some(tool_call_id),
                                             Some(&tool_info_str),
+                                            None,
                                         );
                                         let _ = crate::db::touch_session(&db, &sid_clone);
                                         drop(db);

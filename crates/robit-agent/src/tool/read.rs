@@ -299,6 +299,7 @@ mod tests {
         let (done_tx, _done_rx) = mpsc::channel(1);
         ToolContext {
             working_dir: std::path::PathBuf::from("."),
+            memory_dir: std::path::PathBuf::from("."),
             session_id: "sess".to_string(),
             tool_call_id: "tc".to_string(),
             frontend: Arc::new(DummyFrontend),

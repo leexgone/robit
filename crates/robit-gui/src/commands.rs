@@ -49,7 +49,7 @@ pub async fn create_session(
     // Insert into DB
     {
         let db = state.db.lock().await;
-        db::insert_session(&db, &session_id, None, &title, &model, "gui")
+        db::insert_session(&db, &session_id, None, &title, &model, "gui", "")
             .map_err(|e| format!("DB error: {}", e))?;
     }
 
@@ -151,7 +151,7 @@ pub async fn send_message(
     // Save user message to DB
     {
         let db = state.db.lock().await;
-        db::insert_message(&db, &session_id, "user", &content, None, None, None)
+        db::insert_message(&db, &session_id, "user", &content, None, None, None, None)
             .map_err(|e| format!("DB error: {}", e))?;
         db::touch_session(&db, &session_id).map_err(|e| format!("DB error: {}", e))?;
     }

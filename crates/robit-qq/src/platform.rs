@@ -321,6 +321,10 @@ impl PlatformAdapter for QqPlatformAdapter {
         PlatformCaps::qq()
     }
 
+    fn platform_name() -> &'static str {
+        "qq"
+    }
+
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult> {
         let auth = self.auth_header().await?;
         let (endpoint, is_group) = resolve_send_endpoint(self.config.api_base_url(), chat_id)?;
@@ -912,9 +916,12 @@ fn build_platform_event(event_name: &str, ev: &MessageEvent) -> Option<PlatformE
     };
     let user_id = ev.user_id().unwrap_or("unknown").to_string();
     // QQ group @-message content typically has a leading space from the @mention.
-    let mut text = ev.content.trim().to_string();
+    let text = ev.content.trim().to_string();
 
     // Convert QQ attachments to platform-agnostic media attachments.
+    // Annotation is NOT done here: the agent appends descriptions to
+    // model-bound text exactly once, and the manager annotates archive text
+    // and session titles (single describe implementation in robit-agent).
     let attachments: Vec<MediaAttachment> = ev
         .attachments
         .iter()
@@ -925,18 +932,9 @@ fn build_platform_event(event_name: &str, ev: &MessageEvent) -> Option<PlatformE
             size: att.size,
             width: att.width,
             height: att.height,
+            local_path: None,
         })
         .collect();
-
-    // Append attachment descriptions to the text so the LLM knows about them.
-    if !attachments.is_empty() {
-        let descs: Vec<String> = attachments.iter().map(|a| a.describe()).collect();
-        if text.is_empty() {
-            text = descs.join("\n");
-        } else {
-            text = format!("{}\n{}", text, descs.join("\n"));
-        }
-    }
 
     Some(PlatformEvent::Message(ChatMessage {
         text,
@@ -1088,9 +1086,11 @@ mod tests {
                 assert_eq!(m.attachments[0].content_type, "image/png");
                 assert_eq!(m.attachments[0].url, "https://cdn.qq.com/img/test.png");
                 assert!(m.attachments[0].is_image());
-                // Text should include attachment description.
-                assert!(m.text.contains("用户发送了图片"));
-                assert!(m.text.contains("test.png"));
+                assert!(m.attachments[0].local_path.is_none());
+                // M3: the platform passes text through verbatim — annotation
+                // happens once in the agent (model text) and once in the
+                // manager (archive/title), never here.
+                assert_eq!(m.text, "look");
             }
             _ => panic!("expected Message"),
         }

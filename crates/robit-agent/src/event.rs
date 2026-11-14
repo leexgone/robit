@@ -25,6 +25,10 @@ pub struct MediaAttachment {
     pub width: Option<u32>,
     /// Image height in pixels if available.
     pub height: Option<u32>,
+    /// Local copy saved by the host (e.g. the bot manager's media directory).
+    /// `None` when no local copy exists (GUI/TUI paths, or download failed).
+    /// Encoding prefers this over `url` so CDN expiry cannot break vision.
+    pub local_path: Option<std::path::PathBuf>,
 }
 
 impl MediaAttachment {
@@ -34,8 +38,15 @@ impl MediaAttachment {
     }
 
     /// A human-readable description for the LLM.
+    ///
+    /// Single source of truth for attachment annotation: the agent appends it
+    /// to model-bound text exactly once (`build_user_message`); the bot manager
+    /// reuses it for archive text and session titles.
     pub fn describe(&self) -> String {
-        let filename = self.filename.as_deref().unwrap_or("unknown");
+        let filename = self
+            .filename
+            .as_deref()
+            .unwrap_or_else(|| if self.is_image() { "image" } else { "file" });
         let type_desc = if self.is_image() { "图片" } else { "文件" };
         let size_str = self
             .size
@@ -137,5 +148,40 @@ impl From<&str> for FrontendMessage {
             text: text.to_string(),
             attachments: vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn att(content_type: &str, filename: Option<&str>, size: Option<u64>) -> MediaAttachment {
+        MediaAttachment {
+            content_type: content_type.to_string(),
+            url: "http://example.invalid/f".to_string(),
+            filename: filename.map(|s| s.to_string()),
+            size,
+            width: None,
+            height: None,
+            local_path: None,
+        }
+    }
+
+    #[test]
+    fn describe_formats_name_and_size() {
+        let a = att("text/csv", Some("对账单.csv"), Some(51_200));
+        assert_eq!(a.describe(), "[用户发送了文件: 对账单.csv (50.0KB)]");
+    }
+
+    #[test]
+    fn describe_unnamed_defaults_by_kind() {
+        assert_eq!(
+            att("image/png", None, None).describe(),
+            "[用户发送了图片: image]"
+        );
+        assert_eq!(
+            att("application/pdf", None, None).describe(),
+            "[用户发送了文件: file]"
+        );
     }
 }

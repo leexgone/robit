@@ -29,7 +29,10 @@ pub use error::AgentError;
 pub use event::{AgentEvent, FrontendMessage, MediaAttachment, SessionId};
 pub use image_gen::{GeneratedImage, ImageGenClient, ImageGenError, ImageGenErrorInfo, ImageGenRequest};
 pub use lock::{DirectoryLock, LockError, LockInfo};
-pub use media::{download_and_encode_base64, download_media, MediaError};
+pub use media::{
+    download_and_encode_base64, download_media, download_media_with_opts, encode_file_base64,
+    encode_file_base64_with_mime, MediaDownloadOptions, MediaError,
+};
 pub use memory::{build_memory_section, resolve_memory_settings, MemorySettings, MAX_MEMORY_INJECT_BYTES};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
 pub use skill::{load_skills_from_dirs, Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};

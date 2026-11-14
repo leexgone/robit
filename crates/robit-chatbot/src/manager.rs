@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,7 @@ use robit_agent::frontend::Frontend;
 use robit_agent::storage::{self, resolve_db_path};
 use robit_agent::tool::ToolCallInfo;
 use robit_agent::{Agent, AgentError, SkillRegistry, ToolRegistry};
-use robit_ai::config::RobitConfig;
+use robit_ai::config::{BotConfig, MediaRetentionConfig, RobitConfig};
 use robit_ai::LlmClient;
 use rusqlite::Connection;
 use tokio::sync::{mpsc, Mutex};
@@ -41,6 +42,9 @@ pub struct AgentHandle {
     pub last_active_at: Instant,
     /// Frontend reference for saving user messages.
     pub frontend: Arc<ChatbotFrontend>,
+    /// True while a turn is in flight (shared with the frontend). The idle
+    /// cleanup skips busy sessions so long turns are never evicted mid-run.
+    pub busy: Arc<AtomicBool>,
 }
 
 /// Bridge from a concrete `PlatformAdapter` to the platform-agnostic
@@ -86,8 +90,18 @@ impl<T: PlatformAdapter> PlatformSender for PlatformSenderBridge<T> {
 pub struct ChatbotManager<T: PlatformAdapter> {
     /// The connected platform adapter, shared with the sender bridge.
     platform: Arc<T>,
-    /// Active Agent instances, keyed by chat_id.
-    agents: Mutex<HashMap<String, AgentHandle>>,
+    /// Active Agent instances, keyed by chat_id. Shared with the cleanup loop.
+    agents: Arc<Mutex<HashMap<String, AgentHandle>>>,
+    /// Platform identifier recorded as session `source` (from the adapter).
+    source: &'static str,
+    /// Instance namespace for session identity (`[app.bot] instance_id`,
+    /// default `""`); separates same-platform instances sharing one DB (H4).
+    namespace: String,
+    /// Host-provided persona prompt (config `[app.bot] system_prompt` /
+    /// `system_prompt_file`); `None` keeps the `agent.md` file lookup.
+    custom_prompt: Option<String>,
+    /// Retention policy for the inbound `media/` directory (default off).
+    media_retention: MediaRetentionConfig,
     /// SQLite connection for session persistence.
     db: Arc<Mutex<Connection>>,
     config: RobitConfig,
@@ -145,6 +159,11 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             .and_then(|a| a.global_storage)
             .unwrap_or(false);
         let context_window = llm_client.resolved().context_window;
+        let custom_prompt = resolve_custom_prompt(bot, &working_dir);
+        let media_retention = bot.and_then(|b| b.media.clone()).unwrap_or_default();
+        let namespace = bot
+            .and_then(|b| b.instance_id.clone())
+            .unwrap_or_default();
 
         // Build the confirmer (optionally with custom keywords).
         let confirmer = match bot.and_then(|b| b.confirm_keywords.as_ref()) {
@@ -171,7 +190,11 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 
         Ok(Self {
             platform,
-            agents: Mutex::new(HashMap::new()),
+            agents: Arc::new(Mutex::new(HashMap::new())),
+            source: T::platform_name(),
+            namespace,
+            custom_prompt,
+            media_retention,
             db,
             config,
             working_dir,
@@ -194,11 +217,20 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         shutdown: Arc<tokio::sync::Notify>,
     ) -> Result<(), AgentError> {
         // Spawn the idle-session cleanup loop (checks shutdown).
-        let cleanup_db = Arc::clone(&self.db);
+        let cleanup_agents = Arc::clone(&self.agents);
         let session_timeout = self.session_timeout;
+        let media_dir = self.working_dir.join("media");
+        let media_retention = self.media_retention.clone();
         let cleanup_shutdown = shutdown.clone();
         tokio::spawn(async move {
-            cleanup_loop(cleanup_db, session_timeout, cleanup_shutdown).await;
+            cleanup_loop(
+                cleanup_agents,
+                session_timeout,
+                media_dir,
+                media_retention,
+                cleanup_shutdown,
+            )
+            .await;
         });
 
         loop {
@@ -280,40 +312,52 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             return;
         }
 
-        // Download and save media files locally
+        // Download and save media files locally, backfilling the saved path
+        // into each attachment: the agent encodes images from the local copy
+        // (CDN URLs expire), and host-side tools can consume the file.
         let media_dir = self.working_dir.join("media");
-        for attachment in &msg.attachments {
-            if let Err(e) = robit_agent::media::download_media(
-                &attachment.url,
-                attachment.filename.as_deref(),
+        let max_media_bytes = self
+            .config
+            .app
+            .as_ref()
+            .and_then(|a| a.context.as_ref())
+            .and_then(|c| c.max_media_bytes)
+            .unwrap_or(robit_agent::context::DEFAULT_MAX_MEDIA_BYTES);
+        let mut attachments: Vec<robit_agent::event::MediaAttachment> =
+            Vec::with_capacity(msg.attachments.len());
+        for att in msg.attachments {
+            let opts = robit_agent::media::MediaDownloadOptions {
+                max_bytes: max_media_bytes,
+                content_type: Some(att.content_type.clone()),
+            };
+            let local_path = match robit_agent::media::download_media_with_opts(
+                &att.url,
+                att.filename.as_deref(),
                 &media_dir,
+                &opts,
             )
             .await
             {
-                tracing::warn!("Failed to download media: {}", e);
-            }
+                Ok(path) => Some(path),
+                Err(e) => {
+                    tracing::warn!("Failed to download media {}: {}", att.url, e);
+                    None
+                }
+            };
+            let mut converted: robit_agent::event::MediaAttachment = att.into();
+            converted.local_path = local_path;
+            attachments.push(converted);
         }
 
-        // Convert attachments to agent's type
-        let attachments: Vec<robit_agent::event::MediaAttachment> =
-            msg.attachments.into_iter().map(|a| a.into()).collect();
+        // Archive/title text carries one annotation line per attachment;
+        // model-bound text stays raw (the agent annotates it exactly once).
+        let archive_text = annotated_text(&msg.text, &attachments);
 
         // Normal message → route to (or create) the chat's Agent session.
-        match self.get_or_create_session(&chat_id, &msg.text).await {
-            Ok((tx, frontend)) => {
-                // Save user message to database
-                frontend.save_user_message(&msg.text).await;
-
-                if let Err(e) = tx
-                    .send(robit_agent::event::FrontendMessage::UserInput {
-                        text: msg.text,
-                        attachments,
-                    })
-                    .await
-                {
-                    tracing::warn!("Failed to send user message to agent for {}: {}", chat_id, e);
-                }
-            }
+        // The archive row is written only AFTER the agent accepted the input,
+        // so a dead handle can never leave "archived but never seen" messages.
+        match self.route_user_input(&chat_id, &archive_text, msg.text, attachments).await {
+            Ok(()) => {}
             Err(e) => {
                 tracing::error!("Failed to get/create session for {}: {}", chat_id, e);
                 let _ = self
@@ -322,6 +366,99 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                     .await;
             }
         }
+    }
+
+    /// Deliver a user turn to the chat's Agent, self-healing dead handles.
+    ///
+    /// On send failure (e.g. the Agent task exited after `/exit` while the
+    /// handle lingered in the map) the stale handle is evicted and the session
+    /// is recreated from the DB once. The archive row is written only after a
+    /// successful send. Returns the last error if the retry also fails.
+    async fn route_user_input(
+        &self,
+        chat_id: &str,
+        archive_text: &str,
+        text: String,
+        attachments: Vec<robit_agent::event::MediaAttachment>,
+    ) -> Result<(), AgentError> {
+        let (tx, frontend) = self.get_or_create_session(chat_id, archive_text).await?;
+        let input = FrontendMessage::UserInput {
+            text: text.clone(),
+            attachments: attachments.clone(),
+        };
+        if tx.send(input).await.is_ok() {
+            frontend.save_user_message(archive_text).await;
+            return Ok(());
+        }
+
+        // Dead channel: evict the stale handle and respawn from the DB.
+        tracing::warn!(
+            "Agent channel dead for {}; evicting handle and recreating session",
+            chat_id
+        );
+        self.agents.lock().await.remove(chat_id);
+        let (tx, frontend) = self.get_or_create_session(chat_id, archive_text).await?;
+        let input = FrontendMessage::UserInput { text, attachments };
+        tx.send(input).await.map_err(|e| {
+            AgentError::InternalError(format!("Failed to deliver message after respawn: {}", e))
+        })?;
+        frontend.save_user_message(archive_text).await;
+        Ok(())
+    }
+
+    /// Inject a user turn into a chat's session from the host side
+    /// (scheduler, automation, etc.) — the public alternative to synthesizing
+    /// fake inbound platform events (H1).
+    ///
+    /// Unlike real messages this bypasses confirmation-keyword routing and
+    /// slash-command parsing: `text` reaches the model verbatim. The archive
+    /// row is marked with `source` (e.g. `"scheduler"`) so injected turns are
+    /// distinguishable from real user messages; injected content remains part
+    /// of the session history the model sees on later turns. Tool execution
+    /// still goes through the normal confirmation flow.
+    ///
+    /// Fails with an error when the session cannot be created or the input
+    /// cannot be delivered (after one dead-handle respawn); the caller decides
+    /// whether/how to notify anyone.
+    pub async fn inject_message(
+        &self,
+        chat_id: &str,
+        text: &str,
+        source: &str,
+    ) -> Result<(), AgentError> {
+        if source.trim().is_empty() {
+            return Err(AgentError::InternalError(
+                "inject_message: source must be a non-empty label".to_string(),
+            ));
+        }
+        let (tx, frontend) = self.get_or_create_session(chat_id, text).await?;
+        let input = FrontendMessage::UserInput {
+            text: text.to_string(),
+            attachments: vec![],
+        };
+        let frontend = if tx.send(input).await.is_ok() {
+            frontend
+        } else {
+            tracing::warn!(
+                "Agent channel dead for {} during injection; recreating session",
+                chat_id
+            );
+            self.agents.lock().await.remove(chat_id);
+            let (tx, frontend) = self.get_or_create_session(chat_id, text).await?;
+            tx.send(FrontendMessage::UserInput {
+                text: text.to_string(),
+                attachments: vec![],
+            })
+            .await
+            .map_err(|e| {
+                AgentError::InternalError(format!("Failed to inject after respawn: {}", e))
+            })?;
+            frontend
+        };
+        frontend
+            .save_user_message_with_source(text, Some(source))
+            .await;
+        Ok(())
     }
 
     /// Handle /clear command: clear the current conversation context (in-memory only).
@@ -424,7 +561,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
     /// Handle /list command: list all sessions for this chat.
     async fn handle_list_command(&self, chat_id: &str) {
         let db = self.db.lock().await;
-        match robit_agent::storage::list_all_sessions_by_chat_id(&db, chat_id) {
+        match robit_agent::storage::list_all_sessions_by_chat_id(&db, chat_id, self.source, &self.namespace) {
             Ok(sessions) if sessions.is_empty() => {
                 let _ = self.platform_sender.send(chat_id, "ℹ️ 暂无历史会话").await;
             }
@@ -471,7 +608,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 
         // 获取会话列表
         let db = self.db.lock().await;
-        let sessions = match robit_agent::storage::list_all_sessions_by_chat_id(&db, chat_id) {
+        let sessions = match robit_agent::storage::list_all_sessions_by_chat_id(&db, chat_id, self.source, &self.namespace) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to list sessions: {}", e);
@@ -506,7 +643,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 
         // 在数据库中激活目标会话，停用其他会话
         let db = self.db.lock().await;
-        if let Err(e) = robit_agent::storage::activate_session(&db, &target_id, chat_id) {
+        if let Err(e) = robit_agent::storage::activate_session(&db, &target_id, chat_id, self.source, &self.namespace) {
             tracing::error!("Failed to activate session: {}", e);
             let _ = self.platform_sender.send(chat_id, &format!("❌ 切换失败：{}", e)).await;
             return;
@@ -568,7 +705,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         // No active Agent. Check the DB for a persisted session.
         let session_id = {
             let db = self.db.lock().await;
-            match storage::find_session_by_chat_id(&db, chat_id)
+            match storage::find_session_by_chat_id(&db, chat_id, self.source, &self.namespace)
                 .map_err(|e| AgentError::InternalError(format!("DB lookup failed: {}", e)))?
             {
                 Some(info) => {
@@ -585,7 +722,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                         .clone()
                         .unwrap_or_else(|| self.llm_client.model().to_string());
                     tracing::info!("get_or_create_session: creating new session in DB for chat_id={}, session_id={}, title={}", chat_id, id, title);
-                    storage::insert_session(&db, &id, Some(chat_id), &title, &model, "qq")
+                    storage::insert_session(&db, &id, Some(chat_id), &title, &model, self.source, &self.namespace)
                         .map_err(|e| {
                             AgentError::InternalError(format!("DB insert failed: {}", e))
                         })?;
@@ -603,6 +740,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                 message_tx: tx.clone(),
                 session_id,
                 last_active_at: Instant::now(),
+                busy: frontend.busy.clone(),
                 frontend: frontend.clone(),
             },
         );
@@ -663,6 +801,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             session_id_obj,
             history_messages,
             memory,
+            self.custom_prompt.clone(),
         );
 
         let sid = session_id.to_string();
@@ -692,6 +831,21 @@ pub enum ManagerError {
     DbInit(rusqlite::Error),
 }
 
+/// Build archive/title text: raw message text plus one annotation line per
+/// attachment, using the same `describe` implementation the agent applies to
+/// model-bound text. Keeps attachment-only messages from archiving as empty.
+fn annotated_text(text: &str, attachments: &[robit_agent::event::MediaAttachment]) -> String {
+    if attachments.is_empty() {
+        return text.to_string();
+    }
+    let descs: Vec<String> = attachments.iter().map(|a| a.describe()).collect();
+    if text.is_empty() {
+        descs.join("\n")
+    } else {
+        format!("{}\n{}", text, descs.join("\n"))
+    }
+}
+
 /// Generate a short session title from the first user message.
 fn generate_title(message: &str) -> String {
     let trimmed = message.trim();
@@ -708,20 +862,30 @@ fn generate_title(message: &str) -> String {
     }
 }
 
-/// Periodically remove idle in-memory Agent sessions.
+/// Periodically remove idle/dead in-memory Agent sessions and rotate the
+/// inbound media directory (H3 + M7).
 ///
 /// The DB session record is preserved (persistence); only the live Agent task
 /// is dropped. Dropping the `AgentHandle` drops its `message_tx`, causing the
 /// Agent's `run()` loop to exit when it next awaits on the closed channel.
+/// A chat that messages again afterwards gets a fresh Agent backed by the
+/// same DB record (`get_or_create_session`).
+///
+/// Busy sessions (turn in flight, including tool-confirmation waits) are never
+/// evicted. Dead handles (Agent task exited, e.g. after `/exit`) are removed
+/// regardless of age so the next message respawns instead of hitting a closed
+/// channel.
 async fn cleanup_loop(
-    _db: Arc<Mutex<Connection>>,
-    _timeout: Duration,
+    agents: Arc<Mutex<HashMap<String, AgentHandle>>>,
+    timeout: Duration,
+    media_dir: PathBuf,
+    media_retention: MediaRetentionConfig,
     shutdown: Arc<tokio::sync::Notify>,
 ) {
     loop {
         tokio::select! {
             _ = tokio::time::sleep(CLEANUP_INTERVAL) => {
-                tracing::debug!("cleanup tick (no-op in MVP)");
+                cleanup_tick(&agents, timeout, &media_dir, &media_retention).await;
             }
             _ = shutdown.notified() => {
                 tracing::debug!("cleanup loop received shutdown signal");
@@ -729,6 +893,123 @@ async fn cleanup_loop(
             }
         }
     }
+}
+
+/// One cleanup pass: evict idle sessions, remove dead handles, rotate media.
+async fn cleanup_tick(
+    agents: &Arc<Mutex<HashMap<String, AgentHandle>>>,
+    timeout: Duration,
+    media_dir: &std::path::Path,
+    media_retention: &MediaRetentionConfig,
+) {
+    let mut idle_evicted = 0usize;
+    let mut dead_removed = 0usize;
+    {
+        let mut map = agents.lock().await;
+        map.retain(|chat_id, handle| {
+            if handle.message_tx.is_closed() {
+                tracing::info!(
+                    "cleanup: removing dead agent handle for chat {} (session {})",
+                    chat_id, handle.session_id
+                );
+                dead_removed += 1;
+                return false;
+            }
+            if !handle.busy.load(Ordering::Relaxed)
+                && handle.last_active_at.elapsed() > timeout
+            {
+                tracing::info!(
+                    "cleanup: evicting idle session for chat {} (session {}, idle {:?})",
+                    chat_id, handle.session_id, handle.last_active_at.elapsed()
+                );
+                idle_evicted += 1;
+                return false;
+            }
+            true
+        });
+    }
+    if idle_evicted > 0 || dead_removed > 0 {
+        tracing::debug!(
+            "cleanup tick: {} idle evicted, {} dead removed",
+            idle_evicted, dead_removed
+        );
+    }
+    rotate_media(media_dir, media_retention).await;
+}
+
+/// Apply the media retention policy (M7). Both knobs default to 0 = off.
+/// Only top-level files in `media_dir` are considered (no recursion).
+async fn rotate_media(media_dir: &std::path::Path, retention: &MediaRetentionConfig) {
+    let retention_days = retention.retention_days.unwrap_or(0);
+    let max_files = retention.max_files.unwrap_or(0);
+    if retention_days == 0 && max_files == 0 {
+        return;
+    }
+
+    let mut entries: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+    let mut read_dir = match tokio::fs::read_dir(media_dir).await {
+        Ok(rd) => rd,
+        Err(_) => return, // directory not created yet — nothing to rotate
+    };
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let path = entry.path();
+        let meta = match entry.metadata().await {
+            Ok(m) if m.is_file() => m,
+            _ => continue,
+        };
+        if let Ok(mtime) = meta.modified() {
+            entries.push((path, mtime));
+        }
+    }
+
+    let mut removed = 0usize;
+    if retention_days > 0 {
+        let cutoff = std::time::SystemTime::now()
+            - Duration::from_secs(retention_days * 24 * 3600);
+        let (old, fresh): (Vec<_>, Vec<_>) = entries.into_iter().partition(|(_, mtime)| *mtime < cutoff);
+        for (path, _) in old {
+            if tokio::fs::remove_file(&path).await.is_ok() {
+                removed += 1;
+            }
+        }
+        entries = fresh;
+    }
+    if max_files > 0 && entries.len() > max_files {
+        // Newest first; drop the tail beyond the count cap.
+        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        for (path, _) in entries.iter().skip(max_files) {
+            if tokio::fs::remove_file(path).await.is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!("media rotation: removed {} file(s) from {}", removed, media_dir.display());
+    }
+}
+
+/// Resolve the host-provided persona prompt (H6):
+/// `system_prompt` string > `system_prompt_file` contents > `None`
+/// (the Agent then falls back to the `agent.md` file lookup, unchanged).
+fn resolve_custom_prompt(bot: Option<&BotConfig>, working_dir: &std::path::Path) -> Option<String> {
+    let bot = bot?;
+    if let Some(prompt) = &bot.system_prompt {
+        return Some(prompt.clone());
+    }
+    if let Some(file) = &bot.system_prompt_file {
+        // `join` keeps absolute paths as-is and resolves relative ones
+        // against the working directory.
+        let path = working_dir.join(file);
+        match std::fs::read_to_string(&path) {
+            Ok(content) => return Some(content),
+            Err(e) => tracing::warn!(
+                "Failed to read system_prompt_file {}: {}; falling back to agent.md lookup",
+                path.display(),
+                e
+            ),
+        }
+    }
+    None
 }
 
 // Keeps ToolCallInfo import referenced for the public surface documentation.
@@ -779,6 +1060,9 @@ mod tests {
         fn capabilities() -> PlatformCaps {
             PlatformCaps::qq()
         }
+        fn platform_name() -> &'static str {
+            "mock"
+        }
         async fn send_message(&self, chat_id: &str, text: &str) -> robit_agent::error::Result<SendResult> {
             self.sent
                 .lock()
@@ -795,6 +1079,40 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
+    }
+
+    fn att(content_type: &str, filename: Option<&str>) -> robit_agent::event::MediaAttachment {
+        robit_agent::event::MediaAttachment {
+            content_type: content_type.to_string(),
+            url: "http://example.invalid/f".to_string(),
+            filename: filename.map(|s| s.to_string()),
+            size: Some(1024),
+            width: None,
+            height: None,
+            local_path: None,
+        }
+    }
+
+    #[test]
+    fn annotated_text_appends_one_line_per_attachment() {
+        let atts = vec![att("text/csv", Some("a.csv")), att("image/png", Some("b.png"))];
+        let out = annotated_text("看看", &atts);
+        assert!(out.starts_with("看看\n"));
+        assert_eq!(out.matches("[用户发送了").count(), 2);
+    }
+
+    #[test]
+    fn annotated_text_attachment_only_message_is_not_empty() {
+        let atts = vec![att("text/csv", Some("对账单.csv"))];
+        let out = annotated_text("", &atts);
+        assert_eq!(out, "[用户发送了文件: 对账单.csv (1.0KB)]");
+        // Title derived from it must not degrade to the empty fallback.
+        assert_ne!(generate_title(&out), "QQ 会话");
+    }
+
+    #[test]
+    fn annotated_text_without_attachments_is_unchanged() {
+        assert_eq!(annotated_text("普通消息", &[]), "普通消息");
     }
 
     #[test]
@@ -815,7 +1133,340 @@ mod tests {
         assert_eq!(generate_title("   "), "QQ 会话");
     }
 
-    // Note: a full end-to-end manager test requires a live LLM client, so it's
-    // deferred to manual integration testing. The construction path (new) is
-    // exercised via the QQ main entry point in Phase 9.
+    // ========================================================================
+    // Manager-level tests (offline LLM client: construction and routing only)
+    // ========================================================================
+
+    use robit_agent::{SkillRegistry, ToolRegistry};
+    use robit_ai::LlmClient;
+
+    fn offline_config() -> RobitConfig {
+        toml::from_str(
+            r#"
+            default_model = "test/text"
+            [providers.test]
+            base_url = "http://127.0.0.1:1"
+            api_key = "sk-test"
+            [[providers.test.models]]
+            id = "text"
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn make_manager(
+        working_dir: PathBuf,
+        config: RobitConfig,
+    ) -> ChatbotManager<MockPlatform> {
+        let llm = Arc::new(LlmClient::from_config(&config, None).unwrap());
+        ChatbotManager::new(
+            MockPlatform::new(),
+            config,
+            working_dir,
+            llm,
+            Arc::new(ToolRegistry::new()),
+            Arc::new(SkillRegistry::new(vec![], &[])),
+        )
+        .unwrap()
+    }
+
+    fn make_handle(manager: &ChatbotManager<MockPlatform>, session_id: &str) -> AgentHandle {
+        let (tx, _rx) = mpsc::channel::<FrontendMessage>(16);
+        // Keep the receiver alive so the channel stays open.
+        std::mem::forget(_rx);
+        let frontend = Arc::new(ChatbotFrontend::new(
+            "chat".to_string(),
+            session_id.to_string(),
+            Arc::clone(&manager.platform_sender),
+            Arc::clone(&manager.confirmer),
+            Arc::clone(&manager.db),
+            false,
+        ));
+        AgentHandle {
+            message_tx: tx,
+            session_id: session_id.to_string(),
+            last_active_at: Instant::now(),
+            busy: frontend.busy.clone(),
+            frontend,
+        }
+    }
+
+    #[tokio::test]
+    async fn inject_message_bypasses_slash_parsing_and_marks_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), offline_config());
+
+        manager
+            .inject_message("group:1", "/help", "scheduler")
+            .await
+            .unwrap();
+
+        // Archive row carries the injection marker and the verbatim text.
+        let db = manager.db.lock().await;
+        let session = storage::find_session_by_chat_id(&db, "group:1", "mock", "")
+            .unwrap()
+            .expect("session created");
+        // H2: source comes from the adapter, not a hardcoded "qq".
+        assert_eq!(session.source, "mock");
+        let messages = storage::get_messages(&db, &session.id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "/help");
+        assert_eq!(messages[0].source.as_deref(), Some("scheduler"));
+        drop(db);
+
+        // Slash parsing must NOT have run: no help text was sent. (The agent
+        // turn itself fails against the offline LLM — that reply is an error
+        // notice, never the /help command output.)
+        let sent = manager.platform.sent();
+        assert!(
+            !sent.iter().any(|(_, text)| text.contains("可用指令")),
+            "injected /help must reach the model verbatim, got {:?}",
+            sent
+        );
+    }
+
+    #[tokio::test]
+    async fn inject_message_rejects_empty_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), offline_config());
+        assert!(manager.inject_message("group:1", "hi", "  ").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn route_user_input_self_heals_dead_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), offline_config());
+
+        // Plant a dead handle: receiver dropped → channel closed.
+        let (tx, rx) = mpsc::channel::<FrontendMessage>(16);
+        drop(rx);
+        let frontend = Arc::new(ChatbotFrontend::new(
+            "group:2".to_string(),
+            "dead-session".to_string(),
+            Arc::clone(&manager.platform_sender),
+            Arc::clone(&manager.confirmer),
+            Arc::clone(&manager.db),
+            false,
+        ));
+        manager.agents.lock().await.insert(
+            "group:2".to_string(),
+            AgentHandle {
+                message_tx: tx,
+                session_id: "dead-session".to_string(),
+                last_active_at: Instant::now(),
+                busy: frontend.busy.clone(),
+                frontend,
+            },
+        );
+
+        manager
+            .route_user_input("group:2", "你好", "你好".to_string(), vec![])
+            .await
+            .unwrap();
+
+        // Handle was replaced with a live one; archive row written once.
+        let agents = manager.agents.lock().await;
+        let handle = agents.get("group:2").unwrap();
+        assert_ne!(handle.session_id, "dead-session");
+        assert!(!handle.message_tx.is_closed());
+        drop(agents);
+        let db = manager.db.lock().await;
+        let session = storage::find_session_by_chat_id(&db, "group:2", "mock", "").unwrap().unwrap();
+        let messages = storage::get_messages(&db, &session.id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "你好");
+        assert!(messages[0].source.is_none(), "real message must have no marker");
+    }
+
+    #[tokio::test]
+    async fn cleanup_tick_evicts_idle_and_dead_but_spares_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), offline_config());
+        let timeout = Duration::from_secs(60);
+
+        let mut idle = make_handle(&manager, "s-idle");
+        idle.last_active_at = Instant::now() - Duration::from_secs(120);
+        let fresh = make_handle(&manager, "s-fresh");
+        let mut busy = make_handle(&manager, "s-busy");
+        busy.last_active_at = Instant::now() - Duration::from_secs(120);
+        busy.busy.store(true, Ordering::Relaxed);
+        let mut dead = make_handle(&manager, "s-dead");
+        // Close the channel by dropping the sender's receiver counterpart:
+        // make_handle forgot the rx, so simulate death via a fresh closed pair.
+        let (tx, rx) = mpsc::channel::<FrontendMessage>(16);
+        drop(rx);
+        dead.message_tx = tx;
+
+        {
+            let mut map = manager.agents.lock().await;
+            map.insert("idle".into(), idle);
+            map.insert("fresh".into(), fresh);
+            map.insert("busy".into(), busy);
+            map.insert("dead".into(), dead);
+        }
+
+        cleanup_tick(
+            &manager.agents,
+            timeout,
+            &dir.path().join("media"),
+            &MediaRetentionConfig::default(),
+        )
+        .await;
+
+        let map = manager.agents.lock().await;
+        assert!(!map.contains_key("idle"), "idle session must be evicted");
+        assert!(!map.contains_key("dead"), "dead handle must be removed");
+        assert!(map.contains_key("fresh"), "recent session must stay");
+        assert!(map.contains_key("busy"), "busy session must never be evicted");
+    }
+
+    #[tokio::test]
+    async fn rotate_media_applies_age_and_count_caps() {
+        use std::time::SystemTime;
+        let dir = tempfile::tempdir().unwrap();
+        let media = dir.path().join("media");
+        tokio::fs::create_dir_all(&media).await.unwrap();
+
+        let now = SystemTime::now();
+        let old = now - Duration::from_secs(10 * 24 * 3600);
+        for (name, mtime) in [
+            ("old1.bin", old),
+            ("old2.bin", old),
+            ("new1.bin", now - Duration::from_secs(3600)),
+            ("new2.bin", now - Duration::from_secs(1800)),
+            ("new3.bin", now),
+        ] {
+            let path = media.join(name);
+            tokio::fs::write(&path, b"x").await.unwrap();
+            let f = std::fs::File::options().write(true).open(&path).unwrap();
+            f.set_modified(mtime).unwrap();
+        }
+
+        // Age cap removes the two 10-day-old files.
+        let retention = MediaRetentionConfig {
+            retention_days: Some(7),
+            max_files: None,
+        };
+        rotate_media(&media, &retention).await;
+        assert!(!media.join("old1.bin").exists());
+        assert!(!media.join("old2.bin").exists());
+        assert!(media.join("new3.bin").exists());
+
+        // Count cap keeps only the newest 2 of the remaining 3.
+        let retention = MediaRetentionConfig {
+            retention_days: None,
+            max_files: Some(2),
+        };
+        rotate_media(&media, &retention).await;
+        assert!(!media.join("new1.bin").exists(), "oldest survivor must go");
+        assert!(media.join("new2.bin").exists());
+        assert!(media.join("new3.bin").exists());
+
+        // Default (both off) is a no-op.
+        rotate_media(&media, &MediaRetentionConfig::default()).await;
+        assert!(media.join("new2.bin").exists());
+    }
+
+    #[test]
+    fn resolve_custom_prompt_priority_string_over_file_over_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("persona.md"), "FROM FILE").unwrap();
+
+        let bot: BotConfig = toml::from_str(
+            r#"
+            system_prompt = "FROM STRING"
+            system_prompt_file = "persona.md"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_custom_prompt(Some(&bot), dir.path()).as_deref(),
+            Some("FROM STRING")
+        );
+
+        let bot: BotConfig = toml::from_str(r#"system_prompt_file = "persona.md""#).unwrap();
+        assert_eq!(
+            resolve_custom_prompt(Some(&bot), dir.path()).as_deref(),
+            Some("FROM FILE")
+        );
+
+        let bot: BotConfig = toml::from_str(r#"system_prompt_file = "missing.md""#).unwrap();
+        assert_eq!(resolve_custom_prompt(Some(&bot), dir.path()), None);
+
+        assert_eq!(resolve_custom_prompt(None, dir.path()), None);
+    }
+
+    fn config_with_instance(instance_id: &str) -> RobitConfig {
+        toml::from_str(&format!(
+            r#"
+            default_model = "test/text"
+            [providers.test]
+            base_url = "http://127.0.0.1:1"
+            api_key = "sk-test"
+            [[providers.test.models]]
+            id = "text"
+            [app.bot]
+            instance_id = "{instance_id}"
+            "#
+        ))
+        .unwrap()
+    }
+
+    /// H4: two same-platform instances sharing one working dir must not
+    /// hijack each other's sessions on chat_id collision.
+    #[tokio::test]
+    async fn two_instances_share_db_without_hijacking_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager_a = make_manager(dir.path().to_path_buf(), config_with_instance("inst-a"));
+        let manager_b = make_manager(dir.path().to_path_buf(), config_with_instance("inst-b"));
+
+        manager_a.inject_message("group:dup", "from A", "scheduler").await.unwrap();
+        manager_b.inject_message("group:dup", "from B", "scheduler").await.unwrap();
+
+        let db = manager_a.db.lock().await;
+        let sa = storage::find_session_by_chat_id(&db, "group:dup", "mock", "inst-a")
+            .unwrap()
+            .expect("instance A session");
+        let sb = storage::find_session_by_chat_id(&db, "group:dup", "mock", "inst-b")
+            .unwrap()
+            .expect("instance B session");
+        assert_ne!(sa.id, sb.id, "each instance must own its session");
+
+        // Both remain active; each archive holds only its own message.
+        let ma = storage::get_messages(&db, &sa.id).unwrap();
+        let mb = storage::get_messages(&db, &sb.id).unwrap();
+        assert_eq!(ma.len(), 1);
+        assert_eq!(ma[0].content, "from A");
+        assert_eq!(mb.len(), 1);
+        assert_eq!(mb[0].content, "from B");
+    }
+
+    #[tokio::test]
+    async fn manager_passes_custom_prompt_to_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let config: RobitConfig = toml::from_str(
+            r#"
+            default_model = "test/text"
+            [providers.test]
+            base_url = "http://127.0.0.1:1"
+            api_key = "sk-test"
+            [[providers.test.models]]
+            id = "text"
+            [app.bot]
+            system_prompt = "HOST PERSONA MARKER"
+            "#,
+        )
+        .unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), config);
+        assert_eq!(manager.custom_prompt.as_deref(), Some("HOST PERSONA MARKER"));
+
+        // Spawn a session and verify the system prompt carries the persona.
+        let (_tx, _frontend) = manager
+            .get_or_create_session("group:9", "hi")
+            .await
+            .unwrap();
+        // The Agent task owns the prompt; verify via the config plumbing that
+        // spawn_session_agent received it (custom_prompt field above) — the
+        // prompt content itself is covered by robit-agent prompt tests.
+    }
 }

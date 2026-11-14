@@ -8,6 +8,31 @@
 
 ## [Unreleased]
 
+来自子木 StockAgent 第四轮消费反馈（R10 附件批 M1–M7 + R8 宿主形态六件套 H1–H6）。评审与实现方案见 `docs/robit-plan-qq-media-and-host-feedback.md`，移交件见 `docs/robit-rfc-qq-media-and-host-feedback.md`。
+
+### Added
+
+- **robit-agent / robit-chatbot / 附件本地路径回填（M1）**：`MediaAttachment`（agent 与 chatbot 两形状 + `From` 转换）新增 `local_path: Option<PathBuf>`。Bot manager 落盘成功后把保存路径回填进附件，Agent 与宿主领域工具从此可消费附件内容（此前 `download_media` 返回值被丢弃，非图片文件对模型只有一行描述）。
+- **robit-agent / 本地优先编码（M2）**：多模态消息构建改为三级兜底——`local_path` 本地编码（新增 `encode_file_base64_with_mime`，优先用平台 `content_type` 而非扩展名推 MIME）→ url 下载编码 → 描述行降级。QQ CDN url 过期/断网时只要本地副本在盘仍可识图；同一 url 不再无条件二次下载。
+- **robit-agent / 下载守卫（M6）**：`[app.context] max_media_bytes`（缺省 20MB，0 = 不限）统一约束落盘下载与 vision url 兜底两条路径——Content-Length 预检 + 流式累加，超限即拒（新错误 `MediaError::TooLarge`），不落盘、内存峰值不超上限。新增 `download_media_with_opts` / `MediaDownloadOptions`；`download_media` 保留为缺省守卫的便捷封装（`generate_image` 落盘同受保护）。
+- **robit-chatbot / 宿主注入 API（H1）**：`ChatbotManager::inject_message(chat_id, text, source)`——按 chat_id 向活跃会话投递回合并留档，不过 Confirmer 关键词路由、不过斜杠命令解析（注入 `"/help"` 即字面文本进模型）；档案行以 `messages.source` 列标记来源（如 `"scheduler"`），与真实用户消息可区分；注入内容正常参与后续会话历史。死句柄自动重建重试一次，失败返回错误由宿主处置。schema v6：`messages` 加可空 `source` 列（旧行 NULL = 真实消息）。
+- **robit-chatbot / 人格提示词注入（H6）**：`[app.bot] system_prompt`（字符串）/ `system_prompt_file`（路径，相对 working_dir 或绝对）——优先级 字符串 > 文件 > 既有 `agent.md` 查找。`PromptBuilder::with_custom_prompt` 与 `Agent::new`/`with_history` 新增 `custom_prompt: Option<String>` 参数；不注入时系统提示词与旧版逐字节一致。宿主人格资产不必再挤进 `<working_dir>/.robit/prompts/`。
+- **robit-chatbot / media 保留策略（M7）**：`[app.bot.media] retention_days` / `max_files`（缺省均 0 = 关闭，维持现行为），由 cleanup 循环按 mtime 执行超龄删除与数量裁剪，长跑服务 media 目录有界。
+- **robit-ai / 会话实例命名空间（H4）**：`[app.bot] instance_id`（缺省 `""`）。schema v7：`sessions` 加 `namespace` 列，唯一索引重建为 `(chat_id, source, namespace)`；`find_session_by_chat_id` / `list_all_sessions_by_chat_id` / `activate_session` / `insert_session` 全部加 source/namespace 维度。同 working_dir 起两个平台或同平台两实例不再互相劫持会话，`/switch`、`/list` 不串台；单实例缺省行为不变。
+
+### Fixed
+
+- **robit-chatbot / 附件标注重复（M3）**：平台侧（robit-qq）不再把 describe 拼进消息文本，标注职责单一化——模型侧由 Agent 统一标注恰一份，档案/标题由 manager 用同一 `describe` 实现补标注（纯附件消息不再空档案、标题不退化）。删除 chatbot 侧重复的 describe 模板，缺省名统一为 `image`/`file`（原 agent 版 `unknown` 不再使用；无名附件的档案文本随之微变）。
+- **robit-agent / 落盘文件名消毒（M4+M5）**：`download_media` 落盘名取 `file_name()` 单分量、滤控制字符与 `/` `\` `:`，杜绝路径穿越；同名冲突追加 `-1`/`-2` 后缀不再静默覆盖；无名/无扩展名附件按 `content_type` 补扩展名（uuid 名不再丢失 MIME 推断）。
+- **robit-chatbot / cleanup 实装与死句柄自愈（H3）**：`cleanup_loop` 不再是 no-op——每 tick 剔除死句柄（`/exit` 后残留）、回收空闲会话（`session_timeout_minutes`，DB 记录保留可复活）；`AgentHandle` 与前端共享 `busy` 标志，长回合/确认等待中的会话绝不被误杀。用户消息发送失败时自动剔除死句柄并从 DB 重建会话重发一次，再失败给用户明确回执；`save_user_message` 移到发送成功之后，消除「档案里有、模型没看见」。
+- **robit-chatbot / 落库 source 参数化（H2）**：`PlatformAdapter` 新增 `platform_name()`，`insert_session` 不再硬编码 `"qq"`，第二平台接入时档案来源真实。
+- **robit-agent / memory 工具跟随 global_storage（H5）**：`ToolContext` 新增 `memory_dir`（Agent 构造时从 `MemorySettings.dir` 解析，已尊重 `global_storage`），memorize/recall/forget/list_memories 四处硬编码 `resolve_db_path(&ctx.working_dir, false)` 改为 `ctx.memory_dir.join("robit.db")`——宿主开全局存储时记忆工具与会话库同库；缺省路径逐字节不变。
+
+### Changed
+
+- **签名演进（仓内调用点已同步）**：`Agent::new`/`with_history` 末尾追加 `custom_prompt: Option<String>`；`insert_message` 追加 `source: Option<&str>`；`insert_session` 追加 `namespace: &str`；`find_session_by_chat_id`/`list_all_sessions_by_chat_id`/`activate_session` 追加 `source`/`namespace`；`download_and_encode_base64` 追加 `max_bytes`。经 `ChatbotManager`/`bootstrap` 接线的宿主不受影响；直接调用上述 API 的消费者按新参数适配（传 `None`/`""` 即旧行为）。
+- **schema 迁移**：v5 → v6（messages.source）→ v7（sessions.namespace + 索引重建），顺接既有迁移链，旧库自动升级；各配迁移测试。
+
 ## [0.1.29] - 2026-11-08
 
 ### Fixed

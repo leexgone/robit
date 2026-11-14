@@ -99,6 +99,7 @@ fn main() -> anyhow::Result<()> {
         auto_approve,
         std::collections::HashMap::new(),
         memory,
+        None,
     );
 
     let rt = tokio::runtime::Runtime::new()?;

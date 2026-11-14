@@ -216,6 +216,7 @@ max_summary_segments = 5               # 最多保留的摘要段数量（超过
 merge_count = 2                        # 每次合并的摘要段数量
 max_merges_per_segment = 2             # 单条摘要最多被合并次数，超过则丢弃
 max_image_dimension = 1024              # 图片进入上下文前的最大边长（像素），超过则等比缩放并重编码为 JPEG（默认 1024；0 禁用压缩，保持原始字节）
+max_media_bytes = 20971520              # 单次媒体下载上限（字节），附件落盘与 vision url 兜底编码共用（默认 20MB；0 不限）。Content-Length 预检 + 流式累加，超限拒收
 
 [app.retry]                            # 重试策略配置（可选，以下为默认值）
 max_retries = 3
@@ -231,6 +232,13 @@ app_secret = "${QQ_BOT_SECRET}"        # 支持 ${ENV_VAR} 替换
 auto_approve = false                   # 自动批准工具调用（覆盖 app.auto_approve）
 confirm_timeout_secs = 60              # 工具确认超时（秒）
 session_timeout_minutes = 30           # 空闲会话过期（分钟）
+instance_id = ""                       # 会话实例命名空间：同平台多实例共享同一 working_dir/库时各配不同值，避免 chat_id 撞名劫持会话（默认 "" 单实例）
+system_prompt = ""                     # 宿主人格提示词字符串（优先级最高，覆盖 system_prompt_file 与 agent.md 查找；不配置行为不变）
+system_prompt_file = ""                # 宿主人格提示词文件路径（相对 working_dir 或绝对），system_prompt 未配置时生效
+
+[app.bot.media]                        # 入站 media/ 目录保留策略（可选，缺省全 off 维持现行为）
+retention_days = 0                     # 按 mtime 删除超过 N 天的文件；0 = 不清理
+max_files = 0                          # 按 mtime 保留最新 N 个文件；0 = 不限
 
 [app.bot.confirm_keywords]             # 确认/取消关键词（可选）
 approve = ["确认", "同意", "yes", "y", "approve", "ok", "允许"]

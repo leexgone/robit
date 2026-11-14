@@ -281,6 +281,11 @@ pub struct ContextConfig {
     /// downscaled and re-encoded as JPEG to keep request bodies small.
     /// Default 1024; 0 disables compression (send original bytes).
     pub max_image_dimension: Option<u32>,
+    /// Maximum bytes for a single media download (attachment save-to-disk and
+    /// vision URL fallback encoding share this cap). Default 20MB; 0 disables
+    /// the limit. Downloads exceeding the cap are rejected before the body is
+    /// buffered (Content-Length pre-check + streaming accumulation).
+    pub max_media_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,6 +326,29 @@ pub struct BotConfig {
     pub session_timeout_minutes: Option<u64>,
     /// Custom confirm/reject keywords.
     pub confirm_keywords: Option<ConfirmKeywordsConfig>,
+    /// Host-provided persona prompt string (highest priority; overrides both
+    /// `system_prompt_file` and the `agent.md` file lookup).
+    pub system_prompt: Option<String>,
+    /// Path to a host-provided persona prompt file, relative to the working
+    /// directory or absolute. Used when `system_prompt` is not set.
+    pub system_prompt_file: Option<String>,
+    /// Retention policy for the inbound `media/` directory (default: off).
+    pub media: Option<MediaRetentionConfig>,
+    /// Instance namespace for session identity (H4). When several bot
+    /// instances of the SAME platform share one working dir / database, give
+    /// each a distinct `instance_id` so their chat sessions cannot hijack
+    /// each other. Default `""` (single instance, pre-existing behavior).
+    pub instance_id: Option<String>,
+}
+
+/// Retention policy for the bot's inbound `media/` directory (`[app.bot.media]`).
+/// Both knobs default to 0 = disabled, preserving the pre-existing behavior.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct MediaRetentionConfig {
+    /// Delete files older than N days (by mtime). 0 = no age-based cleanup.
+    pub retention_days: Option<u64>,
+    /// Keep at most N files (newest by mtime). 0 = no count-based cleanup.
+    pub max_files: Option<usize>,
 }
 
 /// Confirm/reject keyword lists for inline tool confirmation.
@@ -1462,6 +1490,57 @@ mod tests {
                 .and_then(|c| c.max_image_dimension),
             Some(2048)
         );
+    }
+
+    #[test]
+    fn test_parse_max_media_bytes() {
+        let toml_str = r#"
+            [providers.default]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.default.models]]
+            id = "deepseek-chat"
+
+            [app.context]
+            max_media_bytes = 1048576
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config
+                .app
+                .as_ref()
+                .and_then(|a| a.context.as_ref())
+                .and_then(|c| c.max_media_bytes),
+            Some(1048576)
+        );
+    }
+
+    #[test]
+    fn test_parse_bot_prompt_and_media_retention() {
+        let toml_str = r#"
+            [providers.default]
+            base_url = "https://api.deepseek.com"
+            api_key = "sk-test"
+
+            [[providers.default.models]]
+            id = "deepseek-chat"
+
+            [app.bot]
+            system_prompt = "persona string"
+            system_prompt_file = "prompts/agent.md"
+
+            [app.bot.media]
+            retention_days = 7
+            max_files = 100
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let bot = config.app.as_ref().unwrap().bot.as_ref().unwrap();
+        assert_eq!(bot.system_prompt.as_deref(), Some("persona string"));
+        assert_eq!(bot.system_prompt_file.as_deref(), Some("prompts/agent.md"));
+        let media = bot.media.as_ref().unwrap();
+        assert_eq!(media.retention_days, Some(7));
+        assert_eq!(media.max_files, Some(100));
     }
 
     #[test]

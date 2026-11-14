@@ -264,7 +264,13 @@ pub struct ContextManager {
     /// (default 1024). Larger images are downscaled and re-encoded as JPEG.
     /// 0 disables compression.
     pub max_image_dimension: u32,
+    /// Maximum bytes for a single media download (default 20MB; 0 = unlimited).
+    /// Shared by the attachment save-to-disk path and the vision URL fallback.
+    pub max_media_bytes: u64,
 }
+
+/// Default media download cap: 20MB.
+pub const DEFAULT_MAX_MEDIA_BYTES: u64 = 20 * 1024 * 1024;
 
 impl ContextManager {
     pub fn new(context_window: Option<u64>, config: Option<&ContextConfig>) -> Self {
@@ -286,6 +292,7 @@ impl ContextManager {
             merge_count,
             max_merges_per_segment,
             max_image_dimension,
+            max_media_bytes,
         ) = match config {
             Some(c) => (
                 c.max_output_lines.unwrap_or(500),
@@ -303,8 +310,9 @@ impl ContextManager {
                 c.merge_count.unwrap_or(2),
                 c.max_merges_per_segment.unwrap_or(2),
                 c.max_image_dimension.unwrap_or(1024),
+                c.max_media_bytes.unwrap_or(DEFAULT_MAX_MEDIA_BYTES),
             ),
-            None => (500, 51200, 0.2, 0.7, 3, 1.3, 5000, true, 30, true, 3, 5, 2, 2, 1024),
+            None => (500, 51200, 0.2, 0.7, 3, 1.3, 5000, true, 30, true, 3, 5, 2, 2, 1024, DEFAULT_MAX_MEDIA_BYTES),
         };
 
         Self {
@@ -324,6 +332,7 @@ impl ContextManager {
             merge_count,
             max_merges_per_segment,
             max_image_dimension,
+            max_media_bytes,
         }
     }
 
@@ -1079,6 +1088,7 @@ mod tests {
             merge_count: Some(2),
             max_merges_per_segment: Some(2),
             max_image_dimension: Some(1024),
+            max_media_bytes: Some(DEFAULT_MAX_MEDIA_BYTES),
         }
     }
 

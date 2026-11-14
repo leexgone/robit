@@ -26,6 +26,16 @@ impl PromptBuilder {
         Self::with_working_dir(None)
     }
 
+    /// Create PromptBuilder with an explicit host-provided agent prompt,
+    /// bypassing the `agent.md` file lookup entirely. Used by hosts that keep
+    /// persona assets outside `<working_dir>/.robit/prompts/` (H6). The
+    /// built-in system part (Skills/Environment/Memory) is still appended.
+    pub fn with_custom_prompt(prompt: String) -> Self {
+        Self {
+            custom_prompt: Some(prompt),
+        }
+    }
+
     /// Create PromptBuilder with a specific working directory to check for
     /// project-local custom prompt.
     /// Priority: {cwd}/.robit/prompts/agent.md > ~/.robit/prompts/agent.md
@@ -165,5 +175,30 @@ mod tests {
         let prompt = PromptBuilder::new().build_system_prompt(&[], tmp.path(), &settings);
         assert!(!prompt.contains("file-based memory mechanism"));
         assert!(prompt.contains("## Environment"));
+    }
+
+    #[test]
+    fn custom_prompt_overrides_agent_md_lookup_and_keeps_system_part() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prompts_dir = tmp.path().join(".robit/prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("agent.md"), "PROJECT PERSONA").unwrap();
+        let settings =
+            resolve_memory_settings(&config_with_memory_mode(MemoryMode::Off), tmp.path())
+                .unwrap();
+
+        // Host-provided prompt wins over the project-local agent.md.
+        let overridden = PromptBuilder::with_custom_prompt("HOST PERSONA".to_string())
+            .build_system_prompt(&[], tmp.path(), &settings);
+        assert!(overridden.starts_with("HOST PERSONA"));
+        assert!(!overridden.contains("PROJECT PERSONA"));
+        // The built-in system part is still appended.
+        assert!(overridden.contains("## Environment"));
+
+        // Without an override the file lookup is unchanged (H6 default path).
+        let default = PromptBuilder::with_working_dir(Some(tmp.path()))
+            .build_system_prompt(&[], tmp.path(), &settings);
+        assert!(default.starts_with("PROJECT PERSONA"));
+        assert!(default.contains("## Environment"));
     }
 }

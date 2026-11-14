@@ -120,6 +120,7 @@ fn main() -> Result<()> {
         auto_approve,
         std::collections::HashMap::new(),
         memory,
+        None,
     );
 
     // Setup terminal

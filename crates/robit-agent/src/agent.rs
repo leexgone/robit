@@ -134,6 +134,9 @@ pub struct Agent {
     /// Shared registry of async task statuses, read by the `query_task` tool
     /// via ToolContext. Cloned per ToolContext (shared `Arc`).
     task_registry: TaskRegistry,
+    /// Memory directory resolved from the host's storage scope; passed to
+    /// tools via ToolContext so memory tools share the session DB (H5).
+    memory_dir: PathBuf,
 }
 
 /// Bookkeeping for one in-flight async task.
@@ -155,8 +158,12 @@ impl Agent {
         auto_approve: bool,
         extensions: HashMap<String, Arc<dyn Any + Send + Sync>>,
         memory: MemorySettings,
+        custom_prompt: Option<String>,
     ) -> Self {
-        let prompt_builder = PromptBuilder::with_working_dir(Some(&working_dir));
+        let prompt_builder = match custom_prompt {
+            Some(prompt) => PromptBuilder::with_custom_prompt(prompt),
+            None => PromptBuilder::with_working_dir(Some(&working_dir)),
+        };
         let context_manager = ContextManager::new(context_window, context_config);
 
         // Build system prompt with skills + memory section. Tools are NOT listed
@@ -191,6 +198,7 @@ impl Agent {
             done_rx: Some(done_rx),
             pending_tasks: HashMap::new(),
             task_registry,
+            memory_dir: memory.dir.clone(),
         }
     }
 
@@ -208,13 +216,17 @@ impl Agent {
         session_id: SessionId,
         history: Vec<ChatCompletionRequestMessage>,
         memory: MemorySettings,
+        custom_prompt: Option<String>,
     ) -> Self {
         tracing::info!(
             "Agent::with_history: session_id={}, received {} history messages",
             session_id,
             history.len()
         );
-        let prompt_builder = PromptBuilder::with_working_dir(Some(&working_dir));
+        let prompt_builder = match custom_prompt {
+            Some(prompt) => PromptBuilder::with_custom_prompt(prompt),
+            None => PromptBuilder::with_working_dir(Some(&working_dir)),
+        };
         let context_manager = ContextManager::new(context_window, context_config);
 
         // Build system prompt with skills + memory section. Tools are NOT listed
@@ -286,6 +298,7 @@ impl Agent {
             done_rx: Some(done_rx),
             pending_tasks: HashMap::new(),
             task_registry,
+            memory_dir: memory.dir.clone(),
         }
     }
 
@@ -928,6 +941,7 @@ impl Agent {
 
                 let ctx = ToolContext {
                     working_dir: working_dir.clone(),
+                    memory_dir: self.memory_dir.clone(),
                     session_id: session_id.clone(),
                     tool_call_id: tc.id.clone(),
                     frontend: self.frontend.clone(),
@@ -1119,14 +1133,47 @@ impl Agent {
         // Add images
         for attachment in attachments {
             if attachment.is_image() {
-                // Download and encode as base64 (compressed for the context)
-                match media::download_and_encode_base64(
-                    &attachment.url,
-                    &attachment.content_type,
-                    self.context_manager.max_image_dimension,
-                )
-                .await
-                {
+                // Encode as base64 (compressed for the context). Prefer the
+                // local copy saved by the host — CDN URLs expire, the local
+                // file does not. Fall back to the URL, then to a description.
+                let max_dim = self.context_manager.max_image_dimension;
+                let encoded = match &attachment.local_path {
+                    Some(path) => {
+                        match media::encode_file_base64_with_mime(
+                            path,
+                            &attachment.content_type,
+                            max_dim,
+                        )
+                        .await
+                        {
+                            Ok(encoded) => Ok(encoded),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to encode local image {}: {}; retrying from URL",
+                                    path.display(),
+                                    e
+                                );
+                                media::download_and_encode_base64(
+                                    &attachment.url,
+                                    &attachment.content_type,
+                                    max_dim,
+                                    self.context_manager.max_media_bytes,
+                                )
+                                .await
+                            }
+                        }
+                    }
+                    None => {
+                        media::download_and_encode_base64(
+                            &attachment.url,
+                            &attachment.content_type,
+                            max_dim,
+                            self.context_manager.max_media_bytes,
+                        )
+                        .await
+                    }
+                };
+                match encoded {
                     Ok(encoded) => {
                         parts.push(ChatCompletionRequestUserMessageContentPart::ImageUrl(
                             ChatCompletionRequestMessageContentPartImage {
@@ -1909,6 +1956,226 @@ mod tests {
         }
     }
 
+    // ========================================================================
+    // Attachment annotation & local-first encoding (M1/M2/M3)
+    // ========================================================================
+
+    /// Text-only model client (supports_images = false).
+    fn text_llm_client() -> Arc<LlmClient> {
+        let config = RobitConfig {
+            default_model: Some("test/text".to_string()),
+            providers: HashMap::from([(
+                "test".to_string(),
+                ProviderConfig {
+                    name: Some("Test".to_string()),
+                    base_url: "http://127.0.0.1:1".to_string(),
+                    api_key: "sk-test".to_string(),
+                    models: vec![ModelConfig {
+                        id: "text".to_string(),
+                        name: Some("Text".to_string()),
+                        context_window: None,
+                        max_output_tokens: None,
+                        temperature: None,
+                        max_tokens: None,
+                        supports_images: Some(false),
+                        supports_tools: Some(true),
+                        thinking: None,
+                    }],
+                },
+            )]),
+            app: None,
+            channels: None,
+            default_image_model: None,
+            image_providers: HashMap::new(),
+            default_vision_model: None,
+        };
+        Arc::new(LlmClient::from_config(&config, None).unwrap())
+    }
+
+    fn agent_with(client: Arc<LlmClient>) -> Agent {
+        Agent::new(
+            client,
+            Arc::new(ToolRegistry::new()),
+            Arc::new(SkillRegistry::new(vec![], &[])),
+            Arc::new(NoopFrontend),
+            None,
+            None,
+            PathBuf::from("."),
+            true,
+            HashMap::new(),
+            MemorySettings {
+                mode: MemoryMode::Off,
+                dir: PathBuf::from("."),
+            },
+            None,
+        )
+    }
+
+    fn att(content_type: &str, filename: Option<&str>, url: &str, local: Option<PathBuf>) -> MediaAttachment {
+        MediaAttachment {
+            content_type: content_type.to_string(),
+            url: url.to_string(),
+            filename: filename.map(|s| s.to_string()),
+            size: Some(1024),
+            width: None,
+            height: None,
+            local_path: local,
+        }
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(8, 8, image::Rgb([10, 20, 30]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    /// Concatenated text parts of a built user message.
+    fn user_text(msg: &ChatCompletionRequestMessage) -> String {
+        match msg {
+            ChatCompletionRequestMessage::User(u) => match &u.content {
+                ChatCompletionRequestUserMessageContent::Text(t) => t.clone(),
+                ChatCompletionRequestUserMessageContent::Array(parts) => parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        ChatCompletionRequestUserMessageContentPart::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            },
+            _ => panic!("expected user message"),
+        }
+    }
+
+    fn image_parts(msg: &ChatCompletionRequestMessage) -> usize {
+        match msg {
+            ChatCompletionRequestMessage::User(u) => match &u.content {
+                ChatCompletionRequestUserMessageContent::Array(parts) => parts
+                    .iter()
+                    .filter(|p| matches!(p, ChatCompletionRequestUserMessageContentPart::ImageUrl(_)))
+                    .count(),
+                _ => 0,
+            },
+            _ => 0,
+        }
+    }
+
+    /// One-shot HTTP server serving `body` (close-delimited, no length header).
+    async fn spawn_png_server(body: Vec<u8>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let mut acc: Vec<u8> = Vec::new();
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            acc.extend_from_slice(&buf[..n]);
+                            if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = sock.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await;
+                let _ = sock.write_all(&body).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        format!("http://{}/img.png", addr)
+    }
+
+    #[tokio::test]
+    async fn text_model_annotates_each_attachment_exactly_once() {
+        let agent = agent_with(text_llm_client());
+        let attachments = vec![
+            att("text/csv", Some("对账单.csv"), "http://127.0.0.1:1/a.csv", None),
+            att("image/png", Some("photo.png"), "http://127.0.0.1:1/b.png", None),
+        ];
+        let msg = agent.build_user_message("看看这个", &attachments).await;
+        let text = user_text(&msg);
+        assert_eq!(text.matches("[用户发送了").count(), 2, "text: {}", text);
+        assert_eq!(text.matches("对账单.csv").count(), 1);
+        assert_eq!(text.matches("photo.png").count(), 1);
+        assert!(text.starts_with("看看这个"));
+        assert_eq!(image_parts(&msg), 0);
+    }
+
+    #[tokio::test]
+    async fn vision_model_annotates_non_image_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let img_path = dir.path().join("photo.png");
+        tokio::fs::write(&img_path, tiny_png()).await.unwrap();
+        let agent = agent_with(vision_llm_client());
+        let attachments = vec![
+            att("text/csv", Some("对账单.csv"), "http://127.0.0.1:1/a.csv", None),
+            att("image/png", Some("photo.png"), "http://127.0.0.1:1/b.png", Some(img_path)),
+        ];
+        let msg = agent.build_user_message("看看这个", &attachments).await;
+        let text = user_text(&msg);
+        assert_eq!(text.matches("[用户发送了").count(), 1, "text: {}", text);
+        assert!(text.contains("对账单.csv"));
+        assert!(!text.contains("photo.png"), "image must not be annotated when encoded");
+        assert_eq!(image_parts(&msg), 1);
+    }
+
+    #[tokio::test]
+    async fn vision_encodes_from_local_copy_when_url_is_dead() {
+        // Acceptance M1+M2: CDN expired / offline, local copy on disk → vision works.
+        let dir = tempfile::tempdir().unwrap();
+        let img_path = dir.path().join("photo.png");
+        tokio::fs::write(&img_path, tiny_png()).await.unwrap();
+        let agent = agent_with(vision_llm_client());
+        let attachments = vec![att(
+            "image/png",
+            Some("photo.png"),
+            "http://127.0.0.1:1/expired.png",
+            Some(img_path),
+        )];
+        let msg = agent.build_user_message("", &attachments).await;
+        assert_eq!(image_parts(&msg), 1);
+        assert!(!user_text(&msg).contains("[用户发送了"));
+    }
+
+    #[tokio::test]
+    async fn vision_falls_back_to_url_when_local_copy_is_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_path = dir.path().join("corrupt.png");
+        tokio::fs::write(&bad_path, b"not an image").await.unwrap();
+        let url = spawn_png_server(tiny_png()).await;
+        let agent = agent_with(vision_llm_client());
+        let attachments = vec![att("image/png", Some("photo.png"), &url, Some(bad_path))];
+        let msg = agent.build_user_message("", &attachments).await;
+        assert_eq!(image_parts(&msg), 1, "URL fallback must encode the image");
+        assert!(!user_text(&msg).contains("[用户发送了"));
+    }
+
+    #[tokio::test]
+    async fn vision_degrades_to_description_when_local_and_url_both_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_path = dir.path().join("corrupt.png");
+        tokio::fs::write(&bad_path, b"not an image").await.unwrap();
+        let agent = agent_with(vision_llm_client());
+        let attachments = vec![att(
+            "image/png",
+            Some("photo.png"),
+            "http://127.0.0.1:1/dead.png",
+            Some(bad_path),
+        )];
+        let msg = agent.build_user_message("", &attachments).await;
+        assert_eq!(image_parts(&msg), 0);
+        let text = user_text(&msg);
+        assert_eq!(text.matches("[用户发送了").count(), 1);
+        assert!(text.contains("photo.png"));
+    }
+
     /// Regression test for the DeepSeek 400 "insufficient tool messages
     /// following tool_calls message": when a parallel tool-call batch returns
     /// images, the injected multimodal user message(s) must come AFTER all
@@ -1931,6 +2198,7 @@ mod tests {
                 mode: MemoryMode::Off,
                 dir: PathBuf::from("."),
             },
+            None,
         );
 
         let session_id = agent.default_session_id.clone();

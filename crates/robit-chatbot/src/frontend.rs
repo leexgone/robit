@@ -10,7 +10,7 @@
 //! place to create a "growing message" effect; otherwise segments are sent as
 //! separate messages.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -85,6 +85,10 @@ pub struct ChatbotFrontend {
     pub thinking_bytes: AtomicUsize,
     /// Auto-approve all tool calls.
     pub auto_approve: bool,
+    /// True while a turn is in flight (first delta/tool event → TurnComplete
+    /// or Error). Shared with the manager's `AgentHandle` so the idle-session
+    /// cleanup never evicts a session mid-turn (H3).
+    pub busy: Arc<AtomicBool>,
 }
 
 impl ChatbotFrontend {
@@ -109,6 +113,7 @@ impl ChatbotFrontend {
             thinking_deltas: AtomicUsize::new(0),
             thinking_bytes: AtomicUsize::new(0),
             auto_approve,
+            busy: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -128,6 +133,7 @@ impl ChatbotFrontend {
             None,
             None,
             None,
+            None,
         ) {
             Ok(_) => {
                 tracing::debug!("Saved assistant message to DB: session_id={}", self.session_id);
@@ -139,6 +145,13 @@ impl ChatbotFrontend {
 
     /// Save a user message to the database (called from manager).
     pub async fn save_user_message(&self, content: &str) {
+        self.save_user_message_with_source(content, None).await;
+    }
+
+    /// Save a user message with an origin marker. `source` is `None` for real
+    /// platform messages, or a label (e.g. "scheduler") for host-injected
+    /// turns so the archive can distinguish them (H1).
+    pub async fn save_user_message_with_source(&self, content: &str, source: Option<&str>) {
         let db = self.db.lock().await;
         match robit_agent::storage::insert_message(
             &db,
@@ -148,6 +161,7 @@ impl ChatbotFrontend {
             None,
             None,
             None,
+            source,
         ) {
             Ok(_) => {
                 tracing::debug!("Saved user message to DB: session_id={}", self.session_id);
@@ -276,9 +290,11 @@ impl Frontend for ChatbotFrontend {
     async fn on_event(&self, event: AgentEvent) -> Result<()> {
         match event {
             AgentEvent::TextDelta(delta) => {
+                self.busy.store(true, Ordering::Relaxed);
                 self.append_delta(&delta).await;
             }
             AgentEvent::ThinkingDelta(delta) => {
+                self.busy.store(true, Ordering::Relaxed);
                 // Silent by design: thinking text is long-form and would
                 // flood the platform's message segmentation (QQ 等消息长度
                 // 受限)，Bot 面本轮不渲染思考过程。
@@ -288,6 +304,7 @@ impl Frontend for ChatbotFrontend {
                 self.thinking_bytes.fetch_add(delta.len(), Ordering::Relaxed);
             }
             AgentEvent::ToolCallRequested { name, .. } => {
+                self.busy.store(true, Ordering::Relaxed);
                 tracing::trace!(
                     "[chatbot] ToolCallRequested received: chat_id='{}', tool='{}' (auto_approve={})",
                     self.chat_id, name, self.auto_approve
@@ -336,6 +353,7 @@ impl Frontend for ChatbotFrontend {
                 // Reset per-turn state.
                 *self.progress_hint_sent.lock().await = false;
                 *self.last_msg_id.lock().await = None;
+                self.busy.store(false, Ordering::Relaxed);
             }
             AgentEvent::Error(e) => {
                 tracing::trace!(
@@ -344,6 +362,7 @@ impl Frontend for ChatbotFrontend {
                 );
                 self.flush_buffer().await;
                 self.log_thinking_summary();
+                self.busy.store(false, Ordering::Relaxed);
                 let msg = format!("❌ Error: {}", e);
                 if let Err(send_err) = self.platform_sender.send(&self.chat_id, &msg).await {
                     tracing::warn!(

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose, Engine as _};
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 
 /// Errors that can occur while handling media.
 #[derive(Debug, Error)]
@@ -16,38 +17,186 @@ pub enum MediaError {
     InvalidContent,
     #[error("Image processing error: {0}")]
     Image(String),
+    #[error("Media exceeds size limit ({limit} bytes)")]
+    TooLarge { limit: u64 },
 }
 
-/// Download media from URL and save to the specified directory.
-///
-/// Returns the path to the saved file.
+/// Options for [`download_media_with_opts`].
+#[derive(Debug, Clone)]
+pub struct MediaDownloadOptions {
+    /// Maximum bytes to download (0 = unlimited). Enforced via Content-Length
+    /// pre-check plus streaming accumulation, so memory never exceeds the cap.
+    pub max_bytes: u64,
+    /// Platform-provided MIME type, used to supply an extension when the
+    /// filename has none (keeps extension-based MIME inference working).
+    pub content_type: Option<String>,
+}
+
+impl Default for MediaDownloadOptions {
+    fn default() -> Self {
+        Self {
+            max_bytes: crate::context::DEFAULT_MAX_MEDIA_BYTES,
+            content_type: None,
+        }
+    }
+}
+
+/// Download media from URL and save to the specified directory with default
+/// options (20MB cap). Returns the path to the saved file.
 pub async fn download_media(
     url: &str,
     filename: Option<&str>,
     save_dir: &PathBuf,
 ) -> Result<PathBuf, MediaError> {
-    // Create directory if it doesn't exist
+    download_media_with_opts(url, filename, save_dir, &MediaDownloadOptions::default()).await
+}
+
+/// Download media from URL and save to the specified directory.
+///
+/// The filename is sanitized (single path component, no control characters)
+/// and collisions get a `-1`/`-2` suffix instead of silently overwriting.
+/// The body is streamed to disk under `opts.max_bytes`; an oversized response
+/// is rejected (Content-Length pre-check when present) and no file is left.
+///
+/// Returns the path to the saved file.
+pub async fn download_media_with_opts(
+    url: &str,
+    filename: Option<&str>,
+    save_dir: &PathBuf,
+    opts: &MediaDownloadOptions,
+) -> Result<PathBuf, MediaError> {
     tokio::fs::create_dir_all(save_dir).await?;
 
-    // Determine filename
-    let save_filename = match filename {
-        Some(s) => s.to_string(),
-        None => uuid::Uuid::new_v4().to_string(),
-    };
-    let save_path = save_dir.join(save_filename);
+    let save_filename = sanitize_filename(filename, opts.content_type.as_deref());
+    let save_path = resolve_collision(save_dir, &save_filename).await;
 
-    // Download
     let client = reqwest::Client::new();
-    let response = client.get(url).send().await?;
-    let bytes = response.bytes().await?;
+    let mut response = client.get(url).send().await?;
+    check_content_length(&response, opts.max_bytes)?;
 
-    if bytes.is_empty() {
+    let mut file = tokio::fs::File::create(&save_path).await?;
+    let mut total: u64 = 0;
+    let result: Result<(), MediaError> = async {
+        while let Some(chunk) = response.chunk().await? {
+            total += chunk.len() as u64;
+            if opts.max_bytes > 0 && total > opts.max_bytes {
+                return Err(MediaError::TooLarge {
+                    limit: opts.max_bytes,
+                });
+            }
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = result {
+        drop(file);
+        let _ = tokio::fs::remove_file(&save_path).await;
+        return Err(e);
+    }
+    if total == 0 {
+        let _ = tokio::fs::remove_file(&save_path).await;
         return Err(MediaError::InvalidContent);
     }
 
-    tokio::fs::write(&save_path, &bytes).await?;
-
     Ok(save_path)
+}
+
+/// Reject early when the advertised Content-Length exceeds the cap.
+fn check_content_length(response: &reqwest::Response, max_bytes: u64) -> Result<(), MediaError> {
+    if max_bytes > 0 {
+        if let Some(len) = response.content_length() {
+            if len > max_bytes {
+                return Err(MediaError::TooLarge { limit: max_bytes });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sanitize a platform-provided filename into a single safe path component.
+///
+/// - Takes only the `file_name()` component (strips directories and `..`).
+/// - Filters control characters and residual separators (`/`, `\`, `:`).
+/// - Trims surrounding whitespace and dots.
+/// - Empty result → UUID name; missing extension → mapped from content_type.
+fn sanitize_filename(filename: Option<&str>, content_type: Option<&str>) -> String {
+    let component = filename
+        .and_then(|name| Path::new(name).file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut cleaned: String = component
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\' && *c != ':')
+        .collect();
+    cleaned = cleaned.trim().trim_matches('.').trim().to_string();
+
+    if cleaned.is_empty() {
+        cleaned = uuid::Uuid::new_v4().to_string();
+    }
+    if Path::new(&cleaned).extension().is_none() {
+        if let Some(ext) = extension_from_content_type(content_type) {
+            cleaned.push('.');
+            cleaned.push_str(ext);
+        }
+    }
+    cleaned
+}
+
+/// Map common MIME types to file extensions (for unnamed/extensionless files).
+fn extension_from_content_type(content_type: Option<&str>) -> Option<&'static str> {
+    let ct = content_type?.split(';').next()?.trim().to_ascii_lowercase();
+    let ext = match ct.as_str() {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/bmp" => "bmp",
+        "application/pdf" => "pdf",
+        "text/plain" => "txt",
+        "text/csv" => "csv",
+        "text/markdown" => "md",
+        "application/json" => "json",
+        "application/zip" => "zip",
+        "application/msword" => "doc",
+        "application/vnd.ms-excel" => "xls",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        _ => return None,
+    };
+    Some(ext)
+}
+
+/// Pick a non-colliding path: `name.ext` → `name-1.ext` → `name-2.ext` …
+/// Falls back to a UUID name (keeping the extension) after 100 attempts.
+async fn resolve_collision(save_dir: &Path, filename: &str) -> PathBuf {
+    let candidate = save_dir.join(filename);
+    if !tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
+        return candidate;
+    }
+    let path = Path::new(filename);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| filename.to_string());
+    let ext = path.extension().map(|s| s.to_string_lossy().into_owned());
+    for i in 1..=100u32 {
+        let name = match &ext {
+            Some(e) => format!("{}-{}.{}", stem, i, e),
+            None => format!("{}-{}", stem, i),
+        };
+        let p = save_dir.join(name);
+        if !tokio::fs::try_exists(&p).await.unwrap_or(false) {
+            return p;
+        }
+    }
+    let name = match &ext {
+        Some(e) => format!("{}.{}", uuid::Uuid::new_v4(), e),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
+    save_dir.join(name)
 }
 
 /// An image (or other media) encoded as a base64 data URL, plus info about
@@ -60,20 +209,36 @@ pub struct EncodedImage {
 }
 
 /// Download media from URL and encode as base64 data URL, compressing
-/// images first (see [`compress_image_bytes`]).
+/// images first (see [`compress_image_bytes`]). The download is capped at
+/// `max_bytes` (0 = unlimited), mirroring the save-to-disk path's guard.
 pub async fn download_and_encode_base64(
     url: &str,
     content_type: &str,
     max_image_dim: u32,
+    max_bytes: u64,
 ) -> Result<EncodedImage, MediaError> {
-    let client = reqwest::Client::new();
-    let bytes = client.get(url).send().await?.bytes().await?;
+    let bytes = fetch_bytes_capped(url, max_bytes).await?;
+    encode_image_bytes(&bytes, content_type, max_image_dim).await
+}
 
-    if bytes.is_empty() {
+/// Fetch a URL body into memory under a byte cap (Content-Length pre-check +
+/// streaming accumulation). Empty bodies are rejected.
+async fn fetch_bytes_capped(url: &str, max_bytes: u64) -> Result<Vec<u8>, MediaError> {
+    let client = reqwest::Client::new();
+    let mut response = client.get(url).send().await?;
+    check_content_length(&response, max_bytes)?;
+
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if max_bytes > 0 && (buf.len() + chunk.len()) as u64 > max_bytes {
+            return Err(MediaError::TooLarge { limit: max_bytes });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    if buf.is_empty() {
         return Err(MediaError::InvalidContent);
     }
-
-    encode_image_bytes(&bytes, content_type, max_image_dim).await
+    Ok(buf)
 }
 
 /// Read a local file and encode it as a base64 data URL, compressing images
@@ -83,13 +248,29 @@ pub async fn encode_file_base64(
     path: &Path,
     max_image_dim: u32,
 ) -> Result<EncodedImage, MediaError> {
+    encode_file_base64_with_mime(path, "", max_image_dim).await
+}
+
+/// Like [`encode_file_base64`], but with an explicit MIME type (e.g. the
+/// platform-provided `content_type` of an attachment). An empty `mime` falls
+/// back to extension inference. Preferring the declared MIME avoids
+/// misclassifying images whose saved filename has a wrong/missing extension.
+pub async fn encode_file_base64_with_mime(
+    path: &Path,
+    mime: &str,
+    max_image_dim: u32,
+) -> Result<EncodedImage, MediaError> {
     let bytes = tokio::fs::read(path).await?;
 
     if bytes.is_empty() {
         return Err(MediaError::InvalidContent);
     }
 
-    let mime_type = mime_from_extension(path);
+    let mime_type = if mime.is_empty() {
+        mime_from_extension(path)
+    } else {
+        mime
+    };
     encode_image_bytes(&bytes, mime_type, max_image_dim).await
 }
 
@@ -420,5 +601,242 @@ mod tests {
             result.is_err(),
             "images wider/taller than the decode cap must be rejected, got Ok"
         );
+    }
+
+    // ========================================================================
+    // Filename sanitization (M4/M5)
+    // ========================================================================
+
+    #[test]
+    fn sanitize_strips_traversal_and_directories() {
+        assert_eq!(sanitize_filename(Some("../secret.txt"), None), "secret.txt");
+        assert_eq!(
+            sanitize_filename(Some("a/b/../../c.csv"), None),
+            "c.csv"
+        );
+        assert_eq!(sanitize_filename(Some(".."), None).contains('.'), false);
+        assert_eq!(sanitize_filename(Some("."), None).contains('.'), false);
+    }
+
+    #[test]
+    fn sanitize_filters_separators_and_control_chars() {
+        let out = sanitize_filename(Some("a\\b/c:d\0e.txt"), None);
+        assert!(!out.contains('\\') && !out.contains('/') && !out.contains(':'));
+        assert!(!out.chars().any(|c| c.is_control()));
+        assert!(out.ends_with(".txt"));
+    }
+
+    #[test]
+    fn sanitize_empty_falls_back_to_uuid_with_content_type_extension() {
+        let out = sanitize_filename(None, Some("image/png"));
+        assert!(out.ends_with(".png"), "got {}", out);
+        assert!(out.len() > 4);
+        let out = sanitize_filename(Some("   "), Some("text/csv; charset=utf-8"));
+        assert!(out.ends_with(".csv"), "got {}", out);
+        let out = sanitize_filename(None, Some("application/x-unknown"));
+        assert!(!out.contains('.'), "unknown MIME must not invent an extension");
+    }
+
+    #[test]
+    fn sanitize_adds_missing_extension_from_content_type() {
+        assert_eq!(
+            sanitize_filename(Some("report"), Some("application/pdf")),
+            "report.pdf"
+        );
+        // Existing extension is kept even if content_type disagrees.
+        assert_eq!(
+            sanitize_filename(Some("report.bin"), Some("application/pdf")),
+            "report.bin"
+        );
+    }
+
+    #[tokio::test]
+    async fn collision_gets_numeric_suffix_instead_of_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("dup.txt"), b"original")
+            .await
+            .unwrap();
+        let p1 = resolve_collision(dir.path(), "dup.txt").await;
+        assert_eq!(p1.file_name().unwrap(), "dup-1.txt");
+        tokio::fs::write(&p1, b"second").await.unwrap();
+        let p2 = resolve_collision(dir.path(), "dup.txt").await;
+        assert_eq!(p2.file_name().unwrap(), "dup-2.txt");
+        assert_eq!(tokio::fs::read(dir.path().join("dup.txt")).await.unwrap(), b"original");
+    }
+
+    // ========================================================================
+    // Download guards (M6) — local one-shot HTTP server
+    // ========================================================================
+
+    /// Spawn a one-shot HTTP server returning `body`. `advertise_len` sets the
+    /// Content-Length header (None → close-delimited body, no length header).
+    async fn spawn_http_server(body: Vec<u8>, advertise_len: Option<u64>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let mut acc: Vec<u8> = Vec::new();
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            acc.extend_from_slice(&buf[..n]);
+                            if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let header = match advertise_len {
+                    Some(len) => format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", len),
+                    None => "HTTP/1.1 200 OK\r\n\r\n".to_string(),
+                };
+                let _ = sock.write_all(header.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        format!("http://{}/file", addr)
+    }
+
+    #[tokio::test]
+    async fn download_saves_sanitized_file_with_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = spawn_http_server(b"a,b\n1,2\n".to_vec(), Some(8)).await;
+        let path = download_media_with_opts(
+            &url,
+            Some("../evil.csv"),
+            &dir.path().to_path_buf(),
+            &MediaDownloadOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(path.file_name().unwrap(), "evil.csv");
+        assert_eq!(path.parent().unwrap(), dir.path());
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"a,b\n1,2\n");
+    }
+
+    #[tokio::test]
+    async fn download_rejects_oversized_content_length_before_body() {
+        let dir = tempfile::tempdir().unwrap();
+        // Advertised length far above the cap; body never needs to arrive.
+        let url = spawn_http_server(b"tiny".to_vec(), Some(100 * 1024 * 1024)).await;
+        let opts = MediaDownloadOptions { max_bytes: 1024, content_type: None };
+        let err = download_media_with_opts(&url, Some("big.bin"), &dir.path().to_path_buf(), &opts)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MediaError::TooLarge { limit: 1024 }));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn download_rejects_oversized_stream_and_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // No Content-Length: the streaming accumulator must trip the cap.
+        let url = spawn_http_server(vec![0u8; 4096], None).await;
+        let opts = MediaDownloadOptions { max_bytes: 1024, content_type: None };
+        let err = download_media_with_opts(&url, Some("big.bin"), &dir.path().to_path_buf(), &opts)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MediaError::TooLarge { limit: 1024 }));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn download_zero_cap_means_unlimited() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = spawn_http_server(vec![7u8; 4096], None).await;
+        let opts = MediaDownloadOptions { max_bytes: 0, content_type: None };
+        let path = download_media_with_opts(&url, Some("ok.bin"), &dir.path().to_path_buf(), &opts)
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(&path).await.unwrap().len(), 4096);
+    }
+
+    #[tokio::test]
+    async fn download_empty_body_is_invalid_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = spawn_http_server(Vec::new(), Some(0)).await;
+        let err = download_media(&url, Some("empty.bin"), &dir.path().to_path_buf())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MediaError::InvalidContent));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn download_same_name_twice_does_not_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let url1 = spawn_http_server(b"first".to_vec(), Some(5)).await;
+        let url2 = spawn_http_server(b"second".to_vec(), Some(6)).await;
+        let d = dir.path().to_path_buf();
+        let p1 = download_media(&url1, Some("same.txt"), &d).await.unwrap();
+        let p2 = download_media(&url2, Some("same.txt"), &d).await.unwrap();
+        assert_ne!(p1, p2);
+        assert_eq!(tokio::fs::read(&p1).await.unwrap(), b"first");
+        assert_eq!(tokio::fs::read(&p2).await.unwrap(), b"second");
+    }
+
+    #[tokio::test]
+    async fn download_unnamed_attachment_gets_content_type_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = spawn_http_server(solid_png(4, 4), None).await;
+        let opts = MediaDownloadOptions {
+            max_bytes: 0,
+            content_type: Some("image/png".to_string()),
+        };
+        let path = download_media_with_opts(&url, None, &dir.path().to_path_buf(), &opts)
+            .await
+            .unwrap();
+        assert!(
+            path.extension().map(|e| e == "png").unwrap_or(false),
+            "unnamed PNG attachment must save with .png, got {:?}",
+            path.file_name()
+        );
+    }
+
+    #[tokio::test]
+    async fn encode_download_is_capped_too() {
+        let url = spawn_http_server(vec![0u8; 4096], None).await;
+        let err = download_and_encode_base64(&url, "application/octet-stream", 1024, 1024)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, MediaError::TooLarge { limit: 1024 }));
+    }
+
+    // ========================================================================
+    // Local-first encoding (M2)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn encode_with_mime_prefers_declared_type_over_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        // PNG bytes under a wrong extension: extension inference would pass
+        // them through as octet-stream; the declared MIME must compress them.
+        let path = dir.path().join("img.bin");
+        tokio::fs::write(&path, noise_png(256, 256)).await.unwrap();
+
+        let by_ext = encode_file_base64(&path, 64).await.unwrap();
+        assert!(by_ext.compression.kept_original);
+        assert_eq!(by_ext.compression.mime, "application/octet-stream");
+
+        let by_mime = encode_file_base64_with_mime(&path, "image/png", 64).await.unwrap();
+        assert!(!by_mime.compression.kept_original);
+        assert_eq!(by_mime.compression.mime, "image/jpeg");
+        assert_eq!(by_mime.compression.new_dims, (64, 64));
+        assert!(by_mime.data_url.starts_with("data:image/jpeg;base64,"));
+    }
+
+    #[tokio::test]
+    async fn encode_with_empty_mime_falls_back_to_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.png");
+        tokio::fs::write(&path, noise_png(128, 128)).await.unwrap();
+        let out = encode_file_base64_with_mime(&path, "", 64).await.unwrap();
+        assert_eq!(out.compression.mime, "image/jpeg");
+        assert_eq!(out.compression.new_dims, (64, 64));
     }
 }

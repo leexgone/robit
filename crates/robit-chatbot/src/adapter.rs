@@ -146,26 +146,15 @@ pub struct MediaAttachment {
     pub width: Option<u32>,
     /// Image height in pixels (if available).
     pub height: Option<u32>,
+    /// Local copy saved by the manager after download. Platform adapters
+    /// leave this `None`; the manager fills it in before routing to the Agent.
+    pub local_path: Option<std::path::PathBuf>,
 }
 
 impl MediaAttachment {
     /// Whether this attachment is an image.
     pub fn is_image(&self) -> bool {
         self.content_type.starts_with("image/")
-    }
-
-    /// A human-readable description for the LLM.
-    pub fn describe(&self) -> String {
-        let kind = if self.is_image() { "图片" } else { "文件" };
-        let name = self
-            .filename
-            .as_deref()
-            .unwrap_or_else(|| if self.is_image() { "image" } else { "file" });
-        let size_str = self
-            .size
-            .map(|s| format!(" ({:.1}KB)", s as f64 / 1024.0))
-            .unwrap_or_default();
-        format!("[用户发送了{}: {}{}]", kind, name, size_str)
     }
 }
 
@@ -179,6 +168,7 @@ impl From<MediaAttachment> for robit_agent::event::MediaAttachment {
             size: att.size,
             width: att.width,
             height: att.height,
+            local_path: att.local_path,
         }
     }
 }
@@ -226,6 +216,10 @@ pub trait PlatformAdapter: Send + Sync + 'static {
     /// Platform capabilities. Used by `ChatbotFrontend` for streaming strategy
     /// and by the Markdown sanitizer.
     fn capabilities() -> PlatformCaps;
+
+    /// Platform identifier recorded as the session `source` in the archive
+    /// (e.g. `"qq"`, `"feishu"`). Must be stable across restarts.
+    fn platform_name() -> &'static str;
 
     /// Send a text message to a chat. Returns the platform message ID.
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult>;

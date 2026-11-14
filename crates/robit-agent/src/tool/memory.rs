@@ -107,10 +107,10 @@ impl Tool for MemorizeTool {
             return Ok(ToolResult::error("Content cannot be empty".to_string()));
         }
 
-        let db_path = match crate::storage::resolve_db_path(&ctx.working_dir, false) {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolResult::error(format!("Failed to resolve DB path: {}", e))),
-        };
+        // Follow the host's storage scope: `memory_dir` is resolved from
+        // `global_storage` at Agent construction (same root as the session
+        // DB the manager opens), so memory tools and sessions share one DB.
+        let db_path = ctx.memory_dir.join("robit.db");
 
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
@@ -251,10 +251,10 @@ impl Tool for RecallTool {
             Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
-        let db_path = match crate::storage::resolve_db_path(&ctx.working_dir, false) {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolResult::error(format!("Failed to resolve DB path: {}", e))),
-        };
+        // Follow the host's storage scope: `memory_dir` is resolved from
+        // `global_storage` at Agent construction (same root as the session
+        // DB the manager opens), so memory tools and sessions share one DB.
+        let db_path = ctx.memory_dir.join("robit.db");
 
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
@@ -383,10 +383,10 @@ impl Tool for ForgetTool {
             ));
         }
 
-        let db_path = match crate::storage::resolve_db_path(&ctx.working_dir, false) {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolResult::error(format!("Failed to resolve DB path: {}", e))),
-        };
+        // Follow the host's storage scope: `memory_dir` is resolved from
+        // `global_storage` at Agent construction (same root as the session
+        // DB the manager opens), so memory tools and sessions share one DB.
+        let db_path = ctx.memory_dir.join("robit.db");
 
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
@@ -515,10 +515,10 @@ impl Tool for ListMemoriesTool {
             Err(e) => return Ok(ToolResult::error(format!("Argument parsing failed: {}", e))),
         };
 
-        let db_path = match crate::storage::resolve_db_path(&ctx.working_dir, false) {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolResult::error(format!("Failed to resolve DB path: {}", e))),
-        };
+        // Follow the host's storage scope: `memory_dir` is resolved from
+        // `global_storage` at Agent construction (same root as the session
+        // DB the manager opens), so memory tools and sessions share one DB.
+        let db_path = ctx.memory_dir.join("robit.db");
 
         let conn = match rusqlite::Connection::open(&db_path) {
             Ok(c) => c,
@@ -556,5 +556,78 @@ impl Tool for ListMemoriesTool {
             }
             Err(e) => Ok(ToolResult::error(format!("Failed to list memories: {}", e))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct DummyFrontend;
+    #[async_trait]
+    impl crate::frontend::Frontend for DummyFrontend {
+        async fn on_event(&self, _: crate::event::AgentEvent) -> Result<()> {
+            Ok(())
+        }
+        async fn request_tool_confirmation(&self, _: &crate::tool::ToolCallInfo) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    fn ctx_with_memory_dir(working_dir: PathBuf, memory_dir: PathBuf) -> ToolContext {
+        let (done_tx, _done_rx) = tokio::sync::mpsc::channel(1);
+        ToolContext {
+            working_dir,
+            memory_dir,
+            session_id: "sess".to_string(),
+            tool_call_id: "tc".to_string(),
+            frontend: Arc::new(DummyFrontend),
+            extensions: std::collections::HashMap::new(),
+            supports_images: false,
+            async_runner: crate::tool::async_runner::AsyncTaskRunner::new(done_tx),
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            task_registry: crate::tool::task_registry::TaskRegistry::new(),
+        }
+    }
+
+    /// H5: memory tools must write to `ctx.memory_dir/robit.db` — the same
+    /// root the host opened for sessions when `global_storage = true` — not
+    /// to a hardcoded project-local path.
+    #[tokio::test]
+    async fn memorize_uses_context_memory_dir_not_working_dir() {
+        let working = tempfile::tempdir().unwrap();
+        let global = tempfile::tempdir().unwrap();
+        // The host (manager/frontend) initializes the schema at the global root.
+        let db_path = global.path().join("robit.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::storage::init_db(&conn).unwrap();
+        // memories.session_id references sessions(id) — create the session row.
+        crate::storage::insert_session(&conn, "sess", None, "T", "model", "gui", "").unwrap();
+        drop(conn);
+
+        let ctx = ctx_with_memory_dir(
+            working.path().to_path_buf(),
+            global.path().to_path_buf(),
+        );
+        let result = MemorizeTool::new()
+            .execute(
+                serde_json::json!({"title": "t", "content": "c"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error, "memorize failed: {}", result.content);
+
+        // Row landed in the global DB…
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        drop(conn);
+        // …and no project-local DB was created behind the host's back.
+        assert!(!working.path().join(".robit/memory/robit.db").exists());
     }
 }

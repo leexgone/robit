@@ -11,7 +11,7 @@ fn test_session_crud() {
     init_db(&conn).unwrap();
 
     // Insert test session
-    insert_session(&conn, "test-123", None, "Test Session", "deepseek/deepseek-chat", "gui").unwrap();
+    insert_session(&conn, "test-123", None, "Test Session", "deepseek/deepseek-chat", "gui", "").unwrap();
 
     // List sessions
     let sessions = list_sessions(&conn, None).unwrap();
@@ -42,11 +42,11 @@ fn test_message_operations() {
     let conn = Connection::open_in_memory().unwrap();
     init_db(&conn).unwrap();
 
-    insert_session(&conn, "session-msg", None, "Chat Session", "model", "gui").unwrap();
+    insert_session(&conn, "session-msg", None, "Chat Session", "model", "gui", "").unwrap();
 
     // Insert messages
-    insert_message(&conn, "session-msg", "user", "Hello Robit", None, None, None).unwrap();
-    insert_message(&conn, "session-msg", "assistant", "Hello! How can I help?", None, None, None).unwrap();
+    insert_message(&conn, "session-msg", "user", "Hello Robit", None, None, None, None).unwrap();
+    insert_message(&conn, "session-msg", "assistant", "Hello! How can I help?", None, None, None, None).unwrap();
 
     // Get messages
     let messages = get_messages(&conn, "session-msg").unwrap();
@@ -140,6 +140,7 @@ fn test_message_data_serialization() {
         tool_call_id: None,
         tool_info: None,
         created_at: "2024-01-01".to_string(),
+        source: None,
     };
 
     let json = serde_json::to_string(&msg).unwrap();
