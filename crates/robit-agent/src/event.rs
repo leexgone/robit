@@ -37,12 +37,25 @@ impl MediaAttachment {
         self.content_type.starts_with("image/")
     }
 
-    /// A human-readable description for the LLM.
+    /// A human-readable description for the LLM (no local path).
     ///
     /// Single source of truth for attachment annotation: the agent appends it
     /// to model-bound text exactly once (`build_user_message`); the bot manager
     /// reuses it for archive text and session titles.
     pub fn describe(&self) -> String {
+        self.describe_inner(None)
+    }
+
+    /// Like [`describe`](Self::describe), but appends the saved local copy as
+    /// `本地路径: <path>` when `local_path` is set — the hook that lets the
+    /// model point host domain tools at the file (M1 completion). The path is
+    /// rendered relative to `base` (the working directory) when it lives under
+    /// it, falling back to the absolute form otherwise.
+    pub fn describe_with_local(&self, base: Option<&std::path::Path>) -> String {
+        self.describe_inner(base)
+    }
+
+    fn describe_inner(&self, base: Option<&std::path::Path>) -> String {
         let filename = self
             .filename
             .as_deref()
@@ -52,7 +65,16 @@ impl MediaAttachment {
             .size
             .map(|s| format!(" ({:.1}KB)", s as f64 / 1024.0))
             .unwrap_or_default();
-        format!("[用户发送了{}: {}{}]", type_desc, filename, size_str)
+        let local_str = match &self.local_path {
+            Some(path) => {
+                let display = base
+                    .and_then(|b| path.strip_prefix(b).ok())
+                    .unwrap_or(path.as_path());
+                format!(", 本地路径: {}", display.display())
+            }
+            None => String::new(),
+        };
+        format!("[用户发送了{}: {}{}{}]", type_desc, filename, size_str, local_str)
     }
 }
 
@@ -182,6 +204,32 @@ mod tests {
         assert_eq!(
             att("application/pdf", None, None).describe(),
             "[用户发送了文件: file]"
+        );
+    }
+
+    #[test]
+    fn describe_with_local_appends_path_relative_to_base() {
+        let mut a = att("text/csv", Some("对账单.csv"), Some(51_200));
+        a.local_path = Some(std::path::PathBuf::from("/srv/bot/media/对账单.csv"));
+        assert_eq!(
+            a.describe_with_local(Some(std::path::Path::new("/srv/bot"))),
+            "[用户发送了文件: 对账单.csv (50.0KB), 本地路径: media/对账单.csv]"
+        );
+
+        // Outside the base (or without one) → absolute form.
+        a.local_path = Some(std::path::PathBuf::from("/elsewhere/x.csv"));
+        assert!(a
+            .describe_with_local(Some(std::path::Path::new("/srv/bot")))
+            .contains("本地路径: /elsewhere/x.csv"));
+        assert!(a
+            .describe_with_local(None)
+            .contains("本地路径: /elsewhere/x.csv"));
+
+        // No local copy → identical to describe().
+        a.local_path = None;
+        assert_eq!(
+            a.describe_with_local(Some(std::path::Path::new("/srv/bot"))),
+            a.describe()
         );
     }
 }

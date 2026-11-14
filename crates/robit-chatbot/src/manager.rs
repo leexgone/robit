@@ -349,9 +349,10 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             attachments.push(converted);
         }
 
-        // Archive/title text carries one annotation line per attachment;
-        // model-bound text stays raw (the agent annotates it exactly once).
-        let archive_text = annotated_text(&msg.text, &attachments);
+        // Archive/title text carries one annotation line per attachment
+        // (including the local saved path when present); model-bound text
+        // stays raw — the agent annotates it exactly once.
+        let archive_text = annotated_text(&msg.text, &attachments, &self.working_dir);
 
         // Normal message → route to (or create) the chat's Agent session.
         // The archive row is written only AFTER the agent accepted the input,
@@ -833,12 +834,20 @@ pub enum ManagerError {
 
 /// Build archive/title text: raw message text plus one annotation line per
 /// attachment, using the same `describe` implementation the agent applies to
-/// model-bound text. Keeps attachment-only messages from archiving as empty.
-fn annotated_text(text: &str, attachments: &[robit_agent::event::MediaAttachment]) -> String {
+/// model-bound text (including the `本地路径` segment when a local copy was
+/// saved — M1). Keeps attachment-only messages from archiving as empty.
+fn annotated_text(
+    text: &str,
+    attachments: &[robit_agent::event::MediaAttachment],
+    working_dir: &std::path::Path,
+) -> String {
     if attachments.is_empty() {
         return text.to_string();
     }
-    let descs: Vec<String> = attachments.iter().map(|a| a.describe()).collect();
+    let descs: Vec<String> = attachments
+        .iter()
+        .map(|a| a.describe_with_local(Some(working_dir)))
+        .collect();
     if text.is_empty() {
         descs.join("\n")
     } else {
@@ -1096,15 +1105,28 @@ mod tests {
     #[test]
     fn annotated_text_appends_one_line_per_attachment() {
         let atts = vec![att("text/csv", Some("a.csv")), att("image/png", Some("b.png"))];
-        let out = annotated_text("看看", &atts);
+        let out = annotated_text("看看", &atts, std::path::Path::new("."));
         assert!(out.starts_with("看看\n"));
         assert_eq!(out.matches("[用户发送了").count(), 2);
+        assert!(!out.contains("本地路径"), "no local copy → no path segment");
+    }
+
+    #[test]
+    fn annotated_text_includes_relative_local_path() {
+        let base = std::path::Path::new("/srv/bot");
+        let mut a = att("text/csv", Some("对账单.csv"));
+        a.local_path = Some(base.join("media/对账单.csv"));
+        let out = annotated_text("", &[a], base);
+        assert_eq!(
+            out,
+            "[用户发送了文件: 对账单.csv (1.0KB), 本地路径: media/对账单.csv]"
+        );
     }
 
     #[test]
     fn annotated_text_attachment_only_message_is_not_empty() {
         let atts = vec![att("text/csv", Some("对账单.csv"))];
-        let out = annotated_text("", &atts);
+        let out = annotated_text("", &atts, std::path::Path::new("."));
         assert_eq!(out, "[用户发送了文件: 对账单.csv (1.0KB)]");
         // Title derived from it must not degrade to the empty fallback.
         assert_ne!(generate_title(&out), "QQ 会话");
@@ -1112,7 +1134,7 @@ mod tests {
 
     #[test]
     fn annotated_text_without_attachments_is_unchanged() {
-        assert_eq!(annotated_text("普通消息", &[]), "普通消息");
+        assert_eq!(annotated_text("普通消息", &[], std::path::Path::new(".")), "普通消息");
     }
 
     #[test]

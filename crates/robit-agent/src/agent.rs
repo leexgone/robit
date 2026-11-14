@@ -1105,10 +1105,16 @@ impl Agent {
             self.build_multimodal_message(text, attachments)
                 .await
         } else {
-            // Fallback: add attachment descriptions to text
+            // Fallback: add attachment descriptions to text. Local paths
+            // (when the host saved a copy) ride along so the model can point
+            // host domain tools at the file (M1 completion).
+            let working_dir = self
+                .sessions
+                .get(&self.default_session_id)
+                .map(|s| s.working_dir.as_path());
             let mut full_text = text.to_string();
             for attachment in attachments {
-                full_text = format!("{}\n{}", full_text, attachment.describe());
+                full_text = format!("{}\n{}", full_text, attachment.describe_with_local(working_dir));
             }
             ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
                 content: full_text.into(),
@@ -1129,6 +1135,13 @@ impl Agent {
                 prompt_cache_breakpoint: None,
             },
         )];
+
+        // Descriptions carry the local saved path (when present) so host
+        // domain tools can be pointed at the file (M1 completion).
+        let working_dir = self
+            .sessions
+            .get(&self.default_session_id)
+            .map(|s| s.working_dir.as_path());
 
         // Add images
         for attachment in attachments {
@@ -1188,7 +1201,7 @@ impl Agent {
                     Err(e) => {
                         tracing::warn!("Failed to encode image: {}", e);
                         // Fallback to description
-                        let desc = attachment.describe();
+                        let desc = attachment.describe_with_local(working_dir);
                         let current_text = match &mut parts[0] {
                             ChatCompletionRequestUserMessageContentPart::Text(t) => &mut t.text,
                             _ => unreachable!(),
@@ -1198,7 +1211,7 @@ impl Agent {
                 }
             } else {
                 // Non-image: add description
-                let desc = attachment.describe();
+                let desc = attachment.describe_with_local(working_dir);
                 let current_text = match &mut parts[0] {
                     ChatCompletionRequestUserMessageContentPart::Text(t) => &mut t.text,
                     _ => unreachable!(),
@@ -2094,16 +2107,22 @@ mod tests {
 
     #[tokio::test]
     async fn text_model_annotates_each_attachment_exactly_once() {
-        let agent = agent_with(text_llm_client());
+        let agent = agent_with(text_llm_client()); // working_dir = "."
         let attachments = vec![
-            att("text/csv", Some("对账单.csv"), "http://127.0.0.1:1/a.csv", None),
+            att(
+                "text/csv",
+                Some("对账单.csv"),
+                "http://127.0.0.1:1/a.csv",
+                Some(PathBuf::from("./media/对账单.csv")),
+            ),
             att("image/png", Some("photo.png"), "http://127.0.0.1:1/b.png", None),
         ];
         let msg = agent.build_user_message("看看这个", &attachments).await;
         let text = user_text(&msg);
         assert_eq!(text.matches("[用户发送了").count(), 2, "text: {}", text);
-        assert_eq!(text.matches("对账单.csv").count(), 1);
-        assert_eq!(text.matches("photo.png").count(), 1);
+        assert_eq!(text.matches("对账单.csv").count(), 2, "filename + local path: {}", text);
+        assert!(text.contains("本地路径: media/对账单.csv"), "text: {}", text);
+        assert!(text.contains("photo.png"));
         assert!(text.starts_with("看看这个"));
         assert_eq!(image_parts(&msg), 0);
     }

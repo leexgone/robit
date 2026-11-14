@@ -8,6 +8,12 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-14
+
+### Fixed
+
+- **robit-agent / robit-chatbot / 附件标注行携带本地保存路径（M1 收尾）**：0.2.0 已把 `local_path` 回填进附件，但 `describe()` 不含路径——非图片附件（csv/xlsx 等数据文件）对模型「能发现、够不着」：只见 `[用户发送了文件: xxx.csv (50.0KB)]`，无从获知落盘位置，宿主领域工具（R2 拍板下替代系统 read 的消费路径）拿不到入口，且 M4/M5 的消毒与冲突后缀使落盘名可能不同于原始文件名、模型无法猜测。新增 `MediaAttachment::describe_with_local(base)`：有本地副本时标注追加 `, 本地路径: <path>`（相对 `working_dir` 显示，不在其下时给绝对路径）；agent 模型侧三处标注分支与 chatbot 档案/标题标注统一改用，标注仍恰一份。图片不受影响（vision 本地优先编码成功时不拼标注）。GUI/TUI 无本地副本，输出与 0.2.0 逐字节一致；`describe()` 无路径形态保留。至此 RFC M1+M2 验收（「发 csv → 模型能复述文件首行」）在宿主注册领域工具后闭环；纯 robit-qq 现成部署下模型可见文件名 + 大小 + 本地路径，内容读取仍需宿主注册相应收读工具（ADR-0005 分工）。
+
 ## [0.2.0] - 2026-11-14
 
 来自子木 StockAgent 第四轮消费反馈（R10 附件批 M1–M7 + R8 宿主形态六件套 H1–H6）。评审与实现方案见 `docs/robit-plan-qq-media-and-host-feedback.md`，移交件见 `docs/robit-rfc-qq-media-and-host-feedback.md`。
