@@ -8,7 +8,11 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
 来自子木 StockAgent 第四轮消费反馈（R10 附件批 M1–M7 + R8 宿主形态六件套 H1–H6）。评审与实现方案见 `docs/robit-plan-qq-media-and-host-feedback.md`，移交件见 `docs/robit-rfc-qq-media-and-host-feedback.md`。
+
+> **升级提示（0.1.x → 0.2.0）**：含不兼容 Rust API 变更（`Agent::new`/`with_history`、`MediaAttachment`、`ToolContext`、storage 会话/消息函数、`download_and_encode_base64`、`PlatformAdapter` 等，详见下方 Changed 节）——直接调用者按「传 `None`/`""` 即旧行为」适配；经 `ChatbotManager`/`bootstrap` 接线的宿主无需改代码。配置文件与旧数据库完全兼容（schema 自动迁移 v5→v7）。
 
 ### Added
 
