@@ -12,6 +12,7 @@ This repository is a Rust monorepo focused on personal automation, programming a
 - **Desktop GUI**: `robit-gui` is built with Tauri v2 and React for a native desktop experience.
 - **Multi-session Bot framework**: `robit-chatbot` provides platform-agnostic Bot infrastructure with independent Agent sessions per chat.
 - **QQ Bot frontend**: `robit-qq` implements QQ Official Bot integration (WebSocket gateway + HTTP messaging), supporting both group and private chats.
+- **WeChat Bot frontend**: `robit-wechat` implements the official WeChat iLink Bot channel (long-poll messaging, QR-code login, encrypted CDN media) for 1:1 chats.
 - **Web frontend bridge**: `robit-web` provides an official JSON wire schema for `AgentEvent`, a broadcast fan-out `Frontend` with tool-confirmation slots, and a message-injection contract for web hosts (axum/actix/…).
 - **Tool system**: Built-in tools include `read`, `bash`, `write`, `edit`, `grep`, `find`, and `ls`; tools can be enabled or disabled through configuration.
 - **Skill system**: Load predefined prompt templates from Markdown/YAML files and trigger them with slash commands.
@@ -27,6 +28,7 @@ crates/
   robit-gui      # Desktop GUI frontend (Tauri v2 + React)
   robit-chatbot  # Multi-session Bot infrastructure (PlatformAdapter trait, ChatbotManager)
   robit-qq       # QQ Official Bot frontend (WebSocket + HTTP API), binary command robit-qq
+  robit-wechat   # WeChat iLink Bot frontend (long-poll + HTTP API), binary command robit-wechat
   robit-web      # Web frontend bridge (AgentEvent JSON schema, SSE/WS-ready Frontend, confirmation slots)
 examples/
   robit-chat     # REPL for validating the LLM API layer
@@ -113,6 +115,22 @@ cargo run -p robit-qq -- --global-storage
 
 `robit-qq` creates an independent Agent session for each QQ group or private chat, and supports inline tool confirmation (reply "确认"/"同意"/"y"/"yes" or "取消"/"拒绝"/"n"/"no").
 
+### Run the WeChat Bot
+
+First, log in once with a QR scan (the long-lived `bot_token` is saved to `{workdir}/.robit/wechat-state.json`):
+
+```bash
+cargo run -p robit-wechat -- login
+```
+
+Then start the bot:
+
+```bash
+cargo run -p robit-wechat -- --workdir /path/to/project
+```
+
+`robit-wechat` speaks the official WeChat iLink Bot channel (long-poll `getUpdates`; no public webhook needed, so intranet deployments work) and creates an independent Agent session per WeChat peer. Tool confirmation works the same as QQ. Media (images/videos/files/voice) is downloaded and decrypted from the encrypted WeChat CDN automatically; run `robit-wechat login` again if the token ever goes stale (errcode -14).
+
 ## Configuration
 
 robit uses a unified `config.toml` file. The lookup order is:
@@ -179,6 +197,11 @@ max_tool_calls_per_turn = 30
 [channels.qq_bot]
 app_id = "your-app-id"
 app_secret = "${QQ_BOT_SECRET}"
+
+# WeChat Bot configuration (optional — `robit-wechat login` stores the token
+# in .robit/wechat-state.json; set bot_token here only to override, e.g. CI)
+# [channels.wechat_bot]
+# bot_token = "${WECHAT_BOT_TOKEN}"
 
 # Bot platform shared configuration (optional)
 [app.bot]

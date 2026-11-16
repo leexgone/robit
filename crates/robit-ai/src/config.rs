@@ -304,6 +304,8 @@ pub struct RetryConfig {
 pub struct ChannelsConfig {
     /// QQ Official Bot channel.
     pub qq_bot: Option<QqBotConfig>,
+    /// WeChat iLink Bot channel.
+    pub wechat_bot: Option<WechatBotConfig>,
 }
 
 /// QQ Official Bot credentials (from `[channels.qq_bot]`).
@@ -311,6 +313,25 @@ pub struct ChannelsConfig {
 pub struct QqBotConfig {
     pub app_id: String,
     pub app_secret: String,
+}
+
+/// WeChat iLink Bot channel settings (from `[channels.wechat_bot]`).
+///
+/// The credential model differs from QQ: a one-time QR scan (`robit-wechat
+/// login`) exchanges for a long-lived `bot_token` persisted in
+/// `wechat-state.json`. The optional `bot_token` here (supports `${ENV_VAR}`)
+/// overrides the state file — useful for CI or multi-instance setups.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct WechatBotConfig {
+    /// Bot token (optional; falls back to the login state file).
+    #[serde(default)]
+    pub bot_token: Option<String>,
+    /// iLink API base URL override (optional).
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// CDN base URL override (optional).
+    #[serde(default)]
+    pub cdn_base_url: Option<String>,
 }
 
 // ============================================================================
@@ -440,6 +461,11 @@ pub fn load_config(workdir: Option<&std::path::Path>) -> Result<RobitConfig, Llm
         if let Some(ref mut qq_bot) = channels.qq_bot {
             qq_bot.app_id = resolve_env_var(&qq_bot.app_id);
             qq_bot.app_secret = resolve_env_var(&qq_bot.app_secret);
+        }
+        if let Some(ref mut wechat_bot) = channels.wechat_bot {
+            if let Some(token) = wechat_bot.bot_token.as_mut() {
+                *token = resolve_env_var(token);
+            }
         }
     }
 

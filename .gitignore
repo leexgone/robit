@@ -25,6 +25,9 @@ config.toml
 # robit runtime directories
 .robit/
 
+# inbound bot media downloads ({working_dir}/media)
+media/
+
 .superpowers
 
 .claude

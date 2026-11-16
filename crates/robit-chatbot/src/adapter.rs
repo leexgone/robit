@@ -82,6 +82,12 @@ impl MarkdownFeatures {
             strikethrough: true,
         }
     }
+
+    /// WeChat iLink Bot renders plain text (the protocol SDK strips Markdown
+    /// from outbound text), so no Markdown feature is advertised.
+    pub fn wechat() -> Self {
+        Self::default()
+    }
 }
 
 impl PlatformCaps {
@@ -112,6 +118,22 @@ impl PlatformCaps {
             supports_images: true,
             supports_files: true,
             max_upload_size: 50 * 1024 * 1024, // 50MB
+        }
+    }
+
+    /// WeChat iLink Bot capabilities: plain-text rendering, no in-place edit
+    /// (a reply is a new message), media upload/send supported via the
+    /// protocol SDK's CDN path.
+    pub fn wechat() -> Self {
+        Self {
+            supports_edit: false,
+            returns_msg_id: true,
+            supports_markdown: false, // plain text; the SDK strips Markdown
+            markdown_features: MarkdownFeatures::wechat(),
+            max_message_length: 2000,
+            supports_images: true,
+            supports_files: true,
+            max_upload_size: 20 * 1024 * 1024, // 20MB
         }
     }
 }

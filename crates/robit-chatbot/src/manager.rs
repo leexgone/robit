@@ -326,22 +326,29 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         let mut attachments: Vec<robit_agent::event::MediaAttachment> =
             Vec::with_capacity(msg.attachments.len());
         for att in msg.attachments {
-            let opts = robit_agent::media::MediaDownloadOptions {
-                max_bytes: max_media_bytes,
-                content_type: Some(att.content_type.clone()),
-            };
-            let local_path = match robit_agent::media::download_media_with_opts(
-                &att.url,
-                att.filename.as_deref(),
-                &media_dir,
-                &opts,
-            )
-            .await
-            {
-                Ok(path) => Some(path),
-                Err(e) => {
-                    tracing::warn!("Failed to download media {}: {}", att.url, e);
-                    None
+            // Adapters that must download media themselves (e.g. WeChat's
+            // AES-encrypted CDN) fill `local_path` directly; keep that copy and
+            // skip the generic URL download, which would fetch ciphertext.
+            let local_path = if att.local_path.is_some() {
+                att.local_path.clone()
+            } else {
+                let opts = robit_agent::media::MediaDownloadOptions {
+                    max_bytes: max_media_bytes,
+                    content_type: Some(att.content_type.clone()),
+                };
+                match robit_agent::media::download_media_with_opts(
+                    &att.url,
+                    att.filename.as_deref(),
+                    &media_dir,
+                    &opts,
+                )
+                .await
+                {
+                    Ok(path) => Some(path),
+                    Err(e) => {
+                        tracing::warn!("Failed to download media {}: {}", att.url, e);
+                        None
+                    }
                 }
             };
             let mut converted: robit_agent::event::MediaAttachment = att.into();
@@ -716,7 +723,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                 None => {
                     // Create a new DB session record.
                     let id = Uuid::new_v4().to_string();
-                    let title = generate_title(first_message);
+                    let title = generate_title(first_message, self.source);
                     let model = self
                         .config
                         .default_model
@@ -856,7 +863,8 @@ fn annotated_text(
 }
 
 /// Generate a short session title from the first user message.
-fn generate_title(message: &str) -> String {
+/// `platform` names the fallback title when the message is empty.
+fn generate_title(message: &str, platform: &str) -> String {
     let trimmed = message.trim();
     const MAX: usize = 30;
     let chars: Vec<char> = trimmed.chars().take(MAX).collect();
@@ -865,7 +873,7 @@ fn generate_title(message: &str) -> String {
         title.push('…');
     }
     if title.is_empty() {
-        "QQ 会话".to_string()
+        format!("{} 会话", platform)
     } else {
         title
     }
@@ -1129,7 +1137,7 @@ mod tests {
         let out = annotated_text("", &atts, std::path::Path::new("."));
         assert_eq!(out, "[用户发送了文件: 对账单.csv (1.0KB)]");
         // Title derived from it must not degrade to the empty fallback.
-        assert_ne!(generate_title(&out), "QQ 会话");
+        assert_ne!(generate_title(&out, "qq"), "qq 会话");
     }
 
     #[test]
@@ -1140,19 +1148,20 @@ mod tests {
     #[test]
     fn generate_title_truncates_long_messages() {
         let long = "x".repeat(100);
-        let title = generate_title(&long);
+        let title = generate_title(&long, "qq");
         assert!(title.ends_with('…'));
         assert!(title.chars().count() <= 31);
     }
 
     #[test]
     fn generate_title_short_message() {
-        assert_eq!(generate_title("hello"), "hello");
+        assert_eq!(generate_title("hello", "qq"), "hello");
     }
 
     #[test]
     fn generate_title_empty_message() {
-        assert_eq!(generate_title("   "), "QQ 会话");
+        assert_eq!(generate_title("   ", "qq"), "qq 会话");
+        assert_eq!(generate_title("", "wechat"), "wechat 会话");
     }
 
     // ========================================================================

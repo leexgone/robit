@@ -6,6 +6,7 @@ members = [
     "crates/robit-gui",
     "crates/robit-chatbot",
     "crates/robit-qq",
+    "crates/robit-wechat",
     "crates/robit-web",
     "examples/robit-chat",
     "examples/robit-agent",
@@ -25,6 +26,7 @@ robit-ai = { path = "crates/robit-ai", version = "0.2.1" }
 robit-agent = { path = "crates/robit-agent", version = "0.2.1" }
 robit-chatbot = { path = "crates/robit-chatbot", version = "0.2.1" }
 robit-web = { path = "crates/robit-web", version = "0.2.1" }
+robit-wechat = { path = "crates/robit-wechat", version = "0.2.1" }
 
 # 异步运行时（按需启用 feature，避免 full 带来的冗余编译）
 tokio = { version = "1.54", features = [
@@ -41,6 +43,10 @@ futures-util = "0.3"
 tokio-util = "0.7"
 # WebSocket（robit-qq 使用）
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+# 微信 iLink Bot 协议 SDK（robit-wechat 使用，纯协议层，不耦合 OpenClaw）
+weixin-agent = "0.3"
+# 终端二维码渲染（robit-wechat 扫码登录）
+qrcode = "0.14"
 # HTTP 客户端（默认用 rustls，纯 Rust 实现，避免 OpenSSL C 编译依赖）
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls"] }
 
