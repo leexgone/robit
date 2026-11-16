@@ -21,6 +21,7 @@ crates=(
     "crates/robit-web:robit-web"
     "crates/robit-tui:robit"
     "crates/robit-qq:robit-qq"
+    "crates/robit-wechat:robit-wechat"
 )
 
 for crateEntry in "${crates[@]}"; do

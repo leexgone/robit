@@ -20,7 +20,8 @@ $crates = @(
     "crates/robit-chatbot:robit-chatbot",
     "crates/robit-web:robit-web",
     "crates/robit-tui:robit",
-    "crates/robit-qq:robit-qq"
+    "crates/robit-qq:robit-qq",
+    "crates/robit-wechat:robit-wechat"
 )
 
 foreach ($crateEntry in $crates) {
