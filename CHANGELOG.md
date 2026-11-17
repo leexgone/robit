@@ -8,6 +8,25 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-17
+
+微信官方 iLink Bot 渠道接入。渠道选型调研（官方渠道 vs 商业协议代理）、认证模型与架构决策见 `docs/robit-plan-wechat-bot.md`。
+
+### Added
+
+- **robit-wechat / 微信 Bot 前端（新 crate）**：实现 `PlatformAdapter` trait，接入微信官方 iLink Bot 渠道（`ilinkai.weixin.qq.com` 长轮询收消息 + HTTP 发消息 + CDN 媒体 AES-128-ECB 解密），二进制 `robit-wechat`。协议层依赖社区纯协议 SDK `weixin-agent` v0.3（官方 npm 包 `@tencent-weixin/openclaw-weixin` v2.4.6 的等价移植，不耦合 OpenClaw）。认证为一次性扫码换长期 `bot_token`（`robit-wechat login`，支持配对码验证与 IDC 重定向，二维码编码 `qrcode_img_content` 而非轮询 token）；凭证、长轮询游标（`sync_buf`）与会话出站 context token 持久化于 `{working_dir}/.robit/wechat-state.json`，重启续收不丢消息。长轮询为出站连接，**个人电脑/内网可直接部署，无需公网回调**；渠道仅 1:1 私聊（`chat_id = "private:{ilink_user_id}"`）。token 失效（errcode -14）发 `Disconnected` 令进程退出并提示重新登录。
+- **robit-chatbot / 附件契约支持 adapter 预填 `local_path`**：`MediaAttachment.local_path` 已由 adapter 填写时，manager 跳过通用 URL 下载、保留本地副本（微信 CDN 媒体为 AES 密文，必须经协议 SDK 解密落盘，通用下载会拿到密文）。QQ 路径行为不变（adapter 恒置 None）。
+- **robit-ai / `[channels.wechat_bot]` 配置段**：`bot_token`（可选，支持 `${ENV_VAR}`，缺省读 `wechat-state.json`）、`base_url` / `cdn_base_url`（可选覆盖，一般无需配置）。
+- **robit-chatbot / `PlatformCaps::wechat()` 与 `MarkdownFeatures::wechat()`**：纯文本渲染（SDK 出站自动过滤 Markdown）、不支持原地编辑、2000 字上限、媒体 20MB。
+
+### Fixed
+
+- **robit-chatbot / 会话标题 fallback 去平台硬编码**：`generate_title` 空消息兜底由硬编码 `"QQ 会话"` 改为 `"{platform} 会话"`（取自 `PlatformAdapter::platform_name()`），多平台档案标题不再张冠李戴。
+
+### Changed
+
+- **发版与分发接线**：`release.yml` 新增 robit-wechat 三平台产物（`robit-wechat-{linux,windows}-x86_64` / `robit-wechat-macos-aarch64`）；workspace 版本 bump 清单扩为 5 个内部 crate（`robit-wechat` 登记进 `[workspace.dependencies]`）；crates.io 发布脚本（publish.ps1/sh）纳入 robit-wechat。
+
 ## [0.2.1] - 2026-11-14
 
 ### Fixed
