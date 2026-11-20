@@ -1,19 +1,23 @@
-# Robit 发布脚本 - PowerShell 版本
-# 按依赖顺序发布所有 crates，自动跳过已发布的版本
+# Robit publish script (PowerShell)
+# Publishes all crates in dependency order, skipping versions already on crates.io.
+#
+# NOTE: keep this file pure ASCII. Windows PowerShell 5.1 reads BOM-less .ps1 as
+# the ANSI codepage (GBK on zh-CN), which garbles non-ASCII text and can even
+# break string parsing. ASCII-only output avoids the problem entirely.
 
-Write-Host "🚀 开始发布 Robit crates..." -ForegroundColor Green
+Write-Host "[start] Publishing Robit crates..." -ForegroundColor Green
 
-# 从 workspace Cargo.toml 读取统一版本号
+# Read the unified version from the workspace Cargo.toml.
 $workspaceToml = Get-Content "Cargo.toml" -Raw
 if ($workspaceToml -match 'version\s*=\s*"([^"]+)"') {
     $workspaceVersion = $matches[1]
 }
 else {
-    Write-Host "❌ 无法从 workspace Cargo.toml 读取版本号" -ForegroundColor Red
+    Write-Host "[error] Cannot read version from workspace Cargo.toml" -ForegroundColor Red
     exit 1
 }
 
-# 需要发布的 crates（按依赖顺序），格式："路径:包名"
+# Crates to publish, in dependency order, as "path:package-name".
 $crates = @(
     "crates/robit-ai:robit-ai",
     "crates/robit-agent:robit-agent",
@@ -30,47 +34,46 @@ foreach ($crateEntry in $crates) {
     $crateName = $parts[1]
     $crateVersion = $workspaceVersion
 
-    Write-Host "`n📦 检查 $crate ..." -ForegroundColor Yellow
+    Write-Host "`n[package] Checking $crate ..." -ForegroundColor Yellow
 
-    # 检查是否有 publish = false
+    # Skip crates marked publish = false.
     $tomlContent = Get-Content "$crate/Cargo.toml" -Raw
     if ($tomlContent -match "publish\s*=\s*false") {
-        Write-Host "⏭️  跳过 $crate (publish = false)" -ForegroundColor Gray
+        Write-Host "[skip] $crate (publish = false)" -ForegroundColor Gray
         continue
     }
 
-    Write-Host "   检查 $crateName v$crateVersion 是否已发布..." -ForegroundColor Cyan
+    Write-Host "   Checking whether $crateName v$crateVersion is already published..." -ForegroundColor Cyan
 
-    # 检查版本是否已发布
+    # Skip versions that are already on crates.io.
     try {
         $response = Invoke-RestMethod -Uri "https://crates.io/api/v1/crates/$crateName" -ErrorAction Stop
         $versions = $response.versions | Select-Object -ExpandProperty num
         if ($versions -contains $crateVersion) {
-            Write-Host "✅ $crateName v$crateVersion 已发布，跳过" -ForegroundColor Green
+            Write-Host "[ok] $crateName v$crateVersion already published, skipping" -ForegroundColor Green
             continue
         }
     }
     catch {
-        # crate 不存在，可以发布
-        Write-Host "   $crateName 尚未在 crates.io 上发布" -ForegroundColor Cyan
+        # The crate does not exist yet, so it can be published.
+        Write-Host "   $crateName is not on crates.io yet" -ForegroundColor Cyan
     }
 
-    Write-Host "   开始发布 $crateName v$crateVersion ..." -ForegroundColor Yellow
+    Write-Host "   Publishing $crateName v$crateVersion ..." -ForegroundColor Yellow
 
-    # 发布
     Push-Location $crate
     cargo publish
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "❌ 发布 $crate 失败！" -ForegroundColor Red
+        Write-Host "[error] Failed to publish $crate !" -ForegroundColor Red
         Pop-Location
         exit $LASTEXITCODE
     }
     Pop-Location
 
-    Write-Host "✅ $crateName v$crateVersion 发布成功" -ForegroundColor Green
+    Write-Host "[ok] $crateName v$crateVersion published" -ForegroundColor Green
 
-    # 等待一下让 crates.io 索引更新
+    # Give the crates.io index a moment to update.
     Start-Sleep -Seconds 15
 }
 
-Write-Host "`n🎉 所有 crates 发布完成！" -ForegroundColor Green
+Write-Host "`n[done] All crates published" -ForegroundColor Green
