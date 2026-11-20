@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-20
+
 ### Fixed
 
 - **robit-wechat / `login` 子命令支持 Ctrl+C 取消**：此前 `robit-wechat login` 未注册信号处理，扫码等待期间按 Ctrl+C 只能走系统默认的信号终止，既无提示也不会报告取消原因。现在登录流程启动即安装 Ctrl+C 监听（首个 `await` 之前完成注册，启动阶段按下也不会漏），取二维码、轮询、刷新、重定向各步骤均可被打断，等待配对码输入时同样可中断（stdin 读取改为 `tokio::io::stdin` 异步读 + 取消选择，不再阻塞事件循环）；取消后打印「已取消微信登录（收到 Ctrl+C），未保存任何登录状态」并以非零状态退出，保证不会写出半成品状态文件。为此 `robit-wechat` 的 tokio 依赖补充 `io-std` / `io-util` feature。
