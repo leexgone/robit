@@ -24,11 +24,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use robit_agent::error::{AgentError, Result};
-use robit_ai::config::RobitConfig;
+use robit_ai::config::{RateLimitSection, RobitConfig};
 use robit_chatbot::adapter::{
-    ChatMessage, ChatType, MediaAttachment, PlatformAdapter, PlatformCaps, PlatformEvent,
-    SendResult, SenderInfo, UploadResult,
+    ChatMessage, ChatType, HintPolicy, MediaAttachment, PlatformAdapter, PlatformCaps,
+    PlatformEvent, SendResult, SenderInfo, UploadResult,
 };
+use robit_chatbot::throttle::{SendLimiter, ThrottleConfig, ThrottleError, WaitMode};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -38,6 +39,13 @@ use weixin_agent::{
 };
 
 use crate::state::WechatState;
+
+/// Server-side anti-flood code: `{"ret":-2,"errmsg":"prepare failed"}`.
+///
+/// Per the protocol SDK's production notes, a burst of sends makes *every*
+/// outbound call fail with this code for minutes, independently of
+/// `context_token`; it is account level and survives restarts.
+const ERRCODE_ANTI_FLOOD: i32 = -2;
 
 /// WeChat adapter configuration resolved from `[channels.wechat_bot]` and the
 /// login state file.
@@ -51,6 +59,10 @@ pub struct WechatConfig {
     pub cdn_base_url: Option<String>,
     /// Bot working directory (state file + media dir live here).
     pub working_dir: PathBuf,
+    /// Account-level outbound send budget (conservative defaults, enabled).
+    pub rate_limit: ThrottleConfig,
+    /// Progress-hint policy override from config; `None` = platform default.
+    pub progress_hint: Option<HintPolicy>,
 }
 
 impl WechatConfig {
@@ -75,6 +87,7 @@ impl WechatConfig {
                     .to_string()
             })?;
 
+        let empty_limit = RateLimitSection::default();
         Ok(Self {
             bot_token,
             base_url: section
@@ -82,6 +95,12 @@ impl WechatConfig {
                 .or_else(|| state.as_ref().and_then(|s| s.base_url.clone())),
             cdn_base_url: section.and_then(|s| s.cdn_base_url.clone()),
             working_dir: working_dir.to_path_buf(),
+            rate_limit: ThrottleConfig::from_section(
+                section.map(|s| &s.rate_limit).unwrap_or(&empty_limit),
+            ),
+            progress_hint: section
+                .and_then(|s| s.progress_hint.as_deref())
+                .and_then(parse_hint_policy),
         })
     }
 
@@ -114,6 +133,62 @@ pub struct WechatPlatformAdapter {
     poll_cancel: CancellationToken,
     /// Shared login/transport state (sync_buf + context tokens persistence).
     state: Arc<Mutex<WechatState>>,
+    /// Account-level outbound send budget. Shared by every outbound path
+    /// (text, media, hints) so one quota domain is enforced per bot account.
+    throttle: Arc<SendLimiter>,
+    /// Cancels throttled waits during shutdown (Ctrl+C must never hang on a
+    /// queued send).
+    shutdown: CancellationToken,
+    /// Where `wechat-state.json` lives; the send budget is persisted there.
+    working_dir: PathBuf,
+    /// Progress-hint policy override from config (`None` = platform default).
+    progress_hint: Option<HintPolicy>,
+}
+
+/// Parse `[channels.wechat_bot].progress_hint`. Unrecognized values warn once
+/// and fall back to the platform default (WeChat: `off`).
+fn parse_hint_policy(raw: &str) -> Option<HintPolicy> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" | "none" | "never" => Some(HintPolicy::Off),
+        "best_effort" | "best-effort" | "auto" => Some(HintPolicy::BestEffort),
+        "always" | "on" => Some(HintPolicy::Always),
+        other => {
+            warn!(
+                "Unknown [channels.wechat_bot].progress_hint '{}'; using the platform default",
+                other
+            );
+            None
+        }
+    }
+}
+
+/// Whether a failed send is the platform's transient anti-flood rejection.
+///
+/// Deliberately narrow: only the explicit `-2` code counts. Other `Error::Api`
+/// values include HTTP status codes synthesized by the SDK's `api_post` /
+/// `api_get` paths (so a 502 is *not* a rate limit).
+fn is_anti_flood(error: &weixin_agent::Error) -> bool {
+    matches!(
+        error,
+        weixin_agent::Error::Api { errcode, .. } if *errcode == ERRCODE_ANTI_FLOOD
+    )
+}
+
+/// Map our own throttling refusal to an agent-level error. Waiters that ran
+/// out of budget or hit a cooldown are transient, so they surface as
+/// [`AgentError::RateLimited`] for the host to decide about.
+fn throttle_to_agent_error(error: ThrottleError) -> AgentError {
+    match error {
+        ThrottleError::Cancelled => {
+            AgentError::InternalError("WeChat send cancelled during shutdown".to_string())
+        }
+        ThrottleError::Cooldown { retry_after } | ThrottleError::Saturated { retry_after } => {
+            AgentError::RateLimited {
+                retry_after_secs: Some(retry_after.as_secs().max(1)),
+                message: format!("outbound send budget: {}", error),
+            }
+        }
+    }
 }
 
 impl WechatPlatformAdapter {
@@ -130,7 +205,7 @@ impl WechatPlatformAdapter {
     ) -> Result<Arc<Self>> {
         let sdk_config = config
             .sdk_config(&config.bot_token)
-            .map_err(|e| AgentError::InternalError(e))?;
+            .map_err(AgentError::InternalError)?;
 
         let state = WechatState::load(&config.working_dir).unwrap_or_default();
         let media_dir = config.working_dir.join("media");
@@ -158,11 +233,31 @@ impl WechatPlatformAdapter {
         // Restore outbound context tokens from the persisted state.
         client.context_tokens().import(state.context_tokens.clone());
 
+        // Restore the send budget: the anti-flood penalty is account level and
+        // outlives the process, so an in-memory-only budget would be empty
+        // exactly when a restart-triggered burst could hit the wall again.
+        let throttle = Arc::new(SendLimiter::new(config.rate_limit.clone()));
+        throttle.restore(&state.outbound).await;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if state.outbound.cooldown_until_ms > now_ms {
+            warn!(
+                "Restored WeChat outbound cooldown: ~{}s remaining (server anti-flood is account level and survives restarts)",
+                (state.outbound.cooldown_until_ms - now_ms) / 1000
+            );
+        }
+
         let adapter = Arc::new(Self {
             client: Arc::clone(&client),
             event_rx: Mutex::new(event_rx),
             poll_cancel: poll_cancel.clone(),
             state: shared_state,
+            throttle,
+            shutdown: shutdown.clone(),
+            working_dir: config.working_dir.clone(),
+            progress_hint: config.progress_hint,
         });
 
         info!(
@@ -190,6 +285,90 @@ impl WechatPlatformAdapter {
             .context_tokens
             .get(peer)
             .cloned()
+    }
+
+    /// Persist the send budget so a restart cannot replay a burst.
+    ///
+    /// Called once per send (≈ a handful of small file writes per minute) and
+    /// on every anti-flood cooldown. Shares the state mutex with the inbound
+    /// bridge, so writes are naturally serialized.
+    async fn persist_throttle(&self) {
+        let snapshot = self.throttle.snapshot().await;
+        let mut state = self.state.lock().await;
+        state.outbound = snapshot;
+        if let Err(e) = state.save(&self.working_dir) {
+            warn!("Failed to persist WeChat send budget: {}", e);
+        }
+    }
+
+    /// Send text through the account-level budget.
+    ///
+    /// `WaitMode::Final` queues for a slot; `WaitMode::BestEffort` returns
+    /// `Ok(None)` when the platform cannot take it right now.
+    async fn send_text_inner(
+        &self,
+        chat_id: &str,
+        text: &str,
+        mode: WaitMode,
+    ) -> Result<Option<SendResult>> {
+        let peer = peer_from_chat_id(chat_id)?.to_string();
+        if let Err(e) = self.throttle.reserve(mode, &self.shutdown).await {
+            return match mode {
+                WaitMode::Final => Err(throttle_to_agent_error(e)),
+                WaitMode::BestEffort => {
+                    debug!("WeChat send skipped for {} ({}): {}", chat_id, mode_label(mode), e);
+                    Ok(None)
+                }
+            };
+        }
+        self.persist_throttle().await;
+
+        let token = self.outbound_context_token(&peer).await;
+        match self.client.send_text(&peer, text, token.as_deref()).await {
+            Ok(result) => {
+                debug!("WeChat message sent to {} (id={})", chat_id, result.message_id);
+                Ok(Some(SendResult {
+                    msg_id: result.message_id,
+                }))
+            }
+            Err(e) => Err(self.map_send_error(e).await),
+        }
+    }
+
+    /// Classify a failed outbound call.
+    ///
+    /// `-2` is the platform's transient anti-flood rejection: it starts a
+    /// cooldown, is logged once per incident with actionable guidance, and
+    /// surfaces as [`AgentError::RateLimited`] so hosts can tell it apart from
+    /// permanent failures. Everything else stays a generic internal error.
+    async fn map_send_error(&self, error: weixin_agent::Error) -> AgentError {
+        if is_anti_flood(&error) {
+            let cooldown = self.throttle.config().cooldown;
+            let fresh = self.throttle.note_throttled(cooldown);
+            self.persist_throttle().await;
+            if fresh {
+                warn!(
+                    "WeChat outbound rejected by the server's anti-flood limit (ret=-2, \
+                     'prepare failed'): this is an account-level rate limit, it self-heals \
+                     within minutes, dense retries make it worse, and restarting the bot \
+                     does NOT clear it (cooling down for {}s)",
+                    cooldown.as_secs()
+                );
+            }
+            return AgentError::RateLimited {
+                retry_after_secs: Some(cooldown.as_secs()),
+                message: format!("{}", error),
+            };
+        }
+        AgentError::InternalError(format!("WeChat send failed: {}", error))
+    }
+}
+
+/// Short label for a wait mode (logs only).
+fn mode_label(mode: WaitMode) -> &'static str {
+    match mode {
+        WaitMode::Final => "final",
+        WaitMode::BestEffort => "best-effort",
     }
 }
 
@@ -444,18 +623,30 @@ impl PlatformAdapter for WechatPlatformAdapter {
         "wechat"
     }
 
+    /// Per-channel override (config) of the platform default progress-hint
+    /// policy; WeChat defaults to `off`.
+    fn hint_policy(&self) -> HintPolicy {
+        self.progress_hint
+            .unwrap_or_else(|| Self::capabilities().progress_hints)
+    }
+
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult> {
-        let peer = peer_from_chat_id(chat_id)?;
-        let token = self.outbound_context_token(peer).await;
-        let result = self
-            .client
-            .send_text(peer, text, token.as_deref())
+        self.send_text_inner(chat_id, text, WaitMode::Final)
+            .await?
+            .ok_or_else(|| {
+                AgentError::InternalError(
+                    "WeChat send unexpectedly skipped under the final wait mode".to_string(),
+                )
+            })
+    }
+
+    async fn send_message_best_effort(
+        &self,
+        chat_id: &str,
+        text: &str,
+    ) -> Result<Option<SendResult>> {
+        self.send_text_inner(chat_id, text, WaitMode::BestEffort)
             .await
-            .map_err(|e| AgentError::InternalError(format!("WeChat send failed: {}", e)))?;
-        debug!("WeChat message sent to {} (id={})", chat_id, result.message_id);
-        Ok(SendResult {
-            msg_id: result.message_id,
-        })
     }
 
     async fn upload_file(
@@ -487,17 +678,23 @@ impl PlatformAdapter for WechatPlatformAdapter {
         _media_type: &str,
     ) -> Result<SendResult> {
         let peer = peer_from_chat_id(chat_id)?;
+        self.throttle
+            .reserve(WaitMode::Final, &self.shutdown)
+            .await
+            .map_err(throttle_to_agent_error)?;
+        self.persist_throttle().await;
+
         let token = self.outbound_context_token(peer).await;
         let path = Path::new(file_url);
-        let result = self
-            .client
-            .send_media(peer, path, token.as_deref())
-            .await
-            .map_err(|e| AgentError::InternalError(format!("WeChat media send failed: {}", e)))?;
-        debug!("WeChat media sent to {} (id={})", chat_id, result.message_id);
-        Ok(SendResult {
-            msg_id: result.message_id,
-        })
+        match self.client.send_media(peer, path, token.as_deref()).await {
+            Ok(result) => {
+                debug!("WeChat media sent to {} (id={})", chat_id, result.message_id);
+                Ok(SendResult {
+                    msg_id: result.message_id,
+                })
+            }
+            Err(e) => Err(self.map_send_error(e).await),
+        }
     }
 
     async fn recv_event(&self) -> Result<PlatformEvent> {
@@ -540,6 +737,86 @@ mod tests {
         assert_eq!(sanitize_filename("..\\evil\\a.txt"), "evil_a.txt");
         assert_eq!(sanitize_filename("对账单 v1.csv"), "对账单 v1.csv");
         assert_eq!(sanitize_filename(""), "");
+    }
+
+    #[test]
+    fn hint_policy_config_parsing() {
+        assert_eq!(parse_hint_policy("off"), Some(HintPolicy::Off));
+        assert_eq!(parse_hint_policy(" Off "), Some(HintPolicy::Off));
+        assert_eq!(parse_hint_policy("best_effort"), Some(HintPolicy::BestEffort));
+        assert_eq!(parse_hint_policy("best-effort"), Some(HintPolicy::BestEffort));
+        assert_eq!(parse_hint_policy("always"), Some(HintPolicy::Always));
+        // Unknown values fall back to the platform default instead of failing.
+        assert_eq!(parse_hint_policy("sometimes"), None);
+    }
+
+    #[test]
+    fn anti_flood_is_only_errcode_minus_two() {
+        let flood = weixin_agent::Error::Api {
+            errcode: -2,
+            errmsg: "prepare failed".to_string(),
+        };
+        assert!(is_anti_flood(&flood));
+
+        // -14 (stale token), HTTP-status codes and zero must NOT be treated as
+        // rate limiting: only the explicit anti-flood code is transient.
+        for code in [-14, 0, 400, 429, 500] {
+            let other = weixin_agent::Error::Api {
+                errcode: code,
+                errmsg: "no".to_string(),
+            };
+            assert!(!is_anti_flood(&other), "errcode {code} must not be a rate limit");
+        }
+    }
+
+    #[test]
+    fn from_config_applies_rate_limit_and_hint_overrides() {
+        let toml_str = r#"
+            [providers.x]
+            base_url = "https://x"
+            api_key = "k"
+            [[providers.x.models]]
+            id = "m"
+
+            [channels.wechat_bot]
+            bot_token = "tok"
+            progress_hint = "best_effort"
+
+            [channels.wechat_bot.rate_limit]
+            window_sends = 6
+            cooldown_secs = 45
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let dir = std::env::temp_dir().join("robit-wechat-rate-limit-test");
+        let cfg = WechatConfig::from_config(&config, &dir).unwrap();
+
+        assert_eq!(cfg.rate_limit.window_sends, 6);
+        assert_eq!(cfg.rate_limit.cooldown,
+            Duration::from_secs(45));
+        // Unspecified fields keep the documented defaults.
+        assert!(cfg.rate_limit.enabled);
+        assert_eq!(cfg.rate_limit.min_interval, Duration::from_millis(2_000));
+        assert_eq!(cfg.rate_limit.window_len, Duration::from_secs(180));
+        assert_eq!(cfg.progress_hint, Some(HintPolicy::BestEffort));
+    }
+
+    #[test]
+    fn from_config_without_rate_limit_section_is_enabled_by_default() {
+        let toml_str = r#"
+            [providers.x]
+            base_url = "https://x"
+            api_key = "k"
+            [[providers.x.models]]
+            id = "m"
+
+            [channels.wechat_bot]
+            bot_token = "tok"
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let dir = std::env::temp_dir().join("robit-wechat-rate-limit-default-test");
+        let cfg = WechatConfig::from_config(&config, &dir).unwrap();
+        assert_eq!(cfg.rate_limit, ThrottleConfig::default());
+        assert!(cfg.progress_hint.is_none(), "no override → platform default (off)");
     }
 
     #[test]

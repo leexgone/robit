@@ -9,6 +9,25 @@
 use async_trait::async_trait;
 use robit_agent::error::Result;
 
+/// How a platform wants the "bot is working" progress hint to be delivered.
+///
+/// The hint is a plain text message sent once per turn, before the first tool
+/// call, so the user is not staring at silence during a long tool run. Its
+/// cost differs per platform: on a platform with in-place edit the hint message
+/// is later *edited* into the final answer (net zero extra messages), while on
+/// a platform without edit it stays in the chat as an extra message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HintPolicy {
+    /// Always send it (typical for platforms that support edit).
+    #[default]
+    Always,
+    /// Send only when the outbound budget has room; skip silently otherwise.
+    BestEffort,
+    /// Never send it (typical for platforms where it would be a real extra
+    /// message and count against an anti-flood budget).
+    Off,
+}
+
 /// Capabilities that vary by platform.
 #[derive(Debug, Clone)]
 pub struct PlatformCaps {
@@ -23,6 +42,8 @@ pub struct PlatformCaps {
     pub supports_files: bool,
     /// Maximum upload file size in bytes (0 = no limit).
     pub max_upload_size: u64,
+    /// How progress hints should be delivered on this platform.
+    pub progress_hints: HintPolicy,
 }
 
 /// Supported Markdown features for a platform.
@@ -104,6 +125,9 @@ impl PlatformCaps {
             supports_images: true,
             supports_files: true,
             max_upload_size: 20 * 1024 * 1024, // 20MB
+            // QQ supports in-place edit: the hint message becomes the answer,
+            // so it costs no extra message.
+            progress_hints: HintPolicy::Always,
         }
     }
 
@@ -118,6 +142,7 @@ impl PlatformCaps {
             supports_images: true,
             supports_files: true,
             max_upload_size: 50 * 1024 * 1024, // 50MB
+            progress_hints: HintPolicy::Always,
         }
     }
 
@@ -134,6 +159,9 @@ impl PlatformCaps {
             supports_images: true,
             supports_files: true,
             max_upload_size: 20 * 1024 * 1024, // 20MB
+            // No in-place edit: a hint stays as a separate chat message and
+            // consumes one unit of the server-side anti-flood budget.
+            progress_hints: HintPolicy::Off,
         }
     }
 }
@@ -245,6 +273,31 @@ pub trait PlatformAdapter: Send + Sync + 'static {
 
     /// Send a text message to a chat. Returns the platform message ID.
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult>;
+
+    /// Send a text message that may be **skipped** when the platform cannot
+    /// take it right now (outbound budget saturated, cooldown active).
+    ///
+    /// `Ok(None)` means "not sent, and that is acceptable" — used for
+    /// non-essential traffic (progress hints, notices) so that optional
+    /// messages never delay or displace the ones that must be delivered.
+    ///
+    /// The default implementation is an ordinary [`Self::send_message`], so
+    /// platforms without a send budget keep their previous behavior exactly.
+    async fn send_message_best_effort(
+        &self,
+        chat_id: &str,
+        text: &str,
+    ) -> Result<Option<SendResult>> {
+        self.send_message(chat_id, text).await.map(Some)
+    }
+
+    /// How progress hints should be delivered on this platform.
+    ///
+    /// Defaults to the platform's capability declaration; adapters that expose
+    /// a per-channel override (e.g. WeChat's config) override this method.
+    fn hint_policy(&self) -> HintPolicy {
+        Self::capabilities().progress_hints
+    }
 
     /// Edit a previously-sent message. Default implementation falls back
     /// to `send_message` for platforms that don't support editing.

@@ -332,6 +332,43 @@ pub struct WechatBotConfig {
     /// CDN base URL override (optional).
     #[serde(default)]
     pub cdn_base_url: Option<String>,
+    /// Progress-hint policy override: `off` | `best_effort` | `always`.
+    /// Unset (or unrecognized) follows the platform default (WeChat: `off`).
+    #[serde(default)]
+    pub progress_hint: Option<String>,
+    /// Outbound rate limiting. The section being absent means "defaults",
+    /// which keep the limiter enabled.
+    #[serde(default)]
+    pub rate_limit: RateLimitSection,
+}
+
+/// Outbound rate-limit settings (`[channels.<x>_bot.rate_limit]`).
+///
+/// Every field is optional: missing ones fall back to the platform crate's
+/// defaults. The resolving/validating code lives with the implementation
+/// (`robit_chatbot::throttle::ThrottleConfig::from_section`), so this struct
+/// stays a pure configuration surface.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct RateLimitSection {
+    /// Master switch (default `true`).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Minimum spacing between two sends (milliseconds; default 2000).
+    #[serde(default)]
+    pub min_interval_ms: Option<u64>,
+    /// Sends allowed per window (default 10).
+    #[serde(default)]
+    pub window_sends: Option<u32>,
+    /// Window length in seconds (default 180).
+    #[serde(default)]
+    pub window_secs: Option<u64>,
+    /// Cooldown applied after the platform reports throttling (seconds;
+    /// default 120).
+    #[serde(default)]
+    pub cooldown_secs: Option<u64>,
+    /// Longest a must-deliver send may queue (milliseconds; default 180000).
+    #[serde(default)]
+    pub max_wait_ms: Option<u64>,
 }
 
 // ============================================================================

@@ -20,7 +20,7 @@ use robit_agent::frontend::Frontend;
 use robit_agent::tool::ToolCallInfo;
 use tokio::sync::Mutex;
 
-use crate::adapter::{PlatformCaps, SendResult, UploadResult};
+use crate::adapter::{HintPolicy, PlatformCaps, SendResult, UploadResult};
 use crate::confirmer::Confirmer;
 use crate::markdown::prepare_markdown_for_platform;
 /// Abstracted message sending capability (platform-agnostic).
@@ -32,6 +32,18 @@ use crate::markdown::prepare_markdown_for_platform;
 pub trait PlatformSender: Send + Sync {
     /// Send a text message to a chat; returns the platform message ID.
     async fn send(&self, chat_id: &str, text: &str) -> Result<SendResult>;
+    /// Send a text message that may be skipped when the platform cannot take
+    /// it right now (`Ok(None)` = skipped, which is acceptable for hints).
+    ///
+    /// The default implementation is an ordinary [`Self::send`], so the
+    /// behavior of every existing sender is unchanged.
+    async fn send_best_effort(
+        &self,
+        chat_id: &str,
+        text: &str,
+    ) -> Result<Option<SendResult>> {
+        self.send(chat_id, text).await.map(Some)
+    }
     /// Edit a previously-sent message in place.
     async fn edit(&self, chat_id: &str, msg_id: &str, text: &str) -> Result<()>;
     /// Upload a file to the platform. Returns the platform file URL/ID.
@@ -78,6 +90,10 @@ pub struct ChatbotFrontend {
     pub last_msg_id: Mutex<Option<String>>,
     /// Whether a progress hint has already been sent this turn (rate limit).
     pub progress_hint_sent: Mutex<bool>,
+    /// How progress hints should be delivered on this platform
+    /// (see [`HintPolicy`]). Defaults to [`HintPolicy::Always`]; the manager
+    /// overrides it with the platform's policy.
+    pub hint_policy: HintPolicy,
     /// ThinkingDelta events seen this turn, counted for a single end-of-turn
     /// summary log (per-delta logging would flood the log file).
     pub thinking_deltas: AtomicUsize,
@@ -110,11 +126,18 @@ impl ChatbotFrontend {
             buffer: Mutex::new(String::new()),
             last_msg_id: Mutex::new(None),
             progress_hint_sent: Mutex::new(false),
+            hint_policy: HintPolicy::Always,
             thinking_deltas: AtomicUsize::new(0),
             thinking_bytes: AtomicUsize::new(0),
             auto_approve,
             busy: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Override the platform's default progress-hint policy.
+    pub fn with_hint_policy(mut self, policy: HintPolicy) -> Self {
+        self.hint_policy = policy;
+        self
     }
 
     /// Save an assistant message to the database.
@@ -252,7 +275,19 @@ impl ChatbotFrontend {
     }
 
     /// Send a brief progress hint. Only sends once per turn to avoid spam.
+    ///
+    /// Delivery follows [`ChatbotFrontend::hint_policy`]: `Off` skips entirely,
+    /// `BestEffort` skips silently when the platform's send budget is
+    /// saturated, `Always` is an ordinary (queued) send.
     async fn send_progress_hint(&self, tool_name: &str) {
+        if self.hint_policy == HintPolicy::Off {
+            tracing::trace!(
+                "[chatbot] progress hint suppressed by policy: chat_id='{}', tool='{}'",
+                self.chat_id, tool_name
+            );
+            return;
+        }
+
         let mut sent = self.progress_hint_sent.lock().await;
         if *sent {
             return;
@@ -269,6 +304,28 @@ impl ChatbotFrontend {
             "find" => "🔍 正在查找...".to_string(),
             _ => "🔧 正在处理...".to_string(),
         };
+
+        if self.hint_policy == HintPolicy::BestEffort {
+            match self.platform_sender.send_best_effort(&self.chat_id, &hint).await {
+                Ok(Some(res)) => {
+                    *self.last_msg_id.lock().await = Some(res.msg_id);
+                    tracing::trace!(
+                        "[chatbot] progress hint sent: chat_id='{}', tool='{}'",
+                        self.chat_id, tool_name
+                    );
+                }
+                Ok(None) => tracing::trace!(
+                    "[chatbot] progress hint skipped (platform throttled): chat_id='{}', tool='{}'",
+                    self.chat_id, tool_name
+                ),
+                Err(e) => tracing::warn!(
+                    "[chatbot] failed to send progress hint: chat_id='{}', tool='{}', error={}",
+                    self.chat_id, tool_name, e
+                ),
+            }
+            return;
+        }
+
         match self.platform_sender.send(&self.chat_id, &hint).await {
             Ok(res) => {
                 *self.last_msg_id.lock().await = Some(res.msg_id);
@@ -444,13 +501,20 @@ mod tests {
         sent: StdMutex<Vec<(String, String)>>,
         edits: StdMutex<Vec<(String, String, String)>>,
         caps: PlatformCaps,
+        /// When true, `send_best_effort` reports "skipped" (budget saturated).
+        skip_best_effort: bool,
     }
 
     impl MockSender {
         fn new_with_edit(edit: bool) -> Arc<Self> {
+            Self::new_full(edit, false)
+        }
+
+        fn new_full(edit: bool, skip_best_effort: bool) -> Arc<Self> {
             Arc::new(Self {
                 sent: StdMutex::new(Vec::new()),
                 edits: StdMutex::new(Vec::new()),
+                skip_best_effort,
                 caps: PlatformCaps {
                     supports_edit: edit,
                     returns_msg_id: true,
@@ -460,6 +524,7 @@ mod tests {
                     supports_images: true,
                     supports_files: true,
                     max_upload_size: 20 * 1024 * 1024,
+                    progress_hints: HintPolicy::Always,
                 },
             })
         }
@@ -478,6 +543,16 @@ mod tests {
             Ok(SendResult {
                 msg_id: format!("msg-{}", self.sent.lock().unwrap().len()),
             })
+        }
+        async fn send_best_effort(
+            &self,
+            chat_id: &str,
+            text: &str,
+        ) -> Result<Option<SendResult>> {
+            if self.skip_best_effort {
+                return Ok(None);
+            }
+            self.send(chat_id, text).await.map(Some)
         }
         async fn edit(&self, chat_id: &str, msg_id: &str, text: &str) -> Result<()> {
             self.edits.lock().unwrap().push((
@@ -615,6 +690,60 @@ mod tests {
         }).await.unwrap();
         // No progress hint in manual mode (Confirmer sends the prompt instead).
         assert!(!sender.sent_texts().iter().any(|t| t.contains("正在")));
+    }
+
+    #[tokio::test]
+    async fn hint_policy_off_suppresses_hint_but_keeps_answer() {
+        let sender = MockSender::new_with_edit(false);
+        let fe = make_frontend(sender.clone(), true)
+            .await
+            .with_hint_policy(HintPolicy::Off);
+        fe.on_event(AgentEvent::ToolCallRequested {
+            tool_call_id: "tc1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }).await.unwrap();
+        fe.on_event(AgentEvent::TextDelta("答案".into())).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+
+        let texts = sender.sent_texts();
+        assert!(!texts.iter().any(|t| t.contains("正在")), "hint must not be sent: {texts:?}");
+        assert_eq!(texts.len(), 1, "the final answer is still delivered");
+        assert!(texts[0].contains("答案"));
+    }
+
+    #[tokio::test]
+    async fn hint_policy_best_effort_skips_when_throttled() {
+        let sender = MockSender::new_full(false, true); // reports "skipped"
+        let fe = make_frontend(sender.clone(), true)
+            .await
+            .with_hint_policy(HintPolicy::BestEffort);
+        fe.on_event(AgentEvent::ToolCallRequested {
+            tool_call_id: "tc1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }).await.unwrap();
+        fe.on_event(AgentEvent::TextDelta("答案".into())).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+
+        let texts = sender.sent_texts();
+        assert!(!texts.iter().any(|t| t.contains("正在")), "hint must be skipped: {texts:?}");
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].contains("答案"));
+    }
+
+    #[tokio::test]
+    async fn hint_policy_best_effort_sends_when_budget_allows() {
+        let sender = MockSender::new_full(false, false); // "send" succeeds
+        let fe = make_frontend(sender.clone(), true)
+            .await
+            .with_hint_policy(HintPolicy::BestEffort);
+        fe.on_event(AgentEvent::ToolCallRequested {
+            tool_call_id: "tc1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }).await.unwrap();
+        assert!(sender.sent_texts().iter().any(|t| t.contains("正在")));
     }
 
     #[tokio::test]

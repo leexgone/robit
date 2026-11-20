@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use robit_chatbot::throttle::ThrottleState;
 use serde::{Deserialize, Serialize};
 
 /// Persisted WeChat login/transport state.
@@ -32,6 +33,13 @@ pub struct WechatState {
     /// Per-peer context tokens for outbound messages.
     #[serde(default)]
     pub context_tokens: HashMap<String, String>,
+    /// Outbound send budget snapshot (recent sends + anti-flood cooldown).
+    ///
+    /// Persisted so a restart cannot replay a burst: the server-side anti-flood
+    /// penalty is account level and outlives the process, so an in-memory-only
+    /// budget would be empty right when it matters most.
+    #[serde(default)]
+    pub outbound: ThrottleState,
 }
 
 impl WechatState {
@@ -111,5 +119,41 @@ mod tests {
     #[test]
     fn load_missing_returns_none() {
         assert!(WechatState::load(Path::new("Z:/definitely-not-here")).is_none());
+    }
+
+    #[test]
+    fn outbound_budget_roundtrips() {
+        let mut state = WechatState::default();
+        state.outbound.recent_ms = vec![1_700_000_000_000, 1_700_000_002_000];
+        state.outbound.cooldown_until_ms = 1_700_000_120_000;
+
+        let dir = std::env::temp_dir().join("robit-wechat-state-outbound-test");
+        state.save(&dir).unwrap();
+        let loaded = WechatState::load(&dir).unwrap();
+        assert_eq!(loaded.outbound.recent_ms, state.outbound.recent_ms);
+        assert_eq!(loaded.outbound.cooldown_until_ms, state.outbound.cooldown_until_ms);
+
+        std::fs::remove_file(WechatState::path(&dir)).ok();
+    }
+
+    #[test]
+    fn legacy_state_without_outbound_still_loads() {
+        // State files written before the send budget existed must keep working.
+        let dir = std::env::temp_dir().join("robit-wechat-state-legacy-test");
+        let path = WechatState::path(&dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"bot_token":"tok","sync_buf":"buf","context_tokens":{"p1":"c1"}}"#,
+        )
+        .unwrap();
+
+        let loaded = WechatState::load(&dir).unwrap();
+        assert_eq!(loaded.bot_token.as_deref(), Some("tok"));
+        assert_eq!(loaded.sync_buf.as_deref(), Some("buf"));
+        assert!(loaded.outbound.recent_ms.is_empty());
+        assert_eq!(loaded.outbound.cooldown_until_ms, 0);
+
+        std::fs::remove_file(&path).ok();
     }
 }

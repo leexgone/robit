@@ -268,6 +268,7 @@ mod tests {
                     supports_images: true,
                     supports_files: true,
                     max_upload_size: 20 * 1024 * 1024,
+                    progress_hints: crate::adapter::HintPolicy::Always,
                 },
             })
         }

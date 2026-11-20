@@ -68,6 +68,15 @@ impl<T: PlatformAdapter> PlatformSender for PlatformSenderBridge<T> {
     async fn send(&self, chat_id: &str, text: &str) -> robit_agent::error::Result<SendResult> {
         self.platform.send_message(chat_id, text).await
     }
+    /// Must delegate explicitly: the trait's default implementation would call
+    /// `send` and silently turn "best effort" back into a queued send.
+    async fn send_best_effort(
+        &self,
+        chat_id: &str,
+        text: &str,
+    ) -> robit_agent::error::Result<Option<SendResult>> {
+        self.platform.send_message_best_effort(chat_id, text).await
+    }
     async fn edit(&self, chat_id: &str, msg_id: &str, text: &str) -> robit_agent::error::Result<()> {
         self.platform.edit_message(chat_id, msg_id, text).await
     }
@@ -795,14 +804,17 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
     > {
         tracing::info!("spawn_session_agent: chat_id={}, session_id={}", chat_id, session_id);
 
-        let frontend = Arc::new(ChatbotFrontend::new(
-            chat_id.to_string(),
-            session_id.to_string(),
-            Arc::clone(&self.platform_sender),
-            Arc::clone(&self.confirmer),
-            Arc::clone(&self.db),
-            self.auto_approve,
-        ));
+        let frontend = Arc::new(
+            ChatbotFrontend::new(
+                chat_id.to_string(),
+                session_id.to_string(),
+                Arc::clone(&self.platform_sender),
+                Arc::clone(&self.confirmer),
+                Arc::clone(&self.db),
+                self.auto_approve,
+            )
+            .with_hint_policy(self.platform.hint_policy()),
+        );
 
         let (message_tx, message_rx) = mpsc::channel::<FrontendMessage>(16);
 
@@ -1129,6 +1141,10 @@ mod tests {
     struct MockPlatform {
         events: Mutex<VecDeque<PlatformEvent>>,
         sent: std::sync::Mutex<Vec<(String, String)>>,
+        /// When true, `send_message_best_effort` reports "skipped", which lets
+        /// tests prove the bridge routes hints through the adapter's
+        /// best-effort path instead of the plain `send` default.
+        skip_best_effort: AtomicBool,
     }
 
     #[allow(dead_code)]
@@ -1137,6 +1153,7 @@ mod tests {
             Arc::new(Self {
                 events: Mutex::new(VecDeque::new()),
                 sent: std::sync::Mutex::new(Vec::new()),
+                skip_best_effort: AtomicBool::new(false),
             })
         }
 
@@ -1171,6 +1188,16 @@ mod tests {
                 .unwrap()
                 .push((chat_id.to_string(), text.to_string()));
             Ok(SendResult { msg_id: "m1".into() })
+        }
+        async fn send_message_best_effort(
+            &self,
+            chat_id: &str,
+            text: &str,
+        ) -> robit_agent::error::Result<Option<SendResult>> {
+            if self.skip_best_effort.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            self.send_message(chat_id, text).await.map(Some)
         }
         async fn recv_event(&self) -> robit_agent::error::Result<PlatformEvent> {
             // Block-ish: spin until an event is available (test injects events).
@@ -1347,6 +1374,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manager = make_manager(dir.path().to_path_buf(), offline_config());
         assert!(manager.inject_message("group:1", "hi", "  ").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn platform_sender_bridge_forwards_best_effort_to_the_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), offline_config());
+        manager.platform.skip_best_effort.store(true, Ordering::SeqCst);
+
+        let bridge = PlatformSenderBridge {
+            platform: Arc::clone(&manager.platform),
+            caps: PlatformCaps::qq(),
+        };
+
+        // Best-effort traffic must be *skipped*, not silently queued through
+        // the plain `send` path (the trait's default implementation).
+        assert!(bridge.send_best_effort("chat", "hint").await.unwrap().is_none());
+        assert!(manager.platform.sent().is_empty(), "a skipped hint must not be sent");
+
+        manager.platform.skip_best_effort.store(false, Ordering::SeqCst);
+        assert!(bridge.send_best_effort("chat", "hint").await.unwrap().is_some());
+        assert_eq!(manager.platform.sent().len(), 1);
     }
 
     #[tokio::test]

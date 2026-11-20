@@ -8,6 +8,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **robit-chatbot / 通用出站节流模块 `throttle`**：`SendLimiter` 提供账号级发送预算（最小间隔 + 滑动窗口）、平台限流后的冷却（`note_throttled`）与可持久化快照（`snapshot` / `restore`），等待全程可被关停令牌取消；模块内不含任何平台错误码——何时限流、冷却多久、快照存哪、配额按什么粒度划分，全部由 adapter 决定，因此飞书（HTTP 429 + `Retry-After`）、Telegram（`429 retry_after`）等后续渠道可复用同一实现。微信侧 `[channels.wechat_bot.rate_limit]` 缺省即启用：最小间隔 2s、窗口 10 条/180s、反刷冷却 120s、必达消息排队上限 180s，参数全部可调，`enabled = false` 可完全退回旧行为。
+- **robit-agent / `AgentError::RateLimited`**：新增瞬态平台限流错误变体（带 `retry_after_secs` 提示）与 `is_rate_limited()` 便捷判断，宿主终于能区分「分钟级自愈的服务端反刷/限流」与永久失败（token 失效、参数错误）。`AgentError` 同时标注 `#[non_exhaustive]`，后续新增变体不再构成破坏性变更。
+- **robit-chatbot / `HintPolicy` 进度提示策略与「尽力而为」发送通道**：`PlatformCaps.progress_hints` 声明平台缺省（QQ / 飞书 `always`，微信 `off`）；新增 `PlatformAdapter::send_message_best_effort` 与 `PlatformSender::send_best_effort`（缺省实现等价于普通发送，现有平台零改动），配额紧张时提示类消息直接跳过，不再排队挤占必达消息的位置。
+
+### Changed
+
+- **robit-wechat / 出站反刷防护**：文本与媒体两路发送共用同一账号级预算（含宿主直调 adapter 的路径），`-2`（`errmsg="prepare failed"`）被识别为服务端反刷——返回 `AgentError::RateLimited`、启动全局冷却，并按「每次事故一条」输出包含「分钟级自愈 / 勿密集重试 / 重启无效」语义的 warn（而非每条失败刷一行）。发送预算快照写入 `wechat-state.json` 的 `outbound` 段，重启后冷却与窗口延续，避免「重启后第一波推送再次撞墙」。微信进度提示缺省改为 `off`（无原地编辑，每条提示都是独立消息且占用配额），可用 `[channels.wechat_bot].progress_hint = "best_effort"` 或 `"always"` 恢复。
+
 ## [0.3.1] - 2026-11-20
 
 ### Fixed

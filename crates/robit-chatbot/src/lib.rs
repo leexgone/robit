@@ -12,13 +12,15 @@ pub mod extensions;
 pub mod frontend;
 pub mod manager;
 pub mod markdown;
+pub mod throttle;
 pub mod tool;
 
 pub use adapter::{
-    ChatMessage, ChatType, MarkdownFeatures, MediaAttachment, PlatformAdapter, PlatformCaps,
-    PlatformEvent, SendResult, SenderInfo, UploadResult,
+    ChatMessage, ChatType, HintPolicy, MarkdownFeatures, MediaAttachment, PlatformAdapter,
+    PlatformCaps, PlatformEvent, SendResult, SenderInfo, UploadResult,
 };
 pub use confirmer::{ConfirmKeywords, Confirmer};
 pub use extensions::PlatformExtWrapper;
 pub use frontend::{ChatbotFrontend, PlatformExt, PlatformSender};
 pub use manager::{AgentHandle, ChatbotManager, ManagerError};
+pub use throttle::{SendLimiter, ThrottleConfig, ThrottleError, ThrottleState, WaitMode};

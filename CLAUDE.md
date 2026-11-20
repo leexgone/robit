@@ -235,6 +235,15 @@ app_secret = "${QQ_BOT_SECRET}"        # 支持 ${ENV_VAR} 替换
 # bot_token = "${WECHAT_BOT_TOKEN}"    # 缺省时从 .robit/wechat-state.json 读取（`robit-wechat login` 扫码产生）
 # base_url = "https://ilinkai.weixin.qq.com"   # iLink API 覆盖（一般无需配置）
 # cdn_base_url = "https://novac2c.cdn.weixin.qq.com/c2c"  # CDN 覆盖（一般无需配置）
+# progress_hint = "off"                # 进度提示策略：off（缺省）/ best_effort / always；微信无原地编辑，每条提示都是独立消息并占用发送配额
+
+[channels.wechat_bot.rate_limit]       # 出站反刷限流（缺省即启用，全部可选）
+# enabled = true                       # 总开关；false 完全退回旧行为（只保留 -2 类型化与日志）
+# min_interval_ms = 2000               # 相邻两条最小间隔（0 = 不限间隔，仅靠窗口）
+# window_sends = 10                    # 滑动窗口内允许的条数（对齐 SDK 实测安全点 170s/10 条）
+# window_secs = 180                    # 滑动窗口长度（秒）
+# cooldown_secs = 120                  # 观测到服务端反刷（ret=-2）后的全局冷却
+# max_wait_ms = 180000                 # 必达消息最长排队时间（= 一个窗口；超过则返回 RateLimited）
 
 [app.bot]                              # Bot 平台共享设置（可选，以下为默认值）
 auto_approve = false                   # 自动批准工具调用（覆盖 app.auto_approve）

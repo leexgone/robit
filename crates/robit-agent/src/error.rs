@@ -3,6 +3,10 @@
 use thiserror::Error;
 
 /// Unified error type for Agent operations.
+///
+/// `#[non_exhaustive]`: new variants are expected as platforms and providers
+/// are added, so downstream matches should keep a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum AgentError {
     #[error(transparent)]
@@ -31,6 +35,31 @@ pub enum AgentError {
 
     #[error("Agent internal error: {0}")]
     InternalError(String),
+
+    /// The platform refused the outbound call because of a transient,
+    /// platform-side limit (rate limiting / anti-flood), **not** because the
+    /// content or credentials were wrong.
+    ///
+    /// `retry_after_secs` is an advisory hint for the host, not a contract.
+    /// Hosts decide whether to retry: retrying blindly can deepen the limit,
+    /// so the convention is "surface it, retry later if your policy allows".
+    #[error(
+        "platform rate limited (retry after ~{}s): {}",
+        retry_after_secs.unwrap_or(0),
+        message
+    )]
+    RateLimited {
+        retry_after_secs: Option<u64>,
+        message: String,
+    },
+}
+
+impl AgentError {
+    /// Whether this is a transient platform-side limit rather than a
+    /// permanent failure (see [`AgentError::RateLimited`]).
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, Self::RateLimited { .. })
+    }
 }
 
 pub type Result<T> = std::result::Result<T, AgentError>;
