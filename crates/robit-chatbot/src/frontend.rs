@@ -3,12 +3,32 @@
 //! [`ChatbotFrontend`] implements [`robit_agent::frontend::Frontend`] for a
 //! single chat (group or private). It buffers streaming `TextDelta` events and
 //! flushes them in natural-boundary segments (so Markdown and code blocks
-//! aren't cut mid-construct), sends a rate-limited progress hint when tools
-//! run, and delegates tool confirmation to the shared [`Confirmer`].
+//! aren't cut mid-construct), sends a progress hint when tools run, and
+//! delegates tool confirmation to the shared [`Confirmer`].
 //!
 //! On platforms with edit support, the first message is sent then edited in
 //! place to create a "growing message" effect; otherwise segments are sent as
-//! separate messages.
+//! separate messages, bounded per flush (see `MAX_OUTBOUND_SEGMENTS`).
+//!
+//! # Outbound inventory
+//!
+//! Every message a Bot sends goes through one of these paths — all of them end
+//! up in the platform adapter, so a platform-level send budget covers them:
+//!
+//! | Path | Trigger | Must deliver? |
+//! |---|---|---|
+//! | `send_progress_hint` | first tool call of a turn (auto-approve only, once per turn) | no (policy-dependent) |
+//! | `flush_buffer` at `ToolCallRequested` | buffered text before a tool call | yes |
+//! | `flush_buffer` at `TurnComplete` | final answer | yes |
+//! | `flush_buffer` at `Error` | partial answer before an error | yes |
+//! | Async-task hint | `ToolCallResult` with `is_pending` | yes |
+//! | Error notice | `AgentEvent::Error` | yes |
+//! | [`Confirmer::request`] | confirmation prompt, decision notice, timeout notice (manual mode) | yes |
+//! | Slash-command replies (`/clear`, `/stop`, `/cancel`) | manager command handling | yes |
+//! | Media sends (`send_media_message`) | `send_file` tool | yes |
+//!
+//! The progress hint is the only optional one, which is why it is the only
+//! path that can be skipped under send-budget pressure.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -238,33 +258,76 @@ impl ChatbotFrontend {
         } else {
             text.clone()
         };
-        let prepared = truncate_to_max(&prepared, caps.max_message_length);
 
-        // Just send once, no edit tricks - simple and reliable
         let mut last_msg_id = self.last_msg_id.lock().await;
-        if caps.supports_edit && last_msg_id.is_some() {
-            // Edit if we already sent something this turn (e.g., progress hint)
-            let msg_id = last_msg_id.clone().unwrap();
-            if self.platform_sender.edit(&self.chat_id, &msg_id, &prepared).await.is_err() {
-                // Edit failed, fall back to send
-                if let Ok(res) = self.platform_sender.send(&self.chat_id, &prepared).await {
-                    *last_msg_id = Some(res.msg_id);
+
+        if caps.supports_edit {
+            // Edit-capable platforms keep the single-message model: the first
+            // message of the turn is edited in place into the final answer.
+            let prepared = truncate_to_max(&prepared, caps.max_message_length);
+            match last_msg_id.clone() {
+                Some(msg_id) => {
+                    if self
+                        .platform_sender
+                        .edit(&self.chat_id, &msg_id, &prepared)
+                        .await
+                        .is_err()
+                    {
+                        // Edit failed, fall back to send.
+                        if let Ok(res) = self.platform_sender.send(&self.chat_id, &prepared).await {
+                            *last_msg_id = Some(res.msg_id);
+                        }
+                    }
                 }
+                None => match self.platform_sender.send(&self.chat_id, &prepared).await {
+                    Ok(res) => {
+                        *last_msg_id = Some(res.msg_id);
+                        tracing::trace!(
+                            "[chatbot] reply sent: chat_id='{}', msg_len={}",
+                            self.chat_id,
+                            prepared.len()
+                        );
+                    }
+                    Err(e) => tracing::warn!(
+                        "[chatbot] failed to send reply to platform: chat_id='{}', error={}",
+                        self.chat_id,
+                        e
+                    ),
+                },
             }
         } else {
-            // No previous message this turn, just send
-            match self.platform_sender.send(&self.chat_id, &prepared).await {
-                Ok(res) => {
-                    *last_msg_id = Some(res.msg_id);
-                    tracing::trace!(
-                        "[chatbot] reply sent: chat_id='{}', msg_len={}",
-                        self.chat_id, prepared.len()
-                    );
+            // No in-place edit: a long answer must be split into bounded
+            // segments. Truncating a single message would silently drop the
+            // tail of the reply.
+            let (segments, truncated) =
+                split_for_platform(&prepared, caps.max_message_length, MAX_OUTBOUND_SEGMENTS);
+            if truncated {
+                tracing::warn!(
+                    "[chatbot] reply truncated after {} segments: chat_id='{}', text_len={}",
+                    MAX_OUTBOUND_SEGMENTS,
+                    self.chat_id,
+                    text.chars().count()
+                );
+            }
+            for segment in &segments {
+                match self.platform_sender.send(&self.chat_id, segment).await {
+                    Ok(res) => {
+                        *last_msg_id = Some(res.msg_id);
+                        tracing::trace!(
+                            "[chatbot] reply segment sent: chat_id='{}', msg_len={}",
+                            self.chat_id,
+                            segment.len()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[chatbot] failed to send reply segment: chat_id='{}', error={}",
+                            self.chat_id,
+                            e
+                        );
+                        break;
+                    }
                 }
-                Err(e) => tracing::warn!(
-                    "[chatbot] failed to send reply to platform: chat_id='{}', error={}",
-                    self.chat_id, e
-                ),
             }
         }
 
@@ -489,6 +552,120 @@ fn truncate_to_max(text: &str, max: usize) -> String {
     let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+/// Hard cap on how many messages one flush may produce on a platform without
+/// in-place edit.
+///
+/// Editing platforms merge segments into one message, so they are unaffected;
+/// without editing, an unbounded split would turn one long answer into a
+/// message storm. Anything beyond this cap is dropped **with an explicit
+/// marker** (see [`TRUNCATION_MARKER`]) rather than silently.
+const MAX_OUTBOUND_SEGMENTS: usize = 3;
+
+/// Appended to the last segment when the reply had to be cut.
+const TRUNCATION_MARKER: &str = "\n……（内容过长，已截断）";
+
+/// Split `text` into at most `max_segments` chunks of at most `max_len` chars.
+///
+/// Boundaries are preferred in this order: paragraph, line, sentence end,
+/// whitespace, hard cut. A boundary inside a fenced code block is skipped when
+/// another usable boundary exists, so fenced code survives intact.
+///
+/// Returns the segments plus whether content had to be dropped (the last
+/// segment then carries [`TRUNCATION_MARKER`]).
+fn split_for_platform(text: &str, max_len: usize, max_segments: usize) -> (Vec<String>, bool) {
+    let total = text.chars().count();
+    if total == 0 {
+        return (Vec::new(), false);
+    }
+    if max_len == 0 || max_segments == 0 || total <= max_len {
+        return (vec![text.to_string()], false);
+    }
+
+    let marker_chars = TRUNCATION_MARKER.chars().count();
+    let mut segments: Vec<String> = Vec::new();
+    let mut rest = text;
+
+    loop {
+        let rest_chars = rest.chars().count();
+        if rest_chars <= max_len {
+            segments.push(rest.to_string());
+            return (segments, false);
+        }
+
+        if segments.len() + 1 >= max_segments {
+            // Last allowed segment: keep what fits next to the marker.
+            let budget = max_len.saturating_sub(marker_chars);
+            let (head, _tail) = split_head(rest, budget.max(1));
+            segments.push(format!("{}{}", head.trim_end(), TRUNCATION_MARKER));
+            return (segments, true);
+        }
+
+        let (head, tail) = split_head(rest, max_len);
+        segments.push(head.to_string());
+        rest = tail;
+    }
+}
+
+/// Cut `text` into `(head, tail)`, with at most `max_chars` chars in the head.
+fn split_head(text: &str, max_chars: usize) -> (&str, &str) {
+    let hard_cut = byte_index_of_char(text, max_chars);
+    if hard_cut == 0 {
+        return ("", text);
+    }
+    let window = &text[..hard_cut];
+    // Do not cut far too early just because a newline happens to sit at the
+    // very beginning of the window (e.g. a short lead-in paragraph).
+    let min_chars = (max_chars / 3).max(1);
+
+    for candidate in boundary_candidates(window) {
+        if candidate == 0 || candidate > hard_cut {
+            continue;
+        }
+        if text[..candidate].chars().count() < min_chars {
+            continue;
+        }
+        // `candidate` may sit inside a fenced code block: prefer another one.
+        if inside_code_fence(&text[..candidate]) {
+            continue;
+        }
+        return text.split_at(candidate);
+    }
+    text.split_at(hard_cut)
+}
+
+/// Byte index of the `max_chars`-th char (i.e. where a hard cut would land).
+fn byte_index_of_char(text: &str, max_chars: usize) -> usize {
+    match text.char_indices().nth(max_chars) {
+        Some((idx, _)) => idx,
+        None => text.len(),
+    }
+}
+
+/// Candidate split positions (byte indices), most preferred first.
+fn boundary_candidates(window: &str) -> Vec<usize> {
+    let mut candidates = Vec::new();
+    if let Some(idx) = window.rfind("\n\n") {
+        candidates.push(idx + 2); // keep the blank line with the head
+    }
+    if let Some(idx) = window.rfind('\n') {
+        candidates.push(idx + 1);
+    }
+    for punct in ["。", "！", "？", "；", ".", "!", "?", ";"] {
+        if let Some(idx) = window.rfind(punct) {
+            candidates.push(idx + punct.len());
+        }
+    }
+    if let Some(idx) = window.rfind(' ') {
+        candidates.push(idx + 1);
+    }
+    candidates
+}
+
+/// Whether `prefix` ends inside a fenced code block (` ``` ` pairs).
+fn inside_code_fence(prefix: &str) -> bool {
+    prefix.matches("```").count() % 2 == 1
 }
 
 #[cfg(test)]
@@ -744,6 +921,113 @@ mod tests {
             arguments: "{}".into(),
         }).await.unwrap();
         assert!(sender.sent_texts().iter().any(|t| t.contains("正在")));
+    }
+
+    // ------------------------------------------------------------------
+    // Outbound segmentation (platforms without in-place edit)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn split_keeps_short_text_in_one_segment() {
+        let (segments, truncated) = split_for_platform("你好", 10, 3);
+        assert_eq!(segments, vec!["你好".to_string()]);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn split_prefers_paragraph_boundaries() {
+        let text = format!("{}\n\n{}", "A".repeat(120), "B".repeat(120));
+        let (segments, truncated) = split_for_platform(&text, 200, 3);
+        assert!(!truncated);
+        assert_eq!(segments.len(), 2);
+        assert!(segments[0].ends_with("\n\n"));
+        assert_eq!(segments.concat(), text);
+        assert!(segments.iter().all(|s| s.chars().count() <= 200));
+    }
+
+    #[test]
+    fn split_caps_segment_count_and_marks_truncation() {
+        let text = "X".repeat(700);
+        let (segments, truncated) = split_for_platform(&text, 100, 3);
+        assert!(truncated);
+        assert_eq!(segments.len(), 3);
+        assert!(segments.last().unwrap().ends_with("已截断）"));
+        assert!(segments.iter().all(|s| s.chars().count() <= 100));
+    }
+
+    #[test]
+    fn split_does_not_cut_inside_a_closed_code_fence() {
+        let text = format!("```\n{}\n```\n\n{}", "x".repeat(170), "z".repeat(100));
+        let (segments, _) = split_for_platform(&text, 220, 3);
+        assert!(
+            segments[0].contains("```"),
+            "fence stays in the first segment"
+        );
+        assert!(segments[0].ends_with("\n\n"));
+    }
+
+    #[test]
+    fn split_hard_cuts_unbroken_text() {
+        let text = "A".repeat(500);
+        let (segments, _) = split_for_platform(&text, 200, 3);
+        assert_eq!(segments[0].chars().count(), 200);
+        assert_eq!(segments.concat(), text);
+    }
+
+    #[test]
+    fn split_empty_text_yields_nothing() {
+        let (segments, truncated) = split_for_platform("", 200, 3);
+        assert!(segments.is_empty());
+        assert!(!truncated);
+    }
+
+    #[tokio::test]
+    async fn long_reply_is_split_into_bounded_segments_without_edit() {
+        let sender = MockSender::new_with_edit(false); // 2000-char cap, no edit
+        let fe = make_frontend(sender.clone(), false).await;
+        fe.on_event(AgentEvent::TextDelta("a".repeat(7000))).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+
+        let texts = sender.sent_texts();
+        assert_eq!(texts.len(), 3, "7000 chars must not become a message storm");
+        assert_eq!(texts[0].chars().count(), 2000);
+        assert!(texts.last().unwrap().contains("已截断"));
+        assert!(texts.iter().all(|t| t.chars().count() <= 2000));
+    }
+
+    #[tokio::test]
+    async fn long_reply_stays_one_message_when_edit_is_supported() {
+        let sender = MockSender::new_with_edit(true);
+        let fe = make_frontend(sender.clone(), false).await;
+        fe.on_event(AgentEvent::TextDelta("a".repeat(7000))).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+
+        let texts = sender.sent_texts();
+        // QQ-style platforms keep the single-message behavior (zero regression).
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].chars().count() <= 2000);
+        assert!(texts[0].ends_with('…'));
+        assert!(sender.edits.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn edit_platform_merges_progress_hint_into_the_answer() {
+        let sender = MockSender::new_with_edit(true);
+        let fe = make_frontend(sender.clone(), true).await; // auto-approve → hint
+        fe.on_event(AgentEvent::ToolCallRequested {
+            tool_call_id: "tc1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        }).await.unwrap();
+        fe.on_event(AgentEvent::TextDelta("最终答案".into())).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+
+        // One message (the hint), edited in place into the answer: no extra
+        // message is produced, which is why hints are free on these platforms.
+        assert_eq!(sender.sent_texts().len(), 1);
+        let edits = sender.edits.lock().unwrap();
+        assert_eq!(edits.len(), 1);
+        assert!(edits[0].2.contains("最终答案"));
     }
 
     #[tokio::test]
