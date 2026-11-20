@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- **robit-wechat / `login` 子命令支持 Ctrl+C 取消**：此前 `robit-wechat login` 未注册信号处理，扫码等待期间按 Ctrl+C 只能走系统默认的信号终止，既无提示也不会报告取消原因。现在登录流程启动即安装 Ctrl+C 监听（首个 `await` 之前完成注册，启动阶段按下也不会漏），取二维码、轮询、刷新、重定向各步骤均可被打断，等待配对码输入时同样可中断（stdin 读取改为 `tokio::io::stdin` 异步读 + 取消选择，不再阻塞事件循环）；取消后打印「已取消微信登录（收到 Ctrl+C），未保存任何登录状态」并以非零状态退出，保证不会写出半成品状态文件。为此 `robit-wechat` 的 tokio 依赖补充 `io-std` / `io-util` feature。
 - **robit-chatbot / robit-wechat / robit-qq / Ctrl+C 优雅退出**：三个问题一并修复。(1) 关闭信号由 `Arc<Notify>` 改为 `tokio_util::sync::CancellationToken`：`notify_waiters()` 是边沿触发、无人等待时信号直接丢失，而取消令牌是电平触发，取消发生在消息处理中也不会丢，微信长轮询 supervisor / QQ WS 任务同样受益。(2) `robit-wechat`、`robit-qq` 的 `main` 不再在 `select!` 命中 Ctrl+C 时丢弃 `manager.run()` 的 future（那样会中断正在处理的事件），改为 pin 住该 future、取消令牌后继续等待它返回；第二次 Ctrl+C 立即强制退出。(3) `ChatbotManager::run` 返回前关闭所有会话输入通道，并最多等待 15 秒让正在生成的回复自然收尾——此前每个会话的 Agent turn 是独立 `tokio::spawn` 任务，进程退出会在流式回复中途将其截断；超时后记录告警并放弃剩余 turn。注意 `ChatbotManager::run` 的 `shutdown` 参数类型随之从 `Arc<Notify>` 变为 `CancellationToken`（对外 API 变更，直接调用者需适配）。
 
 ## [0.3.0] - 2026-11-17

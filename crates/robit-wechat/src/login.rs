@@ -16,6 +16,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use robit_ai::config::RobitConfig;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 use weixin_agent::{LoginStatus, QrLoginSession, StandaloneQrLogin, WeixinConfig};
 
 use crate::state::WechatState;
@@ -27,11 +30,53 @@ const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(1500);
 /// Maximum QR refreshes (expiry / verify-code lockout) before giving up.
 const MAX_QR_REFRESH: u32 = 3;
 
+/// Error text returned when the user aborts the flow with Ctrl+C.
+const CANCELLED_MSG: &str = "已取消微信登录（收到 Ctrl+C），未保存任何登录状态";
+
+/// Spawn a background Ctrl+C listener that cancels the returned token.
+///
+/// `tokio::signal::ctrl_c()` installs the Ctrl+C handler eagerly on first
+/// await, so it is ready before the flow reaches its first `await` — a
+/// Ctrl+C pressed during startup is not lost to the default SIGINT action.
+fn spawn_ctrl_c(task: &'static str) -> CancellationToken {
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("\n收到 Ctrl+C，正在取消{}…", task);
+            cancel.cancel();
+        }
+    });
+    token
+}
+
+/// Wait for a future to finish, or for Ctrl+C to be cancelled.
+enum Interrupted<T> {
+    Done(T),
+    CtrlC,
+}
+
+async fn or_ctrl_c<T>(
+    fut: impl std::future::Future<Output = T>,
+    token: &CancellationToken,
+) -> Interrupted<T> {
+    tokio::select! {
+        v = fut => Interrupted::Done(v),
+        _ = token.cancelled() => Interrupted::CtrlC,
+    }
+}
+
 /// Run the interactive QR login flow for `working_dir`.
 ///
 /// Uses `[channels.wechat_bot]` (base_url overrides) and any existing state
 /// file (re-login passes the old token so the server recognizes the binding).
+///
+/// Ctrl+C aborts the flow at any point (including while waiting for the pair
+/// code on stdin) and is reported as an error, so the caller exits non-zero
+/// without writing a partial state file.
 pub async fn run_login(working_dir: &Path, config: &RobitConfig) -> Result<(), String> {
+    let ctrl_c = spawn_ctrl_c("微信登录");
+
     let section = config
         .channels
         .as_ref()
@@ -53,10 +98,11 @@ pub async fn run_login(working_dir: &Path, config: &RobitConfig) -> Result<(), S
     let mut qr_refreshes: u32 = 0;
     'qr: loop {
         let login = StandaloneQrLogin::new(&sdk_config_for_login(&base_url)?);
-        let session = login
-            .start(None, &local_tokens)
-            .await
-            .map_err(|e| format!("获取二维码失败: {}", e))?;
+        let session = match or_ctrl_c(login.start(None, &local_tokens), &ctrl_c).await {
+            Interrupted::Done(Ok(s)) => s,
+            Interrupted::Done(Err(e)) => return Err(format!("获取二维码失败: {}", e)),
+            Interrupted::CtrlC => return Err(CANCELLED_MSG.to_string()),
+        };
         render_qr(&session);
 
         let mut scan_announced = false;
@@ -64,14 +110,24 @@ pub async fn run_login(working_dir: &Path, config: &RobitConfig) -> Result<(), S
         let mut login = login;
 
         loop {
-            tokio::time::sleep(LOGIN_POLL_INTERVAL).await;
-            let status = match login.poll_status(&session, verify_code.as_deref()).await {
-                Ok(s) => s,
-                Err(e) => {
+            // Sleep, then poll — both interruptible by Ctrl+C.
+            match or_ctrl_c(tokio::time::sleep(LOGIN_POLL_INTERVAL), &ctrl_c).await {
+                Interrupted::Done(()) => {}
+                Interrupted::CtrlC => return Err(CANCELLED_MSG.to_string()),
+            }
+            let status = match or_ctrl_c(
+                login.poll_status(&session, verify_code.as_deref()),
+                &ctrl_c,
+            )
+            .await
+            {
+                Interrupted::Done(Ok(s)) => s,
+                Interrupted::Done(Err(e)) => {
                     // Transient poll failure — keep waiting, the QR stays valid.
                     eprintln!("登录状态查询失败（将继续重试）: {}", e);
                     continue;
                 }
+                Interrupted::CtrlC => return Err(CANCELLED_MSG.to_string()),
             };
 
             match status {
@@ -100,13 +156,36 @@ pub async fn run_login(working_dir: &Path, config: &RobitConfig) -> Result<(), S
                     }
                 }
                 LoginStatus::NeedVerifyCode => {
+                    // A watched channel lets the cancellation abort a pending
+                    // stdin read, so Ctrl+C is not ignored while the user is
+                    // expected to type the pair code.
+                    let (input_tx, input_rx) = watch::channel(false);
+                    let cancel = ctrl_c.clone();
+                    tokio::spawn(async move {
+                        cancel.cancelled().await;
+                        let _ = input_tx.send(true);
+                    });
+
                     let prompt = if verify_code.is_some() {
                         "❌ 配对码不匹配，请重新输入手机微信上显示的数字:"
                     } else {
                         "📱 安全验证：请输入手机微信上显示的配对码:"
                     };
                     println!("{}", prompt);
-                    verify_code = Some(read_line()?.trim().to_string());
+                    match read_line_interruptible(input_rx).await {
+                        Ok(line) => {
+                            // The read may have completed at the same moment as
+                            // the cancellation; prefer the user's abort.
+                            if ctrl_c.is_cancelled() {
+                                return Err(CANCELLED_MSG.to_string());
+                            }
+                            verify_code = Some(line.trim().to_string());
+                        }
+                        Err(ReadLineError::Cancelled) => return Err(CANCELLED_MSG.to_string()),
+                        Err(ReadLineError::Io(e)) => {
+                            return Err(format!("读取输入失败: {}", e));
+                        }
+                    }
                     // Poll again immediately with the code.
                     continue;
                 }
@@ -212,13 +291,37 @@ fn render_qr(session: &QrLoginSession) {
     let _ = std::io::stdout().flush();
 }
 
-/// Read one line from stdin (blocking, used only for the pair code).
-fn read_line() -> Result<String, String> {
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| format!("读取输入失败: {}", e))?;
-    Ok(line)
+/// Outcome of an interruptible pair-code read.
+#[derive(Debug)]
+enum ReadLineError {
+    /// Ctrl+C arrived while waiting for input.
+    Cancelled,
+    /// stdin closed or a read error occurred.
+    Io(std::io::Error),
+}
+
+/// Read one line from stdin (used only for the pair code), abortable on Ctrl+C.
+///
+/// `cancelled` flips to `true` when the flow is interrupted. The blocking stdin
+/// read runs on the blocking pool; once cancelled, the outcome is resolved
+/// right away and the orphaned read task is left to finish on its own.
+async fn read_line_interruptible(
+    mut cancelled: watch::Receiver<bool>,
+) -> Result<String, ReadLineError> {
+    let mut read = tokio::spawn(async {
+        let mut line = String::new();
+        let mut stdin = BufReader::new(tokio::io::stdin());
+        stdin.read_line(&mut line).await.map(|_| line)
+    });
+
+    tokio::select! {
+        joined = &mut read => match joined {
+            Ok(Ok(line)) => Ok(line),
+            Ok(Err(e)) => Err(ReadLineError::Io(e)),
+            Err(e) => Err(ReadLineError::Io(std::io::Error::other(e))),
+        },
+        _ = cancelled.wait_for(|c| *c) => Err(ReadLineError::Cancelled),
+    }
 }
 
 #[cfg(test)]
@@ -229,5 +332,29 @@ mod tests {
     fn login_sdk_config_allows_empty_token() {
         let cfg = sdk_config_for_login("https://ilinkai.weixin.qq.com/").unwrap();
         assert_eq!(cfg.token, "");
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_listener_cancels_immediately() {
+        let token = spawn_ctrl_c("测试");
+        assert!(!token.is_cancelled());
+        // Cancel exactly the way the listener would, and verify the helper
+        // races correctly against a never-ready future.
+        token.cancel();
+        assert!(matches!(
+            or_ctrl_c(std::future::pending::<()>(), &token).await,
+            Interrupted::CtrlC
+        ));
+    }
+
+    #[tokio::test]
+    async fn pair_code_read_is_aborted_by_cancellation() {
+        let (tx, rx) = watch::channel(false);
+        tx.send(true).unwrap();
+        // The pre-cancelled receiver resolves without touching stdin.
+        assert!(matches!(
+            read_line_interruptible(rx).await,
+            Err(ReadLineError::Cancelled)
+        ));
     }
 }

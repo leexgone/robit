@@ -18,7 +18,7 @@ path = "src/main.rs"
 robit-chatbot = { workspace = true }
 robit-agent = { workspace = true }
 robit-ai = { workspace = true }
-tokio = { workspace = true, features = ["net", "signal"] }
+tokio = { workspace = true, features = ["net", "signal", "io-std", "io-util"] }
 tokio-util.workspace = true
 weixin-agent.workspace = true
 qrcode.workspace = true
