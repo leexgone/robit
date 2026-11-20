@@ -29,7 +29,7 @@ use robit_chatbot::adapter::{
     ChatMessage, ChatType, MediaAttachment, PlatformAdapter, PlatformCaps, PlatformEvent,
     SendResult, SenderInfo, UploadResult,
 };
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use weixin_agent::{
@@ -121,12 +121,12 @@ impl WechatPlatformAdapter {
     ///
     /// The SDK poll loop already retries transport/API failures with its own
     /// backoff, so this supervisor only handles an unexpected loop exit
-    /// (restart with backoff) and Ctrl+C (graceful stop). A stale token is
-    /// terminal: the bridge emits `Disconnected` so the manager exits and the
-    /// user is told to re-run `robit-wechat login`.
+    /// (restart with backoff) and Ctrl+C (graceful stop via `shutdown`). A
+    /// stale token is terminal: the bridge emits `Disconnected` so the manager
+    /// exits and the user is told to re-run `robit-wechat login`.
     pub async fn connect(
         config: WechatConfig,
-        shutdown: Arc<Notify>,
+        shutdown: CancellationToken,
     ) -> Result<Arc<Self>> {
         let sdk_config = config
             .sdk_config(&config.bot_token)
@@ -201,14 +201,14 @@ async fn poll_supervisor(
     state: Arc<Mutex<WechatState>>,
     poll_cancel: CancellationToken,
     token_stale: Arc<AtomicBool>,
-    shutdown: Arc<Notify>,
+    shutdown: CancellationToken,
 ) {
     let mut failures: u32 = 0;
     loop {
         let sync_buf = state.lock().await.sync_buf.clone();
         let result = tokio::select! {
             res = client.start(sync_buf) => res,
-            _ = shutdown.notified() => {
+            _ = shutdown.cancelled() => {
                 debug!("WeChat poll supervisor received shutdown signal");
                 poll_cancel.cancel();
                 return;
@@ -246,11 +246,11 @@ fn reconnect_backoff(failures: u32) -> Duration {
     Duration::from_secs(secs.min(30))
 }
 
-/// Sleep for `dur`, returning `true` if shutdown was notified meanwhile.
-async fn sleep_or_shutdown(dur: Duration, shutdown: &Arc<Notify>) -> bool {
+/// Sleep for `dur`, returning `true` if shutdown was cancelled meanwhile.
+async fn sleep_or_shutdown(dur: Duration, shutdown: &CancellationToken) -> bool {
     tokio::select! {
         _ = tokio::time::sleep(dur) => false,
-        _ = shutdown.notified() => true,
+        _ = shutdown.cancelled() => true,
     }
 }
 

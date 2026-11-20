@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **robit-chatbot / robit-wechat / robit-qq / Ctrl+C 优雅退出**：三个问题一并修复。(1) 关闭信号由 `Arc<Notify>` 改为 `tokio_util::sync::CancellationToken`：`notify_waiters()` 是边沿触发、无人等待时信号直接丢失，而取消令牌是电平触发，取消发生在消息处理中也不会丢，微信长轮询 supervisor / QQ WS 任务同样受益。(2) `robit-wechat`、`robit-qq` 的 `main` 不再在 `select!` 命中 Ctrl+C 时丢弃 `manager.run()` 的 future（那样会中断正在处理的事件），改为 pin 住该 future、取消令牌后继续等待它返回；第二次 Ctrl+C 立即强制退出。(3) `ChatbotManager::run` 返回前关闭所有会话输入通道，并最多等待 15 秒让正在生成的回复自然收尾——此前每个会话的 Agent turn 是独立 `tokio::spawn` 任务，进程退出会在流式回复中途将其截断；超时后记录告警并放弃剩余 turn。注意 `ChatbotManager::run` 的 `shutdown` 参数类型随之从 `Arc<Notify>` 变为 `CancellationToken`（对外 API 变更，直接调用者需适配）。
+
 ## [0.3.0] - 2026-11-17
 
 微信官方 iLink Bot 渠道接入。渠道选型调研（官方渠道 vs 商业协议代理）、认证模型与架构决策见 `docs/robit-plan-wechat-bot.md`。

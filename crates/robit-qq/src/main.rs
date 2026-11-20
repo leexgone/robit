@@ -13,6 +13,7 @@ use robit_ai::{init_logging, load_config, LlmClient};
 use robit_chatbot::tool::SendFileTool;
 use robit_chatbot::ChatbotManager;
 use robit_qq::{QqConfig, QqPlatformAdapter};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Parser)]
 #[command(name = "robit-qq")]
@@ -73,7 +74,7 @@ async fn main() {
 
     // 4. Connect to the QQ platform (with shutdown signal for graceful exit).
     let qq_config = QqConfig::from_config(&config).expect("QQ Bot config not found");
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = CancellationToken::new();
     let platform = QqPlatformAdapter::connect(qq_config, shutdown.clone())
         .await
         .expect("Failed to connect to QQ gateway");
@@ -93,20 +94,32 @@ async fn main() {
 
     // 6. Run with graceful shutdown on Ctrl+C.
     // All spawned tasks (WebSocket heartbeat, dispatch, cleanup loop, agent
-    // tasks) share the same Notify. On Ctrl+C we notify them all, then wait
-    // for the manager to exit gracefully so SQLite WAL and other resources
-    // flush cleanly.
-    let shutdown_clone = shutdown.clone();
+    // tasks) share the same level-triggered token. On Ctrl+C we cancel it, then
+    // keep awaiting the pinned manager future so it can finish the current
+    // event and drain in-flight Agent turns instead of being dropped. A second
+    // Ctrl+C forces an immediate exit.
+    let manager_fut = manager.run(shutdown.clone());
+    tokio::pin!(manager_fut);
 
     tokio::select! {
-        result = manager.run(shutdown_clone) => {
+        result = &mut manager_fut => {
             if let Err(e) = result {
                 tracing::error!("ChatbotManager error: {}", e);
             }
         }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received Ctrl+C, shutting down gracefully...");
-            shutdown.notify_waiters();
+            shutdown.cancel();
+            tokio::select! {
+                result = &mut manager_fut => {
+                    if let Err(e) = result {
+                        tracing::error!("ChatbotManager error during shutdown: {}", e);
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::warn!("Second Ctrl+C received; exiting immediately");
+                }
+            }
         }
     }
 

@@ -19,6 +19,7 @@ use robit_ai::{init_logging, load_config, LlmClient};
 use robit_chatbot::tool::SendFileTool;
 use robit_chatbot::ChatbotManager;
 use robit_wechat::{login, WechatConfig, WechatPlatformAdapter};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Parser)]
 #[command(name = "robit-wechat")]
@@ -103,7 +104,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = CancellationToken::new();
     let platform = WechatPlatformAdapter::connect(wechat_config, shutdown.clone())
         .await
         .expect("Failed to start WeChat poll loop");
@@ -122,17 +123,34 @@ async fn main() {
     tracing::info!("robit-wechat bot is running");
 
     // 6. Run with graceful shutdown on Ctrl+C.
-    let shutdown_clone = shutdown.clone();
+    //
+    // The shared token is level-triggered (a cancellation is remembered even
+    // if it arrives mid-message), and the manager future is pinned rather than
+    // dropped: after the cancel we keep awaiting it so `run` can finish the
+    // current event and drain in-flight Agent turns. A second Ctrl+C forces an
+    // immediate exit.
+    let manager_fut = manager.run(shutdown.clone());
+    tokio::pin!(manager_fut);
 
     tokio::select! {
-        result = manager.run(shutdown_clone) => {
+        result = &mut manager_fut => {
             if let Err(e) = result {
                 tracing::error!("ChatbotManager error: {}", e);
             }
         }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received Ctrl+C, shutting down gracefully...");
-            shutdown.notify_waiters();
+            shutdown.cancel();
+            tokio::select! {
+                result = &mut manager_fut => {
+                    if let Err(e) = result {
+                        tracing::error!("ChatbotManager error during shutdown: {}", e);
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::warn!("Second Ctrl+C received; exiting immediately");
+                }
+            }
         }
     }
 

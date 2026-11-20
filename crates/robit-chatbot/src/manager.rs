@@ -24,6 +24,7 @@ use robit_ai::config::{BotConfig, MediaRetentionConfig, RobitConfig};
 use robit_ai::LlmClient;
 use rusqlite::Connection;
 use tokio::sync::{mpsc, Mutex};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::adapter::{ChatMessage, PlatformAdapter, PlatformCaps, PlatformEvent, SendResult, UploadResult};
@@ -33,6 +34,11 @@ use crate::frontend::{ChatbotFrontend, PlatformSender, PlatformExt};
 
 /// How often the cleanup loop scans for idle sessions.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Bounded window on shutdown for in-flight Agent turns to finish before the
+/// process exits. The bot binaries exit immediately on a second Ctrl+C, so a
+/// long turn cannot hold the process hostage.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(15);
 
 /// Handle to a running Agent instance for one chat.
 pub struct AgentHandle {
@@ -45,6 +51,9 @@ pub struct AgentHandle {
     /// True while a turn is in flight (shared with the frontend). The idle
     /// cleanup skips busy sessions so long turns are never evicted mid-run.
     pub busy: Arc<AtomicBool>,
+    /// Join handle of the Agent loop task. Retained so shutdown can wait for
+    /// in-flight turns to finish (see `drain_agents`).
+    task: tokio::task::JoinHandle<()>,
 }
 
 /// Bridge from a concrete `PlatformAdapter` to the platform-agnostic
@@ -211,10 +220,11 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 
     /// Main event loop. Connects to the platform, then processes events forever.
     /// Returns when the platform disconnects, an error occurs, or `shutdown`
-    /// is notified (Ctrl+C in the main binary).
+    /// is cancelled (Ctrl+C in the main binary). Before returning, in-flight
+    /// Agent turns get up to [`SHUTDOWN_GRACE`] to finish their current reply.
     pub async fn run(
         &self,
-        shutdown: Arc<tokio::sync::Notify>,
+        shutdown: CancellationToken,
     ) -> Result<(), AgentError> {
         // Spawn the idle-session cleanup loop (checks shutdown).
         let cleanup_agents = Arc::clone(&self.agents);
@@ -233,7 +243,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             .await;
         });
 
-        loop {
+        let result = loop {
             tokio::select! {
                 event = self.platform.recv_event() => {
                     match event {
@@ -242,23 +252,34 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                         }
                         Ok(PlatformEvent::Disconnected) => {
                             tracing::warn!("Platform disconnected");
-                            return Ok(());
+                            break Ok(());
                         }
                         Ok(PlatformEvent::Other(v)) => {
                             tracing::debug!("Ignoring platform event: {}", v);
                         }
                         Err(e) => {
                             tracing::error!("Platform recv error: {}", e);
-                            return Err(e);
+                            break Err(e);
                         }
                     }
                 }
-                _ = shutdown.notified() => {
+                // Level-triggered: the cancellation is remembered even when it
+                // arrives while `handle_message` is running, unlike
+                // `Notify::notify_waiters`, which is edge-triggered and would
+                // drop the signal if nothing is parked on it at that instant.
+                _ = shutdown.cancelled() => {
                     tracing::info!("Shutdown signal received, stopping event loop...");
-                    return Ok(());
+                    break Ok(());
                 }
             }
-        }
+        };
+
+        // Close every session's input channel and give the Agent tasks a
+        // bounded window to finish the turn they are already running, so a
+        // Ctrl+C does not cut a reply off mid-stream.
+        self.drain_agents(SHUTDOWN_GRACE).await;
+
+        result
     }
 
     /// Process a single incoming chat message.
@@ -739,7 +760,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             }
         };
 
-        let (tx, frontend) = self.spawn_session_agent(chat_id, &session_id).await?;
+        let (tx, frontend, task) = self.spawn_session_agent(chat_id, &session_id).await?;
 
         let mut agents = self.agents.lock().await;
         agents.insert(
@@ -750,17 +771,28 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                 last_active_at: Instant::now(),
                 busy: frontend.busy.clone(),
                 frontend: frontend.clone(),
+                task,
             },
         );
         Ok((tx, frontend))
     }
 
     /// Create a `ChatbotFrontend` + `Agent` for a chat and spawn its loop.
+    ///
+    /// Returns the input sender, the frontend, and the Agent task's join
+    /// handle (retained by [`AgentHandle`] for shutdown draining).
     async fn spawn_session_agent(
         &self,
         chat_id: &str,
         session_id: &str,
-    ) -> Result<(mpsc::Sender<FrontendMessage>, Arc<ChatbotFrontend>), AgentError> {
+    ) -> Result<
+        (
+            mpsc::Sender<FrontendMessage>,
+            Arc<ChatbotFrontend>,
+            tokio::task::JoinHandle<()>,
+        ),
+        AgentError,
+    > {
         tracing::info!("spawn_session_agent: chat_id={}, session_id={}", chat_id, session_id);
 
         let frontend = Arc::new(ChatbotFrontend::new(
@@ -814,12 +846,65 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 
         let sid = session_id.to_string();
         let cid = chat_id.to_string();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             agent.run(message_rx).await;
             tracing::info!("Agent task ended for chat {} (session {})", cid, sid);
         });
 
-        Ok((message_tx, frontend))
+        Ok((message_tx, frontend, task))
+    }
+
+    /// Close every session's input channel and wait (up to `grace`) for the
+    /// Agent tasks to finish their current turn.
+    ///
+    /// Dropping the sender makes `Agent::run` return once the turn it is
+    /// already processing completes: queued-but-not-yet-processed messages are
+    /// still consumed from the channel, which is why the wait is bounded.
+    async fn drain_agents(&self, grace: Duration) {
+        let handles: Vec<(String, AgentHandle)> = {
+            let mut agents = self.agents.lock().await;
+            std::mem::take(&mut *agents).into_iter().collect()
+        };
+        if handles.is_empty() {
+            return;
+        }
+
+        let mut tasks = Vec::with_capacity(handles.len());
+        for (chat_id, handle) in handles {
+            let AgentHandle {
+                message_tx,
+                task,
+                session_id,
+                ..
+            } = handle;
+            // Dropping the sender closes the channel: the Agent finishes the
+            // turn in flight, then exits its receive loop.
+            drop(message_tx);
+            tracing::info!(
+                "Shutdown: waiting for in-flight turn of chat {} (session {})",
+                chat_id,
+                session_id
+            );
+            tasks.push(task);
+        }
+
+        tracing::info!(
+            "Waiting up to {:?} for {} agent turn(s) to finish",
+            grace,
+            tasks.len()
+        );
+        let finished = tokio::time::timeout(grace, async {
+            for task in tasks {
+                let _ = task.await;
+            }
+        })
+        .await;
+        if finished.is_err() {
+            tracing::warn!(
+                "Shutdown grace period ({:?}) expired; abandoning in-flight turns",
+                grace
+            );
+        }
     }
 
     /// Number of currently active Agent sessions (for diagnostics / tests).
@@ -897,14 +982,14 @@ async fn cleanup_loop(
     timeout: Duration,
     media_dir: PathBuf,
     media_retention: MediaRetentionConfig,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: CancellationToken,
 ) {
     loop {
         tokio::select! {
             _ = tokio::time::sleep(CLEANUP_INTERVAL) => {
                 cleanup_tick(&agents, timeout, &media_dir, &media_retention).await;
             }
-            _ = shutdown.notified() => {
+            _ = shutdown.cancelled() => {
                 tracing::debug!("cleanup loop received shutdown signal");
                 return;
             }
@@ -1219,6 +1304,7 @@ mod tests {
             last_active_at: Instant::now(),
             busy: frontend.busy.clone(),
             frontend,
+            task: tokio::spawn(async {}),
         }
     }
 
@@ -1264,6 +1350,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn drain_agents_closes_channels_and_waits_for_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), offline_config());
+
+        // Simulated Agent turn loop: exits once its input channel closes.
+        let (tx, mut rx) = mpsc::channel::<FrontendMessage>(16);
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_task = Arc::clone(&finished);
+        let task = tokio::spawn(async move {
+            while rx.recv().await.is_some() {}
+            finished_task.store(true, Ordering::SeqCst);
+        });
+
+        let frontend = Arc::new(ChatbotFrontend::new(
+            "chat".to_string(),
+            "s-drain".to_string(),
+            Arc::clone(&manager.platform_sender),
+            Arc::clone(&manager.confirmer),
+            Arc::clone(&manager.db),
+            false,
+        ));
+        manager.agents.lock().await.insert(
+            "chat".to_string(),
+            AgentHandle {
+                message_tx: tx,
+                session_id: "s-drain".to_string(),
+                last_active_at: Instant::now(),
+                busy: frontend.busy.clone(),
+                frontend,
+                task,
+            },
+        );
+
+        manager.drain_agents(Duration::from_secs(2)).await;
+
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "drain must wait for the agent task to finish"
+        );
+        assert_eq!(manager.active_session_count().await, 0);
+    }
+
+    #[tokio::test]
     async fn route_user_input_self_heals_dead_handle() {
         let dir = tempfile::tempdir().unwrap();
         let manager = make_manager(dir.path().to_path_buf(), offline_config());
@@ -1287,6 +1416,7 @@ mod tests {
                 last_active_at: Instant::now(),
                 busy: frontend.busy.clone(),
                 frontend,
+                task: tokio::spawn(async {}),
             },
         );
 

@@ -129,14 +129,14 @@ impl QqPlatformAdapter {
     ///
     /// This is the constructor used in place of `PlatformAdapter::connect` when
     /// we already own the config (avoids the `Self::Config` indirection).
-    /// `shutdown` is notified on Ctrl+C to let background tasks exit gracefully.
+    /// `shutdown` is cancelled on Ctrl+C to let background tasks exit gracefully.
     ///
     /// The first connection is established synchronously so bad config (wrong
     /// app_id/secret, unreachable gateway) surfaces immediately. A background
     /// supervisor then owns the connection lifecycle and transparently
     /// reconnects on gateway rotations (roughly every ~30 min) without
     /// dropping the adapter or the agents held by the `ChatbotManager`.
-    pub async fn connect(config: QqConfig, shutdown: Arc<tokio::sync::Notify>) -> Result<Arc<Self>> {
+    pub async fn connect(config: QqConfig, shutdown: CancellationToken) -> Result<Arc<Self>> {
         let http = reqwest::Client::new();
         let caps = PlatformCaps::qq();
         let (event_tx, event_rx) = mpsc::channel::<PlatformEvent>(256);
@@ -182,7 +182,7 @@ impl QqPlatformAdapter {
     /// stay alive across gateway rotations.
     async fn establish_connection(
         self: &Arc<Self>,
-        shutdown: Arc<tokio::sync::Notify>,
+        shutdown: CancellationToken,
         conn_cancel: CancellationToken,
     ) -> Result<ConnectionTasks> {
         info!("Connecting to QQ gateway: {}", self.config.gateway_url());
@@ -617,7 +617,7 @@ async fn supervisor_loop(
     adapter: Arc<QqPlatformAdapter>,
     mut tasks: ConnectionTasks,
     mut conn_cancel: CancellationToken,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: CancellationToken,
 ) {
     let mut establish_failures: u32 = 0;
     loop {
@@ -644,7 +644,7 @@ async fn supervisor_loop(
                 }
                 TaskEnded::Heartbeat
             }
-            _ = shutdown.notified() => {
+            _ = shutdown.cancelled() => {
                 debug!("Supervisor received shutdown signal");
                 conn_cancel.cancel();
                 // Neither handle was consumed (the shutdown branch fired), so
@@ -705,11 +705,11 @@ async fn supervisor_loop(
     }
 }
 
-/// Sleep for `dur`, returning early (`true`) if `shutdown` is notified.
-async fn sleep_or_shutdown(dur: Duration, shutdown: &Arc<tokio::sync::Notify>) -> bool {
+/// Sleep for `dur`, returning early (`true`) if `shutdown` is cancelled.
+async fn sleep_or_shutdown(dur: Duration, shutdown: &CancellationToken) -> bool {
     tokio::select! {
         _ = tokio::time::sleep(dur) => false,
-        _ = shutdown.notified() => true,
+        _ = shutdown.cancelled() => true,
     }
 }
 
@@ -728,7 +728,7 @@ fn reconnect_backoff(failures: u32) -> Duration {
 fn spawn_heartbeat(
     adapter: Arc<QqPlatformAdapter>,
     conn_cancel: CancellationToken,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -738,7 +738,7 @@ fn spawn_heartbeat(
                     debug!("Heartbeat task cancelled");
                     return;
                 }
-                _ = shutdown.notified() => {
+                _ = shutdown.cancelled() => {
                     debug!("Heartbeat task received shutdown signal");
                     return;
                 }
@@ -780,7 +780,7 @@ fn spawn_dispatch(
     + Send
     + 'static,
     conn_cancel: CancellationToken,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -789,7 +789,7 @@ fn spawn_dispatch(
                     debug!("Dispatch task cancelled");
                     return;
                 }
-                _ = shutdown.notified() => {
+                _ = shutdown.cancelled() => {
                     debug!("Dispatch task received shutdown signal");
                     return;
                 }
