@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-20
+
 ### Added
 
 - **robit-chatbot / 通用出站节流模块 `throttle`**：`SendLimiter` 提供账号级发送预算（最小间隔 + 滑动窗口）、平台限流后的冷却（`note_throttled`）与可持久化快照（`snapshot` / `restore`），等待全程可被关停令牌取消；模块内不含任何平台错误码——何时限流、冷却多久、快照存哪、配额按什么粒度划分，全部由 adapter 决定，因此飞书（HTTP 429 + `Retry-After`）、Telegram（`429 retry_after`）等后续渠道可复用同一实现。微信侧 `[channels.wechat_bot.rate_limit]` 缺省即启用：最小间隔 2s、窗口 10 条/180s、反刷冷却 120s、必达消息排队上限 180s，参数全部可调，`enabled = false` 可完全退回旧行为。
