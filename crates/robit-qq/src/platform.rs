@@ -25,6 +25,7 @@ use robit_chatbot::adapter::{
     ChatMessage, ChatType, MediaAttachment, PlatformAdapter, PlatformCaps, PlatformEvent,
     SendResult, SenderInfo, UploadResult,
 };
+use robit_chatbot::outbound::prepare_outbound;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use tokio_tungstenite::tungstenite::Message;
@@ -326,13 +327,19 @@ impl PlatformAdapter for QqPlatformAdapter {
     }
 
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult> {
+        // Transparent length guard: QQ is an edit platform, so long text is
+        // truncated (not split) to preserve the single-message editing model.
+        let caps = Self::capabilities();
+        let outbound = prepare_outbound(text, &caps);
+        let content = &outbound.segments[0];
+
         let auth = self.auth_header().await?;
         let (endpoint, is_group) = resolve_send_endpoint(self.config.api_base_url(), chat_id)?;
 
         let msg_id = self.reply_msg_id(chat_id).await;
         let msg_seq = self.next_msg_seq().await;
         let body = SendMessageRequest {
-            content: text.to_string(),
+            content: content.clone(),
             msg_type: crate::protocol::msg_type::TEXT,
             msg_id,
             msg_seq: Some(msg_seq),
@@ -350,8 +357,8 @@ impl PlatformAdapter for QqPlatformAdapter {
 
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            warn!("QQ send {} failed ({}): {}", endpoint, status, text);
+            let resp_text = resp.text().await.unwrap_or_default();
+            warn!("QQ send {} failed ({}): {}", endpoint, status, resp_text);
             return Err(AgentError::InternalError(format!(
                 "QQ send failed ({})",
                 status

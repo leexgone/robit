@@ -272,6 +272,25 @@ pub trait PlatformAdapter: Send + Sync + 'static {
     fn platform_name() -> &'static str;
 
     /// Send a text message to a chat. Returns the platform message ID.
+    ///
+    /// # Length guard contract
+    ///
+    /// Implementations **must** enforce [`PlatformCaps::max_message_length`]
+    /// on outbound text, typically by calling
+    /// [`prepare_outbound`](crate::outbound::prepare_outbound) before sending:
+    ///
+    /// - **Non-edit platforms** (`supports_edit == false`): long text is
+    ///   automatically split into at most
+    ///   [`MAX_OUTBOUND_SEGMENTS`](crate::outbound::MAX_OUTBOUND_SEGMENTS)
+    ///   boundary-aware segments.  Content beyond the budget carries an
+    ///   explicit truncation marker.
+    /// - **Edit platforms** (`supports_edit == true`): long text is truncated
+    ///   to the cap with an ellipsis, preserving the single-message editing
+    ///   model.
+    ///
+    /// Callers (including host direct-push paths) can rely on this guarantee
+    /// and do **not** need to pre-truncate or pre-split text themselves.
+    /// Text already within the cap passes through unchanged (idempotent).
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult>;
 
     /// Send a text message that may be **skipped** when the platform cannot
@@ -280,6 +299,9 @@ pub trait PlatformAdapter: Send + Sync + 'static {
     /// `Ok(None)` means "not sent, and that is acceptable" — used for
     /// non-essential traffic (progress hints, notices) so that optional
     /// messages never delay or displace the ones that must be delivered.
+    ///
+    /// The same [length guard contract](Self::send_message#length-guard-contract)
+    /// applies as for `send_message`.
     ///
     /// The default implementation is an ordinary [`Self::send_message`], so
     /// platforms without a send budget keep their previous behavior exactly.

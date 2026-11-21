@@ -259,27 +259,32 @@ impl ChatbotFrontend {
             text.clone()
         };
 
+        // Use the shared outbound length guard.  This produces the same
+        // segments/truncation as the old inline code, and is idempotent
+        // when the adapter also calls `prepare_outbound` on each segment.
+        let outbound = prepare_outbound(&prepared, &caps);
+
         let mut last_msg_id = self.last_msg_id.lock().await;
 
         if caps.supports_edit {
             // Edit-capable platforms keep the single-message model: the first
             // message of the turn is edited in place into the final answer.
-            let prepared = truncate_to_max(&prepared, caps.max_message_length);
+            let prepared = &outbound.segments[0];
             match last_msg_id.clone() {
                 Some(msg_id) => {
                     if self
                         .platform_sender
-                        .edit(&self.chat_id, &msg_id, &prepared)
+                        .edit(&self.chat_id, &msg_id, prepared)
                         .await
                         .is_err()
                     {
                         // Edit failed, fall back to send.
-                        if let Ok(res) = self.platform_sender.send(&self.chat_id, &prepared).await {
+                        if let Ok(res) = self.platform_sender.send(&self.chat_id, prepared).await {
                             *last_msg_id = Some(res.msg_id);
                         }
                     }
                 }
-                None => match self.platform_sender.send(&self.chat_id, &prepared).await {
+                None => match self.platform_sender.send(&self.chat_id, prepared).await {
                     Ok(res) => {
                         *last_msg_id = Some(res.msg_id);
                         tracing::trace!(
@@ -299,9 +304,7 @@ impl ChatbotFrontend {
             // No in-place edit: a long answer must be split into bounded
             // segments. Truncating a single message would silently drop the
             // tail of the reply.
-            let (segments, truncated) =
-                split_for_platform(&prepared, caps.max_message_length, MAX_OUTBOUND_SEGMENTS);
-            if truncated {
+            if outbound.truncated {
                 tracing::warn!(
                     "[chatbot] reply truncated after {} segments: chat_id='{}', text_len={}",
                     MAX_OUTBOUND_SEGMENTS,
@@ -309,7 +312,7 @@ impl ChatbotFrontend {
                     text.chars().count()
                 );
             }
-            for segment in &segments {
+            for segment in &outbound.segments {
                 match self.platform_sender.send(&self.chat_id, segment).await {
                     Ok(res) => {
                         *last_msg_id = Some(res.msg_id);
@@ -541,132 +544,10 @@ impl PlatformExt for ChatbotFrontend {
     }
 }
 
-/// Truncate `text` to `max` characters, appending an ellipsis if cut.
-fn truncate_to_max(text: &str, max: usize) -> String {
-    if max == 0 {
-        return text.to_string();
-    }
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
-}
-
-/// Hard cap on how many messages one flush may produce on a platform without
-/// in-place edit.
-///
-/// Editing platforms merge segments into one message, so they are unaffected;
-/// without editing, an unbounded split would turn one long answer into a
-/// message storm. Anything beyond this cap is dropped **with an explicit
-/// marker** (see [`TRUNCATION_MARKER`]) rather than silently.
-const MAX_OUTBOUND_SEGMENTS: usize = 3;
-
-/// Appended to the last segment when the reply had to be cut.
-const TRUNCATION_MARKER: &str = "\n……（内容过长，已截断）";
-
-/// Split `text` into at most `max_segments` chunks of at most `max_len` chars.
-///
-/// Boundaries are preferred in this order: paragraph, line, sentence end,
-/// whitespace, hard cut. A boundary inside a fenced code block is skipped when
-/// another usable boundary exists, so fenced code survives intact.
-///
-/// Returns the segments plus whether content had to be dropped (the last
-/// segment then carries [`TRUNCATION_MARKER`]).
-fn split_for_platform(text: &str, max_len: usize, max_segments: usize) -> (Vec<String>, bool) {
-    let total = text.chars().count();
-    if total == 0 {
-        return (Vec::new(), false);
-    }
-    if max_len == 0 || max_segments == 0 || total <= max_len {
-        return (vec![text.to_string()], false);
-    }
-
-    let marker_chars = TRUNCATION_MARKER.chars().count();
-    let mut segments: Vec<String> = Vec::new();
-    let mut rest = text;
-
-    loop {
-        let rest_chars = rest.chars().count();
-        if rest_chars <= max_len {
-            segments.push(rest.to_string());
-            return (segments, false);
-        }
-
-        if segments.len() + 1 >= max_segments {
-            // Last allowed segment: keep what fits next to the marker.
-            let budget = max_len.saturating_sub(marker_chars);
-            let (head, _tail) = split_head(rest, budget.max(1));
-            segments.push(format!("{}{}", head.trim_end(), TRUNCATION_MARKER));
-            return (segments, true);
-        }
-
-        let (head, tail) = split_head(rest, max_len);
-        segments.push(head.to_string());
-        rest = tail;
-    }
-}
-
-/// Cut `text` into `(head, tail)`, with at most `max_chars` chars in the head.
-fn split_head(text: &str, max_chars: usize) -> (&str, &str) {
-    let hard_cut = byte_index_of_char(text, max_chars);
-    if hard_cut == 0 {
-        return ("", text);
-    }
-    let window = &text[..hard_cut];
-    // Do not cut far too early just because a newline happens to sit at the
-    // very beginning of the window (e.g. a short lead-in paragraph).
-    let min_chars = (max_chars / 3).max(1);
-
-    for candidate in boundary_candidates(window) {
-        if candidate == 0 || candidate > hard_cut {
-            continue;
-        }
-        if text[..candidate].chars().count() < min_chars {
-            continue;
-        }
-        // `candidate` may sit inside a fenced code block: prefer another one.
-        if inside_code_fence(&text[..candidate]) {
-            continue;
-        }
-        return text.split_at(candidate);
-    }
-    text.split_at(hard_cut)
-}
-
-/// Byte index of the `max_chars`-th char (i.e. where a hard cut would land).
-fn byte_index_of_char(text: &str, max_chars: usize) -> usize {
-    match text.char_indices().nth(max_chars) {
-        Some((idx, _)) => idx,
-        None => text.len(),
-    }
-}
-
-/// Candidate split positions (byte indices), most preferred first.
-fn boundary_candidates(window: &str) -> Vec<usize> {
-    let mut candidates = Vec::new();
-    if let Some(idx) = window.rfind("\n\n") {
-        candidates.push(idx + 2); // keep the blank line with the head
-    }
-    if let Some(idx) = window.rfind('\n') {
-        candidates.push(idx + 1);
-    }
-    for punct in ["。", "！", "？", "；", ".", "!", "?", ";"] {
-        if let Some(idx) = window.rfind(punct) {
-            candidates.push(idx + punct.len());
-        }
-    }
-    if let Some(idx) = window.rfind(' ') {
-        candidates.push(idx + 1);
-    }
-    candidates
-}
-
-/// Whether `prefix` ends inside a fenced code block (` ``` ` pairs).
-fn inside_code_fence(prefix: &str) -> bool {
-    prefix.matches("```").count() % 2 == 1
-}
+// Outbound length handling is delegated to the public `outbound` module so
+// that adapter direct-send paths share the exact same logic.  The constants
+// and helpers that used to live here are now in `crate::outbound`.
+use crate::outbound::{prepare_outbound, MAX_OUTBOUND_SEGMENTS};
 
 #[cfg(test)]
 mod tests {
@@ -925,60 +806,85 @@ mod tests {
 
     // ------------------------------------------------------------------
     // Outbound segmentation (platforms without in-place edit)
+    // These tests exercise the same logic via the public `outbound` module.
     // ------------------------------------------------------------------
+
+    fn non_edit_test_caps(max_len: usize) -> PlatformCaps {
+        PlatformCaps {
+            supports_edit: false,
+            returns_msg_id: true,
+            supports_markdown: false,
+            markdown_features: MarkdownFeatures::wechat(),
+            max_message_length: max_len,
+            supports_images: true,
+            supports_files: true,
+            max_upload_size: 20 * 1024 * 1024,
+            progress_hints: HintPolicy::Off,
+        }
+    }
 
     #[test]
     fn split_keeps_short_text_in_one_segment() {
-        let (segments, truncated) = split_for_platform("你好", 10, 3);
-        assert_eq!(segments, vec!["你好".to_string()]);
-        assert!(!truncated);
+        let caps = non_edit_test_caps(10);
+        let result = prepare_outbound("你好", &caps);
+        assert_eq!(result.segments, vec!["你好".to_string()]);
+        assert!(!result.truncated);
     }
 
     #[test]
     fn split_prefers_paragraph_boundaries() {
+        let caps = non_edit_test_caps(200);
         let text = format!("{}\n\n{}", "A".repeat(120), "B".repeat(120));
-        let (segments, truncated) = split_for_platform(&text, 200, 3);
-        assert!(!truncated);
-        assert_eq!(segments.len(), 2);
-        assert!(segments[0].ends_with("\n\n"));
-        assert_eq!(segments.concat(), text);
-        assert!(segments.iter().all(|s| s.chars().count() <= 200));
+        let result = prepare_outbound(&text, &caps);
+        assert!(!result.truncated);
+        assert_eq!(result.segments.len(), 2);
+        assert!(result.segments[0].ends_with("\n\n"));
+        assert_eq!(result.segments.concat(), text);
+        assert!(result.segments.iter().all(|s| s.chars().count() <= 200));
     }
 
     #[test]
     fn split_caps_segment_count_and_marks_truncation() {
+        let caps = non_edit_test_caps(100);
         let text = "X".repeat(700);
-        let (segments, truncated) = split_for_platform(&text, 100, 3);
-        assert!(truncated);
-        assert_eq!(segments.len(), 3);
-        assert!(segments.last().unwrap().ends_with("已截断）"));
-        assert!(segments.iter().all(|s| s.chars().count() <= 100));
+        let result = prepare_outbound(&text, &caps);
+        assert!(result.truncated);
+        assert_eq!(result.segments.len(), 3);
+        assert!(result.segments.last().unwrap().ends_with("已截断）"));
+        assert!(result.segments.iter().all(|s| s.chars().count() <= 100));
     }
 
     #[test]
     fn split_does_not_cut_inside_a_closed_code_fence() {
+        let caps = non_edit_test_caps(220);
         let text = format!("```\n{}\n```\n\n{}", "x".repeat(170), "z".repeat(100));
-        let (segments, _) = split_for_platform(&text, 220, 3);
+        let result = prepare_outbound(&text, &caps);
         assert!(
-            segments[0].contains("```"),
+            result.segments[0].contains("```"),
             "fence stays in the first segment"
         );
-        assert!(segments[0].ends_with("\n\n"));
+        assert!(result.segments[0].ends_with("\n\n"));
     }
 
     #[test]
     fn split_hard_cuts_unbroken_text() {
+        let caps = non_edit_test_caps(200);
         let text = "A".repeat(500);
-        let (segments, _) = split_for_platform(&text, 200, 3);
-        assert_eq!(segments[0].chars().count(), 200);
-        assert_eq!(segments.concat(), text);
+        let result = prepare_outbound(&text, &caps);
+        assert_eq!(result.segments[0].chars().count(), 200);
+        // All original content preserved across segments (minus truncation marker).
+        let concat: String = result.segments.iter()
+            .map(|s| s.replace(crate::outbound::TRUNCATION_MARKER, ""))
+            .collect();
+        assert_eq!(concat, text);
     }
 
     #[test]
-    fn split_empty_text_yields_nothing() {
-        let (segments, truncated) = split_for_platform("", 200, 3);
-        assert!(segments.is_empty());
-        assert!(!truncated);
+    fn split_empty_text_yields_single_empty_segment() {
+        let caps = non_edit_test_caps(200);
+        let result = prepare_outbound("", &caps);
+        assert_eq!(result.segments, vec!["".to_string()]);
+        assert!(!result.truncated);
     }
 
     #[tokio::test]

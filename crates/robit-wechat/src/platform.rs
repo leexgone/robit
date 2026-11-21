@@ -29,6 +29,7 @@ use robit_chatbot::adapter::{
     ChatMessage, ChatType, HintPolicy, MediaAttachment, PlatformAdapter, PlatformCaps,
     PlatformEvent, SendResult, SenderInfo, UploadResult,
 };
+use robit_chatbot::outbound::prepare_outbound;
 use robit_chatbot::throttle::{SendLimiter, ThrottleConfig, ThrottleError, WaitMode};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -305,6 +306,11 @@ impl WechatPlatformAdapter {
     ///
     /// `WaitMode::Final` queues for a slot; `WaitMode::BestEffort` returns
     /// `Ok(None)` when the platform cannot take it right now.
+    ///
+    /// **Length guard**: text is transparently split into bounded segments
+    /// via [`prepare_outbound`] before sending.  Each segment passes through
+    /// the throttle independently.  On partial failure the remaining segments
+    /// are abandoned and the last successfully sent `msg_id` is returned.
     async fn send_text_inner(
         &self,
         chat_id: &str,
@@ -312,27 +318,62 @@ impl WechatPlatformAdapter {
         mode: WaitMode,
     ) -> Result<Option<SendResult>> {
         let peer = peer_from_chat_id(chat_id)?.to_string();
-        if let Err(e) = self.throttle.reserve(mode, &self.shutdown).await {
-            return match mode {
-                WaitMode::Final => Err(throttle_to_agent_error(e)),
-                WaitMode::BestEffort => {
-                    debug!("WeChat send skipped for {} ({}): {}", chat_id, mode_label(mode), e);
-                    Ok(None)
-                }
-            };
-        }
-        self.persist_throttle().await;
+        let caps = Self::capabilities();
+        let outbound = prepare_outbound(text, &caps);
 
-        let token = self.outbound_context_token(&peer).await;
-        match self.client.send_text(&peer, text, token.as_deref()).await {
-            Ok(result) => {
-                debug!("WeChat message sent to {} (id={})", chat_id, result.message_id);
-                Ok(Some(SendResult {
-                    msg_id: result.message_id,
-                }))
+        let mut last_result: Option<SendResult> = None;
+
+        for (i, segment) in outbound.segments.iter().enumerate() {
+            if let Err(e) = self.throttle.reserve(mode, &self.shutdown).await {
+                return match mode {
+                    WaitMode::Final => {
+                        if i > 0 {
+                            // Some segments already sent; log and return what we have.
+                            warn!(
+                                "WeChat multi-segment send throttled after {}/{} segments for {}",
+                                i, outbound.segments.len(), chat_id
+                            );
+                            Ok(last_result)
+                        } else {
+                            Err(throttle_to_agent_error(e))
+                        }
+                    }
+                    WaitMode::BestEffort => {
+                        debug!("WeChat send skipped for {} ({}): {}", chat_id, mode_label(mode), e);
+                        Ok(last_result) // None if nothing sent yet
+                    }
+                };
             }
-            Err(e) => Err(self.map_send_error(e).await),
+            self.persist_throttle().await;
+
+            let token = self.outbound_context_token(&peer).await;
+            match self.client.send_text(&peer, segment, token.as_deref()).await {
+                Ok(result) => {
+                    debug!(
+                        "WeChat message sent to {} (id={}, segment={}/{})",
+                        chat_id, result.message_id, i + 1, outbound.segments.len()
+                    );
+                    last_result = Some(SendResult {
+                        msg_id: result.message_id,
+                    });
+                }
+                Err(e) => {
+                    let mapped = self.map_send_error(e).await;
+                    if i > 0 {
+                        // Partial failure: abandon remaining segments, return what we have.
+                        warn!(
+                            "WeChat multi-segment send failed at segment {}/{} for {}: {}; \
+                             abandoning remaining segments",
+                            i + 1, outbound.segments.len(), chat_id, mapped
+                        );
+                        return Ok(last_result);
+                    }
+                    return Err(mapped);
+                }
+            }
         }
+
+        Ok(last_result)
     }
 
     /// Classify a failed outbound call.
