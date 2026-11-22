@@ -33,6 +33,10 @@ pub enum HintPolicy {
 pub struct PlatformCaps {
     pub supports_edit: bool,
     pub returns_msg_id: bool,
+    /// Whether the platform natively renders Markdown. **Descriptive only**:
+    /// the outbound projection (`outbound::prepare_outbound`) runs on every
+    /// platform regardless — all-false `markdown_features` means plain-text
+    /// projection, not "skip projection".
     pub supports_markdown: bool,
     pub markdown_features: MarkdownFeatures,
     pub max_message_length: usize,
@@ -47,6 +51,14 @@ pub struct PlatformCaps {
 }
 
 /// Supported Markdown features for a platform.
+///
+/// The projection ([`prepare_markdown_for_platform`](crate::markdown::prepare_markdown_for_platform))
+/// consumes these flags: supported syntax passes through, unsupported syntax
+/// degrades to readable plain text (tables linearize into records, code
+/// fences strip while content is kept, links keep their URL as `text (url)`,
+/// headings/quotes/strikethrough lose their markers). List markers `- ` /
+/// `N. ` are always emitted as a natural plain-text convention regardless of
+/// the list flags.
 #[derive(Debug, Clone, Default)]
 pub struct MarkdownFeatures {
     pub headings: bool,
@@ -104,8 +116,11 @@ impl MarkdownFeatures {
         }
     }
 
-    /// WeChat iLink Bot renders plain text (the protocol SDK strips Markdown
-    /// from outbound text), so no Markdown feature is advertised.
+    /// WeChat iLink Bot renders plain text, so no Markdown feature is
+    /// advertised. Note the protocol SDK's `filter_markdown` does **not**
+    /// strip everything — it deliberately preserves tables, code fences and
+    /// bold — so robit projects Markdown to plain text *before* the SDK sees
+    /// it (all-false features = plain-text projection in `markdown.rs`).
     pub fn wechat() -> Self {
         Self::default()
     }
@@ -119,7 +134,7 @@ impl PlatformCaps {
         Self {
             supports_edit: true,
             returns_msg_id: true,
-            supports_markdown: true, // Enable sanitizer
+            supports_markdown: true, // limited native rendering; projection still runs
             markdown_features: MarkdownFeatures::qq(),
             max_message_length: 2000,
             supports_images: true,
@@ -153,7 +168,7 @@ impl PlatformCaps {
         Self {
             supports_edit: false,
             returns_msg_id: true,
-            supports_markdown: false, // plain text; the SDK strips Markdown
+            supports_markdown: false, // plain text; robit projects before the SDK
             markdown_features: MarkdownFeatures::wechat(),
             max_message_length: 2000,
             supports_images: true,
@@ -273,24 +288,34 @@ pub trait PlatformAdapter: Send + Sync + 'static {
 
     /// Send a text message to a chat. Returns the platform message ID.
     ///
-    /// # Length guard contract
+    /// # Outbound preparation contract (content projection + length guard)
     ///
-    /// Implementations **must** enforce [`PlatformCaps::max_message_length`]
-    /// on outbound text, typically by calling
-    /// [`prepare_outbound`](crate::outbound::prepare_outbound) before sending:
+    /// Implementations **must** prepare outbound text by calling
+    /// [`prepare_outbound`](crate::outbound::prepare_outbound) before sending.
+    /// The guard applies two layers, in order:
     ///
-    /// - **Non-edit platforms** (`supports_edit == false`): long text is
-    ///   automatically split into at most
-    ///   [`MAX_OUTBOUND_SEGMENTS`](crate::outbound::MAX_OUTBOUND_SEGMENTS)
-    ///   boundary-aware segments.  Content beyond the budget carries an
-    ///   explicit truncation marker.
-    /// - **Edit platforms** (`supports_edit == true`): long text is truncated
-    ///   to the cap with an ellipsis, preserving the single-message editing
-    ///   model.
+    /// 1. **Content projection** — outbound text is treated as Markdown
+    ///    source and projected to [`PlatformCaps::markdown_features`]:
+    ///    tables become linearized records, unsupported syntax degrades to
+    ///    readable plain text. Text without Markdown syntax passes through
+    ///    byte-for-byte, and already-projected text is stable (idempotent).
+    ///    Hosts pushing literal plain text should avoid Markdown-significant
+    ///    character pairs (e.g. `2*3*4`), which are interpreted as emphasis
+    ///    by design.
+    /// 2. **Length guard** — [`PlatformCaps::max_message_length`] is enforced
+    ///    on the projected text:
+    ///    - **Non-edit platforms** (`supports_edit == false`): long text is
+    ///      automatically split into at most
+    ///      [`MAX_OUTBOUND_SEGMENTS`](crate::outbound::MAX_OUTBOUND_SEGMENTS)
+    ///      boundary-aware segments.  Content beyond the budget carries an
+    ///      explicit truncation marker.
+    ///    - **Edit platforms** (`supports_edit == true`): long text is
+    ///      truncated to the cap with an ellipsis, preserving the
+    ///      single-message editing model.
     ///
-    /// Callers (including host direct-push paths) can rely on this guarantee
-    /// and do **not** need to pre-truncate or pre-split text themselves.
-    /// Text already within the cap passes through unchanged (idempotent).
+    /// Callers (including host direct-push paths) can rely on these
+    /// guarantees and do **not** need to pre-project, pre-truncate or
+    /// pre-split text themselves.
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult>;
 
     /// Send a text message that may be **skipped** when the platform cannot
@@ -300,8 +325,8 @@ pub trait PlatformAdapter: Send + Sync + 'static {
     /// non-essential traffic (progress hints, notices) so that optional
     /// messages never delay or displace the ones that must be delivered.
     ///
-    /// The same [length guard contract](Self::send_message#length-guard-contract)
-    /// applies as for `send_message`.
+    /// The same outbound preparation contract (content projection + length
+    /// guard) as [`send_message`](Self::send_message) applies.
     ///
     /// The default implementation is an ordinary [`Self::send_message`], so
     /// platforms without a send budget keep their previous behavior exactly.
