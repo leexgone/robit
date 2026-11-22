@@ -8,7 +8,79 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  # -----------------------------------------------------------------------
+  # Publish library crates to crates.io (dependency order, skip existing)
+  # -----------------------------------------------------------------------
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Read the unified version from workspace Cargo.toml.
+          VERSION=$(grep '^version\s*=' Cargo.toml | head -1 | sed -E 's/version\s*=\s*"([^"]+)"/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Cannot read version from workspace Cargo.toml"
+            exit 1
+          fi
+          echo "Workspace version: $VERSION"
+
+          # Crates in dependency order: leaf deps first, dependents last.
+          # robit-gui is excluded (publish = false).
+          CRATES=(
+            "crates/robit-ai:robit-ai"
+            "crates/robit-agent:robit-agent"
+            "crates/robit-chatbot:robit-chatbot"
+            "crates/robit-web:robit-web"
+            "crates/robit-tui:robit"
+            "crates/robit-qq:robit-qq"
+            "crates/robit-wechat:robit-wechat"
+          )
+
+          for entry in "${CRATES[@]}"; do
+            IFS=":" read -r path name <<< "$entry"
+
+            # Skip crates marked publish = false.
+            if grep -qE 'publish\s*=\s*false' "$path/Cargo.toml"; then
+              echo "[skip] $name (publish = false)"
+              continue
+            fi
+
+            # Check whether this version is already on crates.io.
+            if curl -sf "https://crates.io/api/v1/crates/$name" \
+               | grep -q "\"num\":\"$VERSION\""; then
+              echo "[ok]   $name v$VERSION already published, skipping"
+              continue
+            fi
+
+            echo "[pub]  Publishing $name v$VERSION ..."
+            (cd "$path" && cargo publish --no-verify)
+
+            echo "[ok]   $name v$VERSION published"
+            # Give the crates.io index time to propagate before the next crate.
+            sleep 15
+          done
+
+          echo "[done] All crates processed"
+
   build-cli:
     name: Build CLI (${{ matrix.name }})
     runs-on: ${{ matrix.os }}

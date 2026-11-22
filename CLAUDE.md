@@ -264,7 +264,10 @@ reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
 
 ## 发版流程
 
-发布通过推送 `v*` 标签触发 `.github/workflows/release.yml`，自动构建 `robit`（TUI）、`robit-qq`、`robit-gui`（Tauri）三平台产物并挂到 GitHub Release。
+发布通过推送 `v*` 标签触发 `.github/workflows/release.yml`，自动完成两件事：
+
+1. **crates.io 发布**：按依赖顺序将库 crate（`robit-ai` → `robit-agent` → `robit-chatbot` → `robit-web` → `robit` → `robit-qq` → `robit-wechat`）发布到 crates.io，已存在的版本自动跳过。需要仓库设置 `CARGO_REGISTRY_TOKEN` secret。
+2. **GitHub Release 产物**：构建 `robit`（TUI）、`robit-qq`、`robit-wechat`、`robit-gui`（Tauri）三平台二进制产物并挂到 GitHub Release。
 
 ### 版本号
 
@@ -277,6 +280,10 @@ reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
 - `crates/robit-gui/tauri.conf.json` **不要**写 `version` 字段：Tauri 会自动从 Cargo.toml 读版本（经 `CARGO_PKG_VERSION` 跟随 workspace），GUI 产物名（`Robit_X.Y.Z_*`）与运行时版本显示均由此而来。曾因硬编码 `0.1.1` 导致产物名长期停在 `Robit_0.1.1_*`，切勿加回。
 - GUI 的 npm 侧 `@tauri-apps/*` 与 Rust 侧 tauri crate 版本必须 **major.minor 一致**（Tauri CLI 构建时强校验，不一致直接拒绝构建）。`crates/robit-gui/ui/package-lock.json` 锁定公共 npm 源版本，CI 用 `npm ci` 安装。升级 Tauri 依赖时，`cargo update -p tauri-plugin-shell` 与 `npm install @tauri-apps/plugin-shell@<同版本>` 必须在**同一提交**完成。
 
+### 前置条件
+
+- 仓库 Settings → Secrets and variables → Actions 中配置 `CARGO_REGISTRY_TOKEN`（crates.io API token，scope: `publish-update`）。首次发版前设置一次即可。
+
 ### 步骤
 
 1. 改版本号（上述三处）+ `cargo check` 更新 `Cargo.lock`。
@@ -284,8 +291,8 @@ reject = ["取消", "拒绝", "no", "n", "reject", "cancel", "deny"]
 3. 提交：`chore(release): bump version to X.Y.Z`（版本号 + `Cargo.lock` + `CHANGELOG.md` 一起）。
 4. `git push origin main`。
 5. 打 annotated tag 并推送（触发 CI）：`git tag -a vX.Y.Z -m "Release vX.Y.Z"`，再 `git push origin vX.Y.Z`。
-6. CI（`release.yml`）构建产物并创建 GitHub Release。用 `gh release create/edit vX.Y.Z --notes-file <file>` 补充 release notes（内容取自 `CHANGELOG.md` 对应条目）。
-7. 确认 CI 通过、产物齐全后再通知部署。
+6. CI（`release.yml`）自动完成 crates.io 发布 + GitHub Release 产物构建。用 `gh release create/edit vX.Y.Z --notes-file <file>` 补充 release notes（内容取自 `CHANGELOG.md` 对应条目）。
+7. 确认 CI 通过（publish-crates + 各 build job）、产物齐全后再通知部署。
 
 ### 产物命名
 
