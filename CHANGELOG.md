@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **依赖 / rusqlite 0.42 → 0.43**：修复上游 3 处 use-after-free（`ChangesetIter::start_strm` / `Connection::column_metadata` / `Filter::in_values`）与 `time::OffsetDateTime` 短 TEXT panic；上游收紧空/纯注释 SQL 拒绝行为（本仓库均为静态 schema SQL 与动态查询，不受影响）。`libsqlite3-sys` 维持 0.40（bundled SQLite 版本不变），全 workspace 测试与 clippy 基线回归通过。
+
 ## [0.5.0] - 2026-11-22
 
 IM 出站 Markdown 表格投影（子木第七轮移交 R17）。需求移交件见 `docs/robit-rfc-im-table-projection.md`，评估与实现设计见 `docs/robit-rfc-im-table-projection-design.md`（决策点 D1–D6 全部按推荐采纳）。
