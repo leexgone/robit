@@ -8,6 +8,30 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-22
+
+IM 出站 Markdown 表格投影（子木第七轮移交 R17）。需求移交件见 `docs/robit-rfc-im-table-projection.md`，评估与实现设计见 `docs/robit-rfc-im-table-projection-design.md`（决策点 D1–D6 全部按推荐采纳）。
+
+> **升级提示（0.4.x → 0.5.0）**：双平台可见行为变化——微信会话回复与宿主直调推送现在过纯文本投影（原始管道表格/栅栏/加粗标记不再直达用户）；QQ 含标题/引用/删除线/链接/表格的回复按 features 诚实降级（字面 `**`/`> `/`~~` 去除、链接保留 URL、表格线性化）。**纯文本回复（无 Markdown 语法）双平台逐字节不变**。出站文本统一按 Markdown 语义处理：宿主直推含成对 `*`/`_` 等显著字符的纯文本会被按强调消化（trait 契约已明示）。
+
+### Added
+
+- **robit-chatbot / 表格线性化投影（T1）**：`render_table`（空格补位伪表格，比例字体下原理性错位）替换为 `linearize_table`——两列表逐行 `键: 值`；N 列表逐记录 `首列 — 表头: 值 · …`（记录间空行，>5 列宽表记录内拆多行、续行不缩进）；空单元格跳过对应键值对；表头语义并入键值对不再单独输出。输出无管道符/分隔行残留，二次投影幂等（黄金字符串单测逐字节钉死，含 CJK 持仓真实场景）。`features.tables=true` 平台直通原始表格语法（源偏移切片，保留 `\|` 转义与行内语法），激活死标志。
+- **robit-chatbot / 纯文本快速通道**：不含 Markdown 触发字符、行首尾无空白的文本逐字节直通投影（不做换行归一化）——系统通知（确认提示/命令回执/进度提示/错误通知）与已投影回复二次过出站守卫时逐位稳定，幂等由构造保证；既有长度守卫精确字节测试全部原样通过。
+- **robit-chatbot / adapter 直调路径透明内容投影（T3）**：`prepare_outbound` 扩展为「内容投影 + 长度守卫」统一出站准备（先投影后分段——投影改变长度，顺序不可反）。宿主直调 `send_message` / `send_message_best_effort` 不调清洗器也自动获得平台可读投影，与 0.4.1 长度守卫透明封装完全同构；QQ/微信 adapter 零改动（发送咽喉已就位）。长表格直调 → 线性化 + 分段组合有单测覆盖。
+
+### Changed
+
+- **robit-chatbot / 纯文本平台也过投影（T2）**：`flush_buffer` 删除 `supports_markdown=false` 的整体跳过分支——清洗器定位是「平台可读性投影」而非「Markdown 渲染器」，all-false features = 纯文本投影，本就该跑。微信输出与 caps 宣称一致（caps 说纯文本，输出就是纯文本）；SDK `filter_markdown` 变成无害二次过滤（它「保留」的表格/栅栏/加粗已被投影掉）。微信纯文本回复逐字节不变（快速通道）；含 Markdown 语法的回复按预期改善：加粗/栅栏/标题标记去除、引用去 `> `、表格线性化、图片语法变 `[Image: alt]` 文本（SDK 此前将图片语法整体删除，现在信息反而得以保留）。
+- **robit-chatbot / 降级尊重 features（QQ 改善性变化）**：`headings=false` 时标题降级不再恒输出字面 `**`——`bold=false` 输出纯文本 + 空行（`bold=true` 维持 `**` 兜底）；`blockquotes=false` 去除字面 `> `；`links=false` 由「丢弃 URL」改为 `text (url)`（信息保全，文本与 URL 相同或为空时去重）；`strikethrough=false` 剥除字面 `~~`（解析选项恒开、发射按 flag，与 bold/italic 同构）。QQ 纯文本回复逐字节不变，含上述语法的回复按描述变化（caps 诚实优先，既有单测全部回归通过）。列表标记 `- `/`N. ` 恒保留（纯文本自然约定，flag 为描述性）。
+- **robit-chatbot / `PlatformAdapter::send_message` trait 契约**：「长度守卫契约」扩展为「出站准备契约（内容投影 + 长度守卫）」，明示出站文本按 Markdown 语义处理、纯文本快速通道与幂等保证，调用方无需自行预投影/预截/预分段。`supports_markdown` 字段语义改为描述性声明（投影恒跑，不再作为门控）。更正 adapter.rs 两处与 SDK 实际行为不符的注释（「SDK strips Markdown」——SDK 实际保留表格/栅栏/加粗）。
+- **robit-chatbot / HardBreak 归一化**：行尾双空格硬换行统一输出 `\n`（行尾双空格是 Markdown 语法残留，IM 客户端不可见）。
+
+### Fixed
+
+- **robit-chatbot / `blockquotes=true` 时引用标记丢失**：`in_blockquote` 置位后无消费点，支持引用的平台（未来飞书）也会丢失 `> ` 标记；现按行发射前缀（嵌套引用 `> > `），含幂等单测。
+- **robit-chatbot / 表格单元格捕获泄漏边界**：单元格文本捕获由「从 output 剥回末段文本」hack 重构为事件路由（行内事件直接写单元格缓冲），修复单元格内 HardBreak 等残留泄漏到主输出的问题；单元格内行内代码/加粗/链接按 features 正确投影（含降级链接 `text (url)` 形态）。
+
 ## [0.4.1] - 2026-11-22
 
 ### Added
