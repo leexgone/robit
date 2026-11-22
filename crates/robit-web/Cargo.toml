@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "Web frontend bridge for robit: official AgentEvent wire schema, broadcast fan-out Frontend, tool-confirmation slots and message injection."
 readme = "../../README.md"
 keywords = ["llm", "agent", "web", "sse"]

@@ -107,7 +107,7 @@ fn repair_tool_pairing(
     // Pass 2: rebuild, inserting placeholder responses for missing ids.
     let mut synthesized = 0usize;
     let mut result: Vec<ChatCompletionRequestMessage> = Vec::with_capacity(messages.len());
-    for (msg, keep) in messages.into_iter().zip(keep.into_iter()) {
+    for (msg, keep) in messages.into_iter().zip(keep) {
         if !keep {
             continue;
         }
@@ -149,8 +149,7 @@ fn repair_tool_pairing(
                         .to_string()
                         .into(),
                     tool_call_id: id,
-                }
-                .into(),
+                },
             ));
         }
     }

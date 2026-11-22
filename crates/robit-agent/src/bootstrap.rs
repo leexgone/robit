@@ -493,9 +493,7 @@ fn build_image_client(config: &RobitConfig) -> Option<ImageGenClient> {
     }
     // default_image_model is required; if absent, image generation is
     // considered disabled (no warning - this is a valid "not using it" state).
-    if config.default_image_model.is_none() {
-        return None;
-    }
+    config.default_image_model.as_ref()?;
     match resolve_image_provider(config) {
         Ok(provider) => {
             tracing::info!(
@@ -520,9 +518,7 @@ fn build_image_client(config: &RobitConfig) -> Option<ImageGenClient> {
 /// a normal "user doesn't need image recognition" state. Returns `None` with
 /// a warning only when the configuration is present but invalid.
 fn build_vision_client(config: &RobitConfig) -> Option<LlmClient> {
-    if config.default_vision_model.is_none() {
-        return None;
-    }
+    config.default_vision_model.as_ref()?;
     match resolve_vision_model(config) {
         Ok(resolved) => {
             // ModelConfig.supports_images defaults to false, so a user adding

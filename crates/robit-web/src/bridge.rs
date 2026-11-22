@@ -240,7 +240,7 @@ mod tests {
             }
         );
         assert!(bridge.resolve_confirm("tc1", true).await);
-        assert_eq!(handle.await.unwrap().unwrap(), true);
+        assert!(handle.await.unwrap().unwrap());
     }
 
     #[tokio::test]
@@ -254,7 +254,7 @@ mod tests {
         assert!(!bridge.resolve_confirm("nope", true).await);
         // still pending — correct id resolves it
         assert!(bridge.resolve_confirm("tc1", false).await);
-        assert_eq!(handle.await.unwrap().unwrap(), false);
+        assert!(!handle.await.unwrap().unwrap());
     }
 
     #[tokio::test]
@@ -272,9 +272,9 @@ mod tests {
             WebEvent::ConfirmRequest { ref tool_call_id, .. } if tool_call_id == "tc2"
         ));
         // old slot was replaced: its waiter resolves as deny without any answer
-        assert_eq!(old.await.unwrap().unwrap(), false);
+        assert!(!old.await.unwrap().unwrap());
         assert!(bridge.resolve_confirm("tc2", true).await);
-        assert_eq!(new.await.unwrap().unwrap(), true);
+        assert!(new.await.unwrap().unwrap());
     }
 
     #[tokio::test]
@@ -287,7 +287,7 @@ mod tests {
         rx.recv().await.unwrap();
         assert!(bridge.reject_pending_confirms().await);
         assert!(!bridge.reject_pending_confirms().await);
-        assert_eq!(handle.await.unwrap().unwrap(), false);
+        assert!(!handle.await.unwrap().unwrap());
     }
 
     #[tokio::test]

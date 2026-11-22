@@ -756,8 +756,7 @@ pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionReque
             ChatCompletionRequestUserMessage {
                 content: ChatCompletionRequestUserMessageContent::Text(data.content.clone()),
                 name: None,
-            }
-            .into(),
+            },
         )),
         "assistant" => {
             // Try to parse tool_calls from tool_info
@@ -815,8 +814,7 @@ pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionReque
                     audio: None,
                     #[allow(deprecated)]
                     function_call: None,
-                }
-                .into(),
+                },
             ))
         }
         "tool" => {
@@ -825,8 +823,7 @@ pub fn message_to_chat_message(data: &MessageData) -> Result<ChatCompletionReque
                 ChatCompletionRequestToolMessage {
                     content: data.content.clone().into(),
                     tool_call_id,
-                }
-                .into(),
+                },
             ))
         }
         // Ignore other roles for now (system is regenerated)
@@ -965,7 +962,7 @@ pub fn load_chat_messages(
 
     let mut result = Vec::with_capacity(messages.len());
     for (idx, msg) in messages.iter().enumerate() {
-        match message_to_chat_message(&msg) {
+        match message_to_chat_message(msg) {
             Ok(chat_msg) => {
                 // Double-check that assistant messages are valid before adding
                 let is_valid = match &chat_msg {

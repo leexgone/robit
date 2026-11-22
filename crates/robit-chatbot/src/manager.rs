@@ -1090,7 +1090,7 @@ async fn rotate_media(media_dir: &std::path::Path, retention: &MediaRetentionCon
     }
     if max_files > 0 && entries.len() > max_files {
         // Newest first; drop the tail beyond the count cap.
-        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.sort_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
         for (path, _) in entries.iter().skip(max_files) {
             if tokio::fs::remove_file(path).await.is_ok() {
                 removed += 1;

@@ -122,34 +122,28 @@ pub enum ThinkingMode {
 /// Protocol used by an image generation provider.
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ImageProtocol {
     /// OpenAI-compatible Images API (`POST /images/generations`).
+    #[default]
     Openai,
     /// DashScope native protocol (Wanxiang, supports sync/async modes).
     Dashscope,
 }
 
-impl Default for ImageProtocol {
-    fn default() -> Self {
-        Self::Openai
-    }
-}
 
 /// Call mode for DashScope image generation.
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ImageCallMode {
     /// Synchronous call: one request returns the result directly.
+    #[default]
     Sync,
     /// Asynchronous call: submit a task, then poll until completion.
     Async,
 }
 
-impl Default for ImageCallMode {
-    fn default() -> Self {
-        Self::Sync
-    }
-}
 
 /// A single image generation model definition.
 #[derive(Debug, Deserialize, Clone)]
@@ -540,10 +534,8 @@ pub fn load_env_from(workdir: Option<&std::path::Path>) {
     // Use dotenvy::from_path_iter to load and manually set vars to enable overriding
     for path in env_paths.iter().rev() {
         if let Ok(iter) = dotenvy::from_path_iter(path) {
-            for item in iter {
-                if let Ok((key, value)) = item {
-                    std::env::set_var(key, value);
-                }
+            for (key, value) in iter.flatten() {
+                std::env::set_var(key, value);
             }
         }
     }

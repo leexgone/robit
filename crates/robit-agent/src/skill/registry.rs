@@ -215,7 +215,7 @@ mod tests {
     fn test_warns_missing_tools() {
         // This test just verifies the warn! path is exercised.
         // In practice, tracing::warn! to stderr during tests is fine.
-        let skills = vec![make_skill("review", vec!["/review"])];
+        let skills = [make_skill("review", vec!["/review"])];
         let mut front = skills[0].frontmatter.clone();
         front.tools_required = vec!["bash".to_string(), "nonexistent_tool".to_string()];
         let skill = Skill {

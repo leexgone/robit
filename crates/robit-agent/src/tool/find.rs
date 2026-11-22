@@ -169,7 +169,7 @@ impl Tool for FindTool {
         let mut output = String::new();
         output.push_str(&format!("Search: {}\n", parsed.pattern));
         output.push_str(&format!("Directory: {}\n", search_dir.display()));
-        output.push_str(&format!("{}", "─".repeat(50)));
+        output.push_str(&"─".repeat(50));
 
         if matches.is_empty() {
             output.push_str("\n(No matches found)");

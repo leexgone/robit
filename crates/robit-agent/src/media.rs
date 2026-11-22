@@ -557,7 +557,7 @@ mod tests {
         image::DynamicImage::ImageRgba8(img)
             .write_to(&mut buf, image::ImageFormat::Png)
             .unwrap();
-        let out = compress_image_bytes(&buf.get_ref(), "image/png", 1024).unwrap();
+        let out = compress_image_bytes(buf.get_ref(), "image/png", 1024).unwrap();
         assert_eq!(out.mime, "image/jpeg");
         assert!(!out.kept_original);
         let decoded = image::load_from_memory(&out.bytes).unwrap();
@@ -614,8 +614,8 @@ mod tests {
             sanitize_filename(Some("a/b/../../c.csv"), None),
             "c.csv"
         );
-        assert_eq!(sanitize_filename(Some(".."), None).contains('.'), false);
-        assert_eq!(sanitize_filename(Some("."), None).contains('.'), false);
+        assert!(!sanitize_filename(Some(".."), None).contains('.'));
+        assert!(!sanitize_filename(Some("."), None).contains('.'));
     }
 
     #[test]

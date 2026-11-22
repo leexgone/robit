@@ -123,7 +123,7 @@ impl Tool for BashTool {
                 // Append stderr
                 if !stderr.is_empty() {
                     if !content.is_empty() {
-                        content.push_str("\n");
+                        content.push('\n');
                     }
                     content.push_str("[stderr]\n");
                     content.push_str(&truncate_output(&stderr, self.max_output_bytes));
@@ -132,7 +132,7 @@ impl Tool for BashTool {
                 // Append exit code if non-zero
                 if exit_code != 0 {
                     if !content.is_empty() {
-                        content.push_str("\n");
+                        content.push('\n');
                     }
                     content.push_str(&format!("[exit code: {}]", exit_code));
                 }
