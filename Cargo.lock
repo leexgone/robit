@@ -4341,7 +4341,7 @@ dependencies = [
 
 [[package]]
 name = "robit"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4359,7 +4359,7 @@ dependencies = [
 
 [[package]]
 name = "robit-agent"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -4389,7 +4389,7 @@ dependencies = [
 
 [[package]]
 name = "robit-agent-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4405,7 +4405,7 @@ dependencies = [
 
 [[package]]
 name = "robit-ai"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-openai",
  "bytes",
@@ -4427,7 +4427,7 @@ dependencies = [
 
 [[package]]
 name = "robit-chat"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -4438,7 +4438,7 @@ dependencies = [
 
 [[package]]
 name = "robit-chatbot"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "pulldown-cmark",
@@ -4458,7 +4458,7 @@ dependencies = [
 
 [[package]]
 name = "robit-gui"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "alloc-no-stdlib 2.0.4",
  "async-trait",
@@ -4480,7 +4480,7 @@ dependencies = [
 
 [[package]]
 name = "robit-qq"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -4503,7 +4503,7 @@ dependencies = [
 
 [[package]]
 name = "robit-web"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "robit-agent",
@@ -4515,7 +4515,7 @@ dependencies = [
 
 [[package]]
 name = "robit-wechat"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "clap",

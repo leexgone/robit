@@ -8,9 +8,14 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-22
+
+维护版本：依赖修复升级与 CI 现代化，无 API 与行为变化。
+
 ### Changed
 
-- **依赖 / rusqlite 0.42 → 0.43**：修复上游 3 处 use-after-free（`ChangesetIter::start_strm` / `Connection::column_metadata` / `Filter::in_values`）与 `time::OffsetDateTime` 短 TEXT panic；上游收紧空/纯注释 SQL 拒绝行为（本仓库均为静态 schema SQL 与动态查询，不受影响）。`libsqlite3-sys` 维持 0.40（bundled SQLite 版本不变），全 workspace 测试与 clippy 基线回归通过。
+- **依赖 / rusqlite 0.42 → 0.43**：修复上游 3 处 use-after-free（`ChangesetIter::start_strm` / `Connection::column_metadata` / `Filter::in_values`）与 `time::OffsetDateTime` 短 TEXT panic；上游收紧空/纯注释 SQL 拒绝行为（本仓库均为静态 schema SQL 与动态查询，不受影响）。`libsqlite3-sys` 维持 0.40（bundled SQLite 版本不变），全 workspace 测试与 clippy 基线回归通过。下游若直接引用 rusqlite 并与 robit 公共 API 交换 `Connection`/`Error` 类型，需同处 0.43 线（0.x semver 以 minor 为兼容边界）。
+- **CI / 发版 workflow actions 升级 Node 24 运行时**：`actions/checkout` v4 → v7、`actions/setup-node` v4 → v7（GUI 构建 `node-version` 维持 22）、`softprops/action-gh-release` v2 → v3（纯运行时迁移，输入不变）；`Swatinem/rust-cache@v2` 浮动标签已指向 2.9.3（node24）无需变更。消除 GitHub Node.js 20 弃用警告。
 
 ## [0.5.0] - 2026-11-22
 
