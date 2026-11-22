@@ -42,7 +42,6 @@ use tokio::sync::Mutex;
 
 use crate::adapter::{HintPolicy, PlatformCaps, SendResult, UploadResult};
 use crate::confirmer::Confirmer;
-use crate::markdown::prepare_markdown_for_platform;
 /// Abstracted message sending capability (platform-agnostic).
 ///
 /// `ChatbotFrontend` talks to the platform through this trait rather than
@@ -90,8 +89,10 @@ pub trait PlatformExt: Send + Sync {
 /// Per-session Frontend trait implementation for Bot platforms.
 ///
 /// Each chat (group or private) gets its own `ChatbotFrontend` instance.
-/// `TextDelta` events are buffered and flushed once at TurnComplete with
-/// full Markdown sanitization to ensure clean output on platforms like QQ.
+/// `TextDelta` events are buffered and flushed once at TurnComplete through
+/// the shared outbound guard (content projection + length guard), so every
+/// platform gets readable output — including plain-text platforms, whose
+/// all-false features produce a plain-text projection.
 pub struct ChatbotFrontend {
     /// The chat this frontend belongs to (`group:{id}` or `private:{id}`).
     pub chat_id: String,
@@ -253,16 +254,12 @@ impl ChatbotFrontend {
 
         let caps = self.platform_sender.capabilities();
 
-        let prepared = if caps.supports_markdown {
-            prepare_markdown_for_platform(&text, &caps.markdown_features)
-        } else {
-            text.clone()
-        };
-
-        // Use the shared outbound length guard.  This produces the same
-        // segments/truncation as the old inline code, and is idempotent
-        // when the adapter also calls `prepare_outbound` on each segment.
-        let outbound = prepare_outbound(&prepared, &caps);
+        // Shared outbound guard: content projection (platform readability)
+        // followed by the length guard. Projection runs on EVERY platform —
+        // all-false features mean plain-text projection, not "skip". It is
+        // idempotent, so the adapter calling `prepare_outbound` again on each
+        // segment is a byte-level no-op.
+        let outbound = prepare_outbound(&text, &caps);
 
         let mut last_msg_id = self.last_msg_id.lock().await;
 
@@ -586,6 +583,15 @@ mod tests {
                 },
             })
         }
+        /// WeChat-style sender: plain-text caps, no in-place edit.
+        fn new_wechat() -> Arc<Self> {
+            Arc::new(Self {
+                sent: StdMutex::new(Vec::new()),
+                edits: StdMutex::new(Vec::new()),
+                skip_best_effort: false,
+                caps: PlatformCaps::wechat(),
+            })
+        }
         fn sent_texts(&self) -> Vec<String> {
             self.sent.lock().unwrap().iter().map(|(_, t)| t.clone()).collect()
         }
@@ -856,7 +862,12 @@ mod tests {
 
     #[test]
     fn split_does_not_cut_inside_a_closed_code_fence() {
-        let caps = non_edit_test_caps(220);
+        // QQ features keep fences through projection; the split heuristic
+        // must still avoid cutting inside them.
+        let caps = PlatformCaps {
+            markdown_features: MarkdownFeatures::qq(),
+            ..non_edit_test_caps(220)
+        };
         let text = format!("```\n{}\n```\n\n{}", "x".repeat(170), "z".repeat(100));
         let result = prepare_outbound(&text, &caps);
         assert!(
@@ -934,6 +945,51 @@ mod tests {
         let edits = sender.edits.lock().unwrap();
         assert_eq!(edits.len(), 1);
         assert!(edits[0].2.contains("最终答案"));
+    }
+
+    // ------------------------------------------------------------------
+    // Plain-text platform projection (T2: WeChat no longer skips the
+    // projection; all-false features = plain-text projection).
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn wechat_table_reply_is_linearized() {
+        let sender = MockSender::new_wechat();
+        let fe = make_frontend(sender.clone(), false).await;
+        let md = "| 持仓 | 现价 | 盈亏 | 仓位 |\n|---|---|---|---|\n| 贵州茅台 | 105.00 | -4.59% | 28.0% |\n";
+        fe.on_event(AgentEvent::TextDelta(md.into())).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+
+        let texts = sender.sent_texts();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(
+            texts[0],
+            "贵州茅台 — 现价: 105.00 · 盈亏: -4.59% · 仓位: 28.0%\n"
+        );
+        assert!(!texts[0].contains('|'), "raw pipe syntax must not leak");
+    }
+
+    #[tokio::test]
+    async fn wechat_plain_reply_is_byte_exact() {
+        // Plain text takes the fast path: no trailing newline, no changes.
+        let sender = MockSender::new_wechat();
+        let fe = make_frontend(sender.clone(), false).await;
+        fe.on_event(AgentEvent::TextDelta("你好世界".into())).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+        assert_eq!(sender.sent_texts(), vec!["你好世界".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn wechat_markdown_reply_is_projected_to_plain_text() {
+        let sender = MockSender::new_wechat();
+        let fe = make_frontend(sender.clone(), false).await;
+        let md = "# 标题\n\n**加粗** 与 `code`\n\n```\nlet x = 1;\n```\n";
+        fe.on_event(AgentEvent::TextDelta(md.into())).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+
+        let texts = sender.sent_texts();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0], "标题\n\n加粗 与 code\n\nlet x = 1;\n");
     }
 
     #[tokio::test]
