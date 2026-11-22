@@ -152,13 +152,13 @@ impl Tool for SearchHistoryTool {
                         ));
                     }
 
-                    output.push_str("\n");
+                    output.push('\n');
 
                     // Indent snippet for readability
                     for line in msg.content_snippet.lines() {
                         output.push_str(&format!("   {}\n", line));
                     }
-                    output.push_str("\n");
+                    output.push('\n');
                 }
 
                 Ok(ToolResult::success(output))

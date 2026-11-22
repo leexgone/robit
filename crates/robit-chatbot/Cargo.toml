@@ -5,7 +5,6 @@ edition.workspace = true
 description = "Multi-session Bot infrastructure for robit (platform-agnostic base)."
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 readme = "../../README.md"
 keywords = ["llm", "agent", "chatbot", "bot"]
 categories = ["development-tools"]

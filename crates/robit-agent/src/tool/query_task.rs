@@ -32,6 +32,12 @@ impl QueryTaskTool {
     }
 }
 
+impl Default for QueryTaskTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Tool for QueryTaskTool {
     fn name(&self) -> &str {

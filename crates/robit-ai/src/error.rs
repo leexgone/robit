@@ -75,7 +75,7 @@ impl LlmError {
                 match api
                     .code
                     .as_deref()
-                    .or_else(|| api.r#type.as_deref())
+                    .or(api.r#type.as_deref())
                 {
                     Some(code) if is_content_moderation_code(code) => {
                         moderation_error(code, &api.message)

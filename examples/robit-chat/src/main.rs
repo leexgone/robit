@@ -30,8 +30,7 @@ async fn main() -> anyhow::Result<()> {
         ChatCompletionRequestSystemMessage {
             content: "你是 Robit，一个 AI 编程代理。请直接回答用户问题。".into(),
             name: None,
-        }
-        .into(),
+        },
     )];
 
     let stdin = io::stdin();
@@ -61,8 +60,7 @@ async fn main() -> anyhow::Result<()> {
             ChatCompletionRequestUserMessage {
                 content: input.to_string().into(),
                 name: None,
-            }
-            .into(),
+            },
         ));
 
         // Stream response
@@ -105,8 +103,7 @@ async fn main() -> anyhow::Result<()> {
                     audio: None,
                     #[allow(deprecated)]
                     function_call: None,
-                }
-                .into(),
+                },
             ));
         }
     }

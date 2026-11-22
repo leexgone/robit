@@ -5,7 +5,6 @@ edition.workspace = true
 description = "WeChat iLink Bot platform frontend for the robit agent."
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 readme = "../../README.md"
 keywords = ["llm", "agent", "wechat", "bot"]
 categories = ["command-line-utilities"]

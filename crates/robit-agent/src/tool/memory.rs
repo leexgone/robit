@@ -125,7 +125,7 @@ impl Tool for MemorizeTool {
             parsed.tags.clone(),
         );
 
-        if ctx.session_id.to_string() != "" {
+        if !ctx.session_id.is_empty() {
             memory = memory.with_session_id(ctx.session_id.to_string());
         }
 

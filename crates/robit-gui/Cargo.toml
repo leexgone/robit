@@ -6,7 +6,6 @@ publish = false
 description = "Desktop GUI frontend for the robit AI automation agent."
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 readme = "../../README.md"
 keywords = ["llm", "agent", "gui", "tauri"]
 categories = ["gui", "development-tools"]
@@ -14,6 +13,9 @@ categories = ["gui", "development-tools"]
 [lib]
 name = "robit_gui"
 crate-type = ["lib", "cdylib", "staticlib"]
+
+[lints.cargo]
+unused_dependencies = "allow"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

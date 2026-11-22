@@ -769,8 +769,7 @@ impl ContextManager {
             async_openai::types::chat::ChatCompletionRequestUserMessage {
                 content: notice.into(),
                 name: Some("system_notice".to_string()),
-            }
-            .into(),
+            },
         );
 
         messages.insert(system_msg_count, notice_msg);
@@ -896,8 +895,7 @@ fn make_summary_placeholder(rounds_removed: usize) -> ChatCompletionRequestMessa
         ChatCompletionRequestUserMessage {
             content: text.into(),
             name: Some(summary_segment_name(0)),
-        }
-        .into(),
+        },
     )
 }
 
@@ -911,8 +909,7 @@ fn make_merge_placeholder(merge_level: usize, count: usize) -> ChatCompletionReq
         ChatCompletionRequestUserMessage {
             content: text.into(),
             name: Some(summary_segment_name(merge_level)),
-        }
-        .into(),
+        },
     )
 }
 
@@ -923,8 +920,7 @@ fn make_discard_notice() -> ChatCompletionRequestMessage {
         ChatCompletionRequestUserMessage {
             content: text.into(),
             name: Some(DISCARD_NOTICE_NAME.to_string()),
-        }
-        .into(),
+        },
     )
 }
 
@@ -1056,8 +1052,7 @@ mod tests {
             ChatCompletionRequestUserMessage {
                 content: content.into(),
                 name: None,
-            }
-            .into(),
+            },
         )
     }
 
@@ -1066,8 +1061,7 @@ mod tests {
             async_openai::types::chat::ChatCompletionRequestSystemMessage {
                 content: content.into(),
                 name: None,
-            }
-            .into(),
+            },
         )
     }
 
@@ -1097,8 +1091,7 @@ mod tests {
             ChatCompletionRequestUserMessage {
                 content: content.into(),
                 name: Some(name.to_string()),
-            }
-            .into(),
+            },
         )
     }
 
@@ -1465,10 +1458,10 @@ mod tests {
         assert_eq!(result.action, TruncationAction::NewSegment);
         assert!(result.needs_compression);
         assert_eq!(result.rounds_removed, 3);
-        assert!(result.removed_messages.len() > 0);
+        assert!(!result.removed_messages.is_empty());
 
         // Verify the placeholder was inserted
-        let has_seg = messages.iter().any(|m| is_summary_segment(m));
+        let has_seg = messages.iter().any(is_summary_segment);
         assert!(has_seg, "Should have a summary segment placeholder");
     }
 

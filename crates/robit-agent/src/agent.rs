@@ -62,8 +62,7 @@ impl AgentSession {
             ChatCompletionRequestSystemMessage {
                 content: system_prompt.into(),
                 name: None,
-            }
-            .into(),
+            },
         );
 
         Self {
@@ -87,8 +86,7 @@ impl AgentSession {
             ChatCompletionRequestSystemMessage {
                 content: system_prompt.into(),
                 name: None,
-            }
-            .into(),
+            },
         );
 
         // Prepend new system message to history
@@ -817,8 +815,7 @@ impl Agent {
                     audio: None,
                     #[allow(deprecated)]
                     function_call: None,
-                }
-                .into(),
+                },
             );
 
             session.history.push(assistant_msg);
@@ -1050,8 +1047,7 @@ impl Agent {
                 ChatCompletionRequestToolMessage {
                     content: truncated_result.content.into(),
                     tool_call_id: tc.id.clone(),
-                }
-                .into(),
+                },
             );
 
             let session = self
@@ -1254,8 +1250,7 @@ impl Agent {
             ChatCompletionRequestSystemMessage {
                 content: skill_message.into(),
                 name: Some(skill.frontmatter.name.clone()),
-            }
-            .into(),
+            },
         );
 
         if let Some(session) = self.sessions.get_mut(&session_id) {
@@ -1274,8 +1269,7 @@ impl Agent {
                 ChatCompletionRequestUserMessage {
                     content: user_content.into(),
                     name: None,
-                }
-                .into(),
+                },
             ));
         }
 

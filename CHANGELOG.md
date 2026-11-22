@@ -26,6 +26,7 @@ IM 出站 Markdown 表格投影（子木第七轮移交 R17）。需求移交件
 - **robit-chatbot / 降级尊重 features（QQ 改善性变化）**：`headings=false` 时标题降级不再恒输出字面 `**`——`bold=false` 输出纯文本 + 空行（`bold=true` 维持 `**` 兜底）；`blockquotes=false` 去除字面 `> `；`links=false` 由「丢弃 URL」改为 `text (url)`（信息保全，文本与 URL 相同或为空时去重）；`strikethrough=false` 剥除字面 `~~`（解析选项恒开、发射按 flag，与 bold/italic 同构）。QQ 纯文本回复逐字节不变，含上述语法的回复按描述变化（caps 诚实优先，既有单测全部回归通过）。列表标记 `- `/`N. ` 恒保留（纯文本自然约定，flag 为描述性）。
 - **robit-chatbot / `PlatformAdapter::send_message` trait 契约**：「长度守卫契约」扩展为「出站准备契约（内容投影 + 长度守卫）」，明示出站文本按 Markdown 语义处理、纯文本快速通道与幂等保证，调用方无需自行预投影/预截/预分段。`supports_markdown` 字段语义改为描述性声明（投影恒跑，不再作为门控）。更正 adapter.rs 两处与 SDK 实际行为不符的注释（「SDK strips Markdown」——SDK 实际保留表格/栅栏/加粗）。
 - **robit-chatbot / HardBreak 归一化**：行尾双空格硬换行统一输出 `\n`（行尾双空格是 Markdown 语法残留，IM 客户端不可见）。
+- **全仓库 / 构建警告清理**：移除与 `repository` 冗余的 `homepage` 元数据（8 个 crate + workspace）；`[workspace.dependencies]` 不再登记无依赖方的 `robit-web` / `robit-wechat`（消除 cargo `unused_workspace_dependencies` 警告，bump 清单同步更新为 3 个，见 CLAUDE.md）；robit-gui 的 brotli 传递依赖 pin 经 `[lints.cargo]` 豁免 `unused_dependencies`（pin 本身保留）。clippy 机器可适用修复批量落地（冗余 `.into()`、`assert_eq!(x, true)`、`push('\n')`、Default derive 等，语义保持，全 workspace 测试回归通过）。涉及公共 API 稳定与有意设计的警告（`too_many_arguments`、lock.rs read-before-truncate、类型擦除 `new()` 等）按决策保留。
 
 ### Fixed
 

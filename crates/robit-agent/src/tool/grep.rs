@@ -133,7 +133,7 @@ impl Tool for GrepTool {
         // Search each file
         let mut output = String::new();
         output.push_str(&format!("Search: {}\n", parsed.pattern));
-        output.push_str(&format!("{}", "─".repeat(50)));
+        output.push_str(&"─".repeat(50));
 
         let mut line_count = 0;
         let mut byte_count = output.len();

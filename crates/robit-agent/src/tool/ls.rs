@@ -120,7 +120,7 @@ impl Tool for LsTool {
         files.sort();
 
         output.push_str(&format!("Directory: {}\n", dir_path.display()));
-        output.push_str(&format!("{}", "─".repeat(50)));
+        output.push_str(&"─".repeat(50));
 
         if !dirs.is_empty() {
             output.push_str("\n📁 Directories:\n");
