@@ -12,6 +12,7 @@ pub mod extensions;
 pub mod frontend;
 pub mod manager;
 pub mod markdown;
+pub mod outbound;
 pub mod throttle;
 pub mod tool;
 
@@ -23,4 +24,5 @@ pub use confirmer::{ConfirmKeywords, Confirmer};
 pub use extensions::PlatformExtWrapper;
 pub use frontend::{ChatbotFrontend, PlatformExt, PlatformSender};
 pub use manager::{AgentHandle, ChatbotManager, ManagerError};
+pub use outbound::{prepare_outbound, OutboundResult, MAX_OUTBOUND_SEGMENTS, TRUNCATION_MARKER};
 pub use throttle::{SendLimiter, ThrottleConfig, ThrottleError, ThrottleState, WaitMode};

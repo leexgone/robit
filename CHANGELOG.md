@@ -8,6 +8,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **robit-chatbot / 出站长度守卫公开模块 `outbound`**：新增 `prepare_outbound` 函数及 `OutboundResult`、`MAX_OUTBOUND_SEGMENTS`、`TRUNCATION_MARKER` 等公开类型/常量，将原 `frontend.rs` 私有的分段/截断逻辑提取为框架级共享能力。非编辑平台自动分段（≤3 段、边界感知、代码栅栏保护），编辑平台截断 + 省略号，≤cap 文本幂等直通。
+- **robit-wechat / adapter 直调路径透明长度守卫**：`send_text_inner` 在节流前调用 `prepare_outbound`，超长文本自动分段逐段发送，每段独立过 `SendLimiter`；部分失败时放弃余段并返回已发段的最后 msg_id。宿主直调 `send_message` / `send_message_best_effort` 现在与 chatbot 回复路径行为一致。
+- **robit-qq / adapter 直调路径透明长度守卫**：`send_message` 在构造请求体前调用 `prepare_outbound`，QQ 作为编辑平台走截断路径，超长文本不再原样透传导致服务端拒绝或静默截断。
+
+### Changed
+
+- **robit-chatbot / `PlatformAdapter::send_message` trait 文档**：明确写入长度守卫契约——实现方必须按 caps 强制长度，调用方无需也不应再自截。
+- **robit-chatbot / `frontend.rs` 分段逻辑去重**：`flush_buffer` 改为调用 `outbound::prepare_outbound`，删除原私有 `split_for_platform` / `truncate_to_max` 及辅助函数，规则单源化。既有单元测试迁移至新 API，行为逐位不变。
+
 ## [0.4.0] - 2026-11-20
 
 ### Added
