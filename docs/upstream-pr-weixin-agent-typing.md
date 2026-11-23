@@ -3,7 +3,7 @@
 - **日期**：2026-11-23
 - **关联设计**：`docs/robit-rfc-bot-typing-design.md` §5（W-D 上游 API 规格）、§7（路径 B）
 - **上游仓库**：[SpenserCai/weixin-agent-sdk-rs](https://github.com/SpenserCai/weixin-agent-sdk-rs)（第三方，MIT，PR 政策 all）
-- **本地克隆**：`E:\GitHub\weixin-agent-sdk-rs`，分支 `typing-client-api`，提交 `76e9b2c`（基于上游 `b9332db` = 0.3.0 发布提交）
+- **本地克隆**：`E:\GitHub\weixin-agent-sdk-rs`，分支 `typing-client-api`，提交 `b87cabe`（作者 Steven Lee <leexgone@163.com>，基于上游 `b9332db` = 0.3.0 发布提交）
 - **状态**：delta 已实现并本地验证，**待用户 fork + push + 开 PR**（本仓库不持有上游写权限，不代推）
 
 ## 1. 提交步骤
