@@ -91,3 +91,11 @@ pulldown-cmark = "0.13"
 
 # CLI
 clap = { version = "4.6", features = ["derive"] }
+
+# ── feat/wechat-typing 分支专用（合 main 前必须删除）─────────────────────
+# 上游 weixin-agent 尚未发布 client 级 typing API（0.4.0），开发期指向本地
+# 克隆（分支 typing-client-api，含已验证的 delta）。crates.io 不接受 git/path
+# 依赖：main 必须始终依赖 registry，上游 0.4.0 上架后 bump "0.4" 并删除本段。
+# 见 docs/upstream-pr-weixin-agent-typing.md 与 docs/robit-rfc-bot-typing-design.md §7.3。
+[patch.crates-io]
+weixin-agent = { path = "../weixin-agent-sdk-rs" }

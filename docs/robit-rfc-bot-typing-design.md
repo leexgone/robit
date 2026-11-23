@@ -5,6 +5,7 @@
 - **版本基准**：robit **0.5.1**（`main` @ `d9ea180`）——文中行号均按此基线核实；协议 SDK 为 crates.io 依赖 `weixin-agent` **0.3.0**
 - **影响面**：`weixin-agent`（上游 API 增补，0.4.0）、`robit-chatbot`（adapter.rs / frontend.rs / manager.rs，含 `PlatformCaps` 一次性破坏重构）、`robit-wechat`（platform.rs）、`robit-ai`（config.rs）；QQ / 飞书零行为变化
 - **状态**：方向已确认（W-D 终态 + 接受 `PlatformCaps` 破坏重构，2026-11-23 维护者拍板）；**上游路径待定**——weixin-agent 为**第三方库**（`github.com/spensercai/weixin-agent-sdk-rs`，作者 spensercai，非 robit 维护者所有），路径 A 不适用，B/C 取舍待维护者判断（§7.1）
+- **实施进度**（2026-11-23）：路径 B 已确认并落地中——①chatbot 层抽象已提交 main（`31ff5fa`，132 测试通过）；②上游 delta 已实现并本地验证（克隆 `E:\GitHub\weixin-agent-sdk-rs` 分支 `typing-client-api` @ `76e9b2c`，待用户 fork+PR，提交件见 `docs/upstream-pr-weixin-agent-typing.md`）；③微信实现位于 `feat/wechat-typing` 分支（`[patch.crates-io]` 指向本地克隆，合 main 门禁见 §7.3）
 
 ## 1. 背景与问题
 

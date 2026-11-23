@@ -11,6 +11,7 @@
 ### Added
 
 - **robit-chatbot / 忙碌状态信号（typing）统一抽象**：新增 `PlatformCaps::supports_typing` 能力声明（微信 true，QQ/飞书 false）与 `PlatformAdapter::set_typing(chat_id, active)` / `typing_enabled()` 钩子（默认 no-op / 读能力声明，既有实现者零改动）；`ChatbotFrontend` 持有期望态去重闸与轮次生命周期——注入成功即点亮（`notify_turn_started`，覆盖 LLM 首 token 延迟）、busy 事件 re-assert、TurnComplete/Error 灭灯、手动确认等待期间暂停/决议后复亮（auto_approve 不暂停）；best-effort 契约（钩子失败仅记日志绝不影响答案投递，adapter 实现须立即返回）。设计见 `docs/robit-rfc-bot-typing-design.md`（W-D 终态：协议始终在 SDK；微信实现随上游 weixin-agent 0.4.0 在 feature 分支落地，见 `docs/upstream-pr-weixin-agent-typing.md`）。本条为 chatbot 层抽象，尚无平台启用 typing，行为与 0.5.1 一致。
+- **robit-wechat / 原生输入状态（typing，W-D 实现，feat/wechat-typing 分支）**：`[channels.wechat_bot]` 增 `typing` 开关（缺省关）与 `typing_refresh_secs`（默认 5s，0 = 只发一次不刷新）；新 `typing` 模块承载 per-chat 状态格（幂等迁移、定时刷新、连续 3 次失败熔断降级、shutdown token 级联、best-effort 非阻塞），协议全部委托 SDK `WeixinClient::send_typing/cancel_typing`——robit 内零协议代码。**依赖上游 weixin-agent 0.4.0**（PR 提交件 `docs/upstream-pr-weixin-agent-typing.md`）；开发期经 `[patch.crates-io]` 指向本地 SDK 克隆，合 main 前须上游发版、bump 依赖至 `"0.4"` 并删除 patch（crates.io 发布门禁，设计 §7.3）。typing 走独立 sendtyping 端点，不占消息反刷配额。
 
 ### Changed
 

@@ -40,6 +40,7 @@ use weixin_agent::{
 };
 
 use crate::state::WechatState;
+use crate::typing::{SdkTyping, TypingController};
 
 /// Server-side anti-flood code: `{"ret":-2,"errmsg":"prepare failed"}`.
 ///
@@ -64,6 +65,11 @@ pub struct WechatConfig {
     pub rate_limit: ThrottleConfig,
     /// Progress-hint policy override from config; `None` = platform default.
     pub progress_hint: Option<HintPolicy>,
+    /// Native typing indicator switch (default `false`; flipped only after
+    /// the real-device probe gate, design §11).
+    pub typing: bool,
+    /// Typing refresh cadence (`Duration::ZERO` = send once, no refresh).
+    pub typing_refresh: Duration,
 }
 
 impl WechatConfig {
@@ -102,6 +108,10 @@ impl WechatConfig {
             progress_hint: section
                 .and_then(|s| s.progress_hint.as_deref())
                 .and_then(parse_hint_policy),
+            typing: section.and_then(|s| s.typing).unwrap_or(false),
+            typing_refresh: Duration::from_secs(
+                section.and_then(|s| s.typing_refresh_secs).unwrap_or(5),
+            ),
         })
     }
 
@@ -144,6 +154,9 @@ pub struct WechatPlatformAdapter {
     working_dir: PathBuf,
     /// Progress-hint policy override from config (`None` = platform default).
     progress_hint: Option<HintPolicy>,
+    /// Native typing lifecycle (`None` = disabled by config). Policy only —
+    /// protocol calls delegate to the SDK (see `crate::typing`).
+    typing: Option<TypingController>,
 }
 
 /// Parse `[channels.wechat_bot].progress_hint`. Unrecognized values warn once
@@ -259,6 +272,13 @@ impl WechatPlatformAdapter {
             shutdown: shutdown.clone(),
             working_dir: config.working_dir.clone(),
             progress_hint: config.progress_hint,
+            typing: config.typing.then(|| {
+                TypingController::new(
+                    Arc::new(SdkTyping(Arc::clone(&client))),
+                    config.typing_refresh,
+                    shutdown.clone(),
+                )
+            }),
         });
 
         info!(
@@ -671,6 +691,28 @@ impl PlatformAdapter for WechatPlatformAdapter {
             .unwrap_or_else(|| Self::capabilities().progress_hints)
     }
 
+    /// Per-channel typing policy: the config gate (default off), not the raw
+    /// capability — WeChat supports typing but keeps it disabled until the
+    /// operator enables it (probe-gated rollout, design §8).
+    fn typing_enabled(&self) -> bool {
+        self.typing.is_some()
+    }
+
+    /// Busy-state signal: resolve the peer's current context token and hand
+    /// the transition to the typing controller, which spawns all HTTP work
+    /// and returns promptly (trait contract). Typing bypasses the message
+    /// send budget — sendtyping is a separate endpoint that produces no
+    /// chat message; the controller paces itself (refresh cadence + breaker).
+    async fn set_typing(&self, chat_id: &str, active: bool) -> Result<()> {
+        let Some(controller) = &self.typing else {
+            return Ok(());
+        };
+        let peer = peer_from_chat_id(chat_id)?;
+        let token = self.outbound_context_token(peer).await;
+        controller.set(peer, active, token).await;
+        Ok(())
+    }
+
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<SendResult> {
         self.send_text_inner(chat_id, text, WaitMode::Final)
             .await?
@@ -902,5 +944,43 @@ mod tests {
         let cfg = WechatConfig::from_config(&config, &dir).unwrap();
         assert_eq!(cfg.bot_token, "tok-from-config");
         std::fs::remove_file(WechatState::path(&dir)).ok();
+    }
+
+    #[test]
+    fn from_config_typing_defaults_off() {
+        let toml_str = r#"
+            [providers.x]
+            base_url = "https://x"
+            api_key = "k"
+            [[providers.x.models]]
+            id = "m"
+            [channels.wechat_bot]
+            bot_token = "tok"
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let dir = std::env::temp_dir().join("robit-wechat-typing-default-test");
+        let cfg = WechatConfig::from_config(&config, &dir).unwrap();
+        assert!(!cfg.typing, "typing must default to off (probe-gated rollout)");
+        assert_eq!(cfg.typing_refresh, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn from_config_typing_override() {
+        let toml_str = r#"
+            [providers.x]
+            base_url = "https://x"
+            api_key = "k"
+            [[providers.x.models]]
+            id = "m"
+            [channels.wechat_bot]
+            bot_token = "tok"
+            typing = true
+            typing_refresh_secs = 0
+        "#;
+        let config: RobitConfig = toml::from_str(toml_str).unwrap();
+        let dir = std::env::temp_dir().join("robit-wechat-typing-override-test");
+        let cfg = WechatConfig::from_config(&config, &dir).unwrap();
+        assert!(cfg.typing);
+        assert_eq!(cfg.typing_refresh, Duration::ZERO, "0 = send once, no refresh");
     }
 }

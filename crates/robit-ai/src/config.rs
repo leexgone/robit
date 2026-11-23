@@ -330,6 +330,15 @@ pub struct WechatBotConfig {
     /// Unset (or unrecognized) follows the platform default (WeChat: `off`).
     #[serde(default)]
     pub progress_hint: Option<String>,
+    /// Native typing indicator switch (default `false`). Requires the
+    /// weixin-agent client-level typing API (≥ 0.4); rollout is gated on
+    /// real-device verification (docs/robit-rfc-bot-typing-design.md §11).
+    #[serde(default)]
+    pub typing: Option<bool>,
+    /// Typing refresh interval in seconds (default 5; 0 = send once, no
+    /// refresh). Tune per the probe results.
+    #[serde(default)]
+    pub typing_refresh_secs: Option<u64>,
     /// Outbound rate limiting. The section being absent means "defaults",
     /// which keep the limiter enabled.
     #[serde(default)]

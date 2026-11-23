@@ -11,5 +11,6 @@
 pub mod login;
 pub mod platform;
 pub mod state;
+mod typing;
 
 pub use platform::{WechatConfig, WechatPlatformAdapter};

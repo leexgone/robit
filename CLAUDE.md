@@ -236,6 +236,8 @@ app_secret = "${QQ_BOT_SECRET}"        # 支持 ${ENV_VAR} 替换
 # base_url = "https://ilinkai.weixin.qq.com"   # iLink API 覆盖（一般无需配置）
 # cdn_base_url = "https://novac2c.cdn.weixin.qq.com/c2c"  # CDN 覆盖（一般无需配置）
 # progress_hint = "off"                # 进度提示策略：off（缺省）/ best_effort / always；微信无原地编辑，每条提示都是独立消息并占用发送配额
+# typing = false                       # 原生输入状态开关（缺省关；需 weixin-agent ≥ 0.4 的 client 级 typing API，真机探针门禁后翻转默认值）
+# typing_refresh_secs = 5              # 输入状态刷新间隔（秒，默认 5；0 = 只发一次不刷新）
 
 [channels.wechat_bot.rate_limit]       # 出站反刷限流（缺省即启用，全部可选）
 # enabled = true                       # 总开关；false 完全退回旧行为（只保留 -2 类型化与日志）

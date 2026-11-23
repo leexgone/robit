@@ -6688,8 +6688,6 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 [[package]]
 name = "weixin-agent"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44ab77d9ab8779492bd067cc42e679ffd27ed1c6d3058aebe0f505b55d43294d"
 dependencies = [
  "aes",
  "async-trait",
