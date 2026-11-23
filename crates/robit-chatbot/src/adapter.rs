@@ -29,7 +29,12 @@ pub enum HintPolicy {
 }
 
 /// Capabilities that vary by platform.
+///
+/// `#[non_exhaustive]` + [`Default`]: construct via the platform constructors
+/// (`qq()` / `feishu()` / `wechat()`) or `Default` + field overrides. Adding
+/// capability fields is non-breaking from now on.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PlatformCaps {
     pub supports_edit: bool,
     pub returns_msg_id: bool,
@@ -48,6 +53,29 @@ pub struct PlatformCaps {
     pub max_upload_size: u64,
     /// How progress hints should be delivered on this platform.
     pub progress_hints: HintPolicy,
+    /// Native ephemeral "busy/typing" status (e.g. WeChat iLink sendtyping).
+    /// Descriptive capability; the per-channel policy is
+    /// [`PlatformAdapter::typing_enabled`].
+    pub supports_typing: bool,
+}
+
+impl Default for PlatformCaps {
+    /// Conservative baseline: plain text, no edit, no media, hints off,
+    /// no typing. Platform constructors override what they support.
+    fn default() -> Self {
+        Self {
+            supports_edit: false,
+            returns_msg_id: false,
+            supports_markdown: false,
+            markdown_features: MarkdownFeatures::default(),
+            max_message_length: 2000,
+            supports_images: false,
+            supports_files: false,
+            max_upload_size: 0,
+            progress_hints: HintPolicy::Off,
+            supports_typing: false,
+        }
+    }
 }
 
 /// Supported Markdown features for a platform.
@@ -143,6 +171,10 @@ impl PlatformCaps {
             // QQ supports in-place edit: the hint message becomes the answer,
             // so it costs no extra message.
             progress_hints: HintPolicy::Always,
+            // No typing API: "正在输入" is a human-client feature, not
+            // exposed to official bots.
+            supports_typing: false,
+            ..Default::default()
         }
     }
 
@@ -158,6 +190,9 @@ impl PlatformCaps {
             supports_files: true,
             max_upload_size: 50 * 1024 * 1024, // 50MB
             progress_hints: HintPolicy::Always,
+            // No typing API; streaming cards are the future native path.
+            supports_typing: false,
+            ..Default::default()
         }
     }
 
@@ -177,6 +212,10 @@ impl PlatformCaps {
             // No in-place edit: a hint stays as a separate chat message and
             // consumes one unit of the server-side anti-flood budget.
             progress_hints: HintPolicy::Off,
+            // iLink sendtyping: native ephemeral busy indicator, no message
+            // quota. Per-channel policy: `typing_enabled()` (config gate).
+            supports_typing: true,
+            ..Default::default()
         }
     }
 }
@@ -344,6 +383,30 @@ pub trait PlatformAdapter: Send + Sync + 'static {
     /// a per-channel override (e.g. WeChat's config) override this method.
     fn hint_policy(&self) -> HintPolicy {
         Self::capabilities().progress_hints
+    }
+
+    /// Signal the chat's busy state (native "typing" indicator). Idempotent
+    /// and best-effort.
+    ///
+    /// Contract:
+    /// - Must return promptly: spawn internal work, never block on HTTP or
+    ///   send-budget queues — callers sit on the turn's critical path.
+    /// - `active = true`: show the native busy indicator (the adapter owns
+    ///   any refresh cadence). `active = false`: cancel it. Repeated calls
+    ///   with the same value are no-ops.
+    /// - Failures are logged by the adapter, never surfaced as turn errors.
+    ///
+    /// Default: no-op. Platforms without a native indicator (QQ, Feishu)
+    /// keep their existing behavior exactly.
+    async fn set_typing(&self, _chat_id: &str, _active: bool) -> Result<()> {
+        Ok(())
+    }
+
+    /// Per-channel typing policy. Defaults to the capability declaration;
+    /// adapters with a config override (e.g. WeChat's `typing` switch)
+    /// override this method. Mirrors [`Self::hint_policy`].
+    fn typing_enabled(&self) -> bool {
+        Self::capabilities().supports_typing
     }
 
     /// Edit a previously-sent message. Default implementation falls back

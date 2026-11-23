@@ -271,15 +271,13 @@ mod tests {
 
     fn non_edit_caps(max_len: usize) -> PlatformCaps {
         PlatformCaps {
-            supports_edit: false,
             returns_msg_id: true,
-            supports_markdown: false,
             markdown_features: MarkdownFeatures::wechat(),
             max_message_length: max_len,
             supports_images: true,
             supports_files: true,
             max_upload_size: 20 * 1024 * 1024,
-            progress_hints: HintPolicy::Off,
+            ..Default::default()
         }
     }
 
@@ -294,6 +292,7 @@ mod tests {
             supports_files: true,
             max_upload_size: 20 * 1024 * 1024,
             progress_hints: HintPolicy::Always,
+            ..Default::default()
         }
     }
 

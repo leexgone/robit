@@ -65,6 +65,13 @@ pub trait PlatformSender: Send + Sync {
     }
     /// Edit a previously-sent message in place.
     async fn edit(&self, chat_id: &str, msg_id: &str, text: &str) -> Result<()>;
+    /// Signal the chat's busy state (native typing indicator). Idempotent,
+    /// best-effort, and must return promptly (see
+    /// [`crate::adapter::PlatformAdapter::set_typing`] for the contract).
+    /// Default: no-op — platforms without a native indicator are unchanged.
+    async fn set_typing(&self, _chat_id: &str, _active: bool) -> Result<()> {
+        Ok(())
+    }
     /// Upload a file to the platform. Returns the platform file URL/ID.
     async fn upload_file(&self, chat_id: &str, file_path: &str, media_type: &str) -> Result<UploadResult>;
     /// Send a media message (image/file) to a chat.
@@ -115,6 +122,12 @@ pub struct ChatbotFrontend {
     /// (see [`HintPolicy`]). Defaults to [`HintPolicy::Always`]; the manager
     /// overrides it with the platform's policy.
     pub hint_policy: HintPolicy,
+    /// Resolved typing policy (manager wires `platform.typing_enabled()`).
+    /// `false` = the platform hook is never called.
+    pub typing_enabled: bool,
+    /// Desired typing state; dedupes hook calls (agent events re-assert
+    /// constantly, the platform must only see transitions).
+    typing_on: Mutex<bool>,
     /// ThinkingDelta events seen this turn, counted for a single end-of-turn
     /// summary log (per-delta logging would flood the log file).
     pub thinking_deltas: AtomicUsize,
@@ -148,6 +161,8 @@ impl ChatbotFrontend {
             last_msg_id: Mutex::new(None),
             progress_hint_sent: Mutex::new(false),
             hint_policy: HintPolicy::Always,
+            typing_enabled: false,
+            typing_on: Mutex::new(false),
             thinking_deltas: AtomicUsize::new(0),
             thinking_bytes: AtomicUsize::new(0),
             auto_approve,
@@ -159,6 +174,43 @@ impl ChatbotFrontend {
     pub fn with_hint_policy(mut self, policy: HintPolicy) -> Self {
         self.hint_policy = policy;
         self
+    }
+
+    /// Override the typing policy (manager wires `platform.typing_enabled()`).
+    pub fn with_typing_enabled(mut self, enabled: bool) -> Self {
+        self.typing_enabled = enabled;
+        self
+    }
+
+    /// Transition the desired typing state; calls the platform hook only on
+    /// change. Never fails the turn: hook errors are logged and swallowed.
+    async fn set_typing_state(&self, on: bool) {
+        if !self.typing_enabled {
+            return;
+        }
+        let mut cur = self.typing_on.lock().await;
+        if *cur == on {
+            return;
+        }
+        *cur = on;
+        tracing::debug!(
+            "[chatbot] typing {}: chat_id='{}'",
+            if on { "on" } else { "off" },
+            self.chat_id
+        );
+        if let Err(e) = self.platform_sender.set_typing(&self.chat_id, on).await {
+            tracing::warn!(
+                "[chatbot] set_typing({}) failed: chat_id='{}', error={}",
+                on, self.chat_id, e
+            );
+        }
+    }
+
+    /// Light the busy indicator right after a user turn was successfully
+    /// injected (manager calls this). Earliest correct point — covers the
+    /// LLM first-token latency before any agent event arrives.
+    pub async fn notify_turn_started(&self) {
+        self.set_typing_state(true).await;
     }
 
     /// Save an assistant message to the database.
@@ -411,10 +463,12 @@ impl Frontend for ChatbotFrontend {
         match event {
             AgentEvent::TextDelta(delta) => {
                 self.busy.store(true, Ordering::Relaxed);
+                self.set_typing_state(true).await;
                 self.append_delta(&delta).await;
             }
             AgentEvent::ThinkingDelta(delta) => {
                 self.busy.store(true, Ordering::Relaxed);
+                self.set_typing_state(true).await;
                 // Silent by design: thinking text is long-form and would
                 // flood the platform's message segmentation (QQ 等消息长度
                 // 受限)，Bot 面本轮不渲染思考过程。
@@ -425,6 +479,7 @@ impl Frontend for ChatbotFrontend {
             }
             AgentEvent::ToolCallRequested { name, .. } => {
                 self.busy.store(true, Ordering::Relaxed);
+                self.set_typing_state(true).await;
                 tracing::trace!(
                     "[chatbot] ToolCallRequested received: chat_id='{}', tool='{}' (auto_approve={})",
                     self.chat_id, name, self.auto_approve
@@ -474,6 +529,7 @@ impl Frontend for ChatbotFrontend {
                 *self.progress_hint_sent.lock().await = false;
                 *self.last_msg_id.lock().await = None;
                 self.busy.store(false, Ordering::Relaxed);
+                self.set_typing_state(false).await;
             }
             AgentEvent::Error(e) => {
                 tracing::trace!(
@@ -483,6 +539,7 @@ impl Frontend for ChatbotFrontend {
                 self.flush_buffer().await;
                 self.log_thinking_summary();
                 self.busy.store(false, Ordering::Relaxed);
+                self.set_typing_state(false).await;
                 let msg = format!("❌ Error: {}", e);
                 if let Err(send_err) = self.platform_sender.send(&self.chat_id, &msg).await {
                     tracing::warn!(
@@ -515,9 +572,25 @@ impl Frontend for ChatbotFrontend {
     }
 
     async fn request_tool_confirmation(&self, info: &ToolCallInfo) -> Result<bool> {
-        self.confirmer
+        if self.auto_approve {
+            // Immediate decision — pausing here would only flicker the
+            // indicator (cancel + re-send) for no user-visible benefit.
+            return self
+                .confirmer
+                .request(&self.chat_id, info, self.auto_approve)
+                .await;
+        }
+        // Manual mode: while waiting for the user's reply the agent is idle,
+        // so the busy indicator must not claim "typing". Re-light after the
+        // decision (approve / reject / timeout alike); the turn-end event
+        // turns it off again.
+        self.set_typing_state(false).await;
+        let decision = self
+            .confirmer
             .request(&self.chat_id, info, self.auto_approve)
-            .await
+            .await;
+        self.set_typing_state(true).await;
+        decision
     }
 }
 
@@ -558,6 +631,10 @@ mod tests {
         caps: PlatformCaps,
         /// When true, `send_best_effort` reports "skipped" (budget saturated).
         skip_best_effort: bool,
+        /// Recorded `set_typing` transitions, in order.
+        typing: StdMutex<Vec<(String, bool)>>,
+        /// When true, `set_typing` records the call then returns an error.
+        fail_typing: bool,
     }
 
     impl MockSender {
@@ -570,16 +647,18 @@ mod tests {
                 sent: StdMutex::new(Vec::new()),
                 edits: StdMutex::new(Vec::new()),
                 skip_best_effort,
+                typing: StdMutex::new(Vec::new()),
+                fail_typing: false,
                 caps: PlatformCaps {
                     supports_edit: edit,
                     returns_msg_id: true,
                     supports_markdown: true,
                     markdown_features: MarkdownFeatures::qq(),
-                    max_message_length: 2000,
                     supports_images: true,
                     supports_files: true,
                     max_upload_size: 20 * 1024 * 1024,
                     progress_hints: HintPolicy::Always,
+                    ..Default::default()
                 },
             })
         }
@@ -589,11 +668,27 @@ mod tests {
                 sent: StdMutex::new(Vec::new()),
                 edits: StdMutex::new(Vec::new()),
                 skip_best_effort: false,
+                typing: StdMutex::new(Vec::new()),
+                fail_typing: false,
                 caps: PlatformCaps::wechat(),
+            })
+        }
+        /// Sender whose typing hook always fails (best-effort contract test).
+        fn new_failing_typing() -> Arc<Self> {
+            Arc::new(Self {
+                sent: StdMutex::new(Vec::new()),
+                edits: StdMutex::new(Vec::new()),
+                skip_best_effort: false,
+                typing: StdMutex::new(Vec::new()),
+                fail_typing: true,
+                caps: PlatformCaps::qq(),
             })
         }
         fn sent_texts(&self) -> Vec<String> {
             self.sent.lock().unwrap().iter().map(|(_, t)| t.clone()).collect()
+        }
+        fn typing_calls(&self) -> Vec<(String, bool)> {
+            self.typing.lock().unwrap().clone()
         }
     }
 
@@ -624,6 +719,15 @@ mod tests {
                 msg_id.to_string(),
                 text.to_string(),
             ));
+            Ok(())
+        }
+        async fn set_typing(&self, chat_id: &str, active: bool) -> Result<()> {
+            self.typing.lock().unwrap().push((chat_id.to_string(), active));
+            if self.fail_typing {
+                return Err(robit_agent::AgentError::InternalError(
+                    "typing unavailable".into(),
+                ));
+            }
             Ok(())
         }
         async fn upload_file(&self, _chat_id: &str, _file_path: &str, _media_type: &str) -> Result<UploadResult> {
@@ -817,15 +921,13 @@ mod tests {
 
     fn non_edit_test_caps(max_len: usize) -> PlatformCaps {
         PlatformCaps {
-            supports_edit: false,
             returns_msg_id: true,
-            supports_markdown: false,
             markdown_features: MarkdownFeatures::wechat(),
             max_message_length: max_len,
             supports_images: true,
             supports_files: true,
             max_upload_size: 20 * 1024 * 1024,
-            progress_hints: HintPolicy::Off,
+            ..Default::default()
         }
     }
 
@@ -1000,6 +1102,179 @@ mod tests {
             .await
             .unwrap();
         assert!(sender.sent_texts().iter().any(|t| t.contains("Error") && t.contains("boom")));
+    }
+
+    // ------------------------------------------------------------------
+    // Typing (busy-state signal) lifecycle
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn typing_lights_on_turn_start_and_off_on_complete() {
+        let sender = MockSender::new_with_edit(false);
+        let fe = make_frontend(sender.clone(), false).await.with_typing_enabled(true);
+        fe.notify_turn_started().await;
+        fe.on_event(AgentEvent::TextDelta("你好".into())).await.unwrap();
+        fe.on_event(AgentEvent::TextDelta("世界".into())).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+        assert_eq!(
+            sender.typing_calls(),
+            vec![("group:1".to_string(), true), ("group:1".to_string(), false)]
+        );
+    }
+
+    #[tokio::test]
+    async fn typing_off_on_error() {
+        let sender = MockSender::new_with_edit(false);
+        let fe = make_frontend(sender.clone(), false).await.with_typing_enabled(true);
+        fe.notify_turn_started().await;
+        fe.on_event(AgentEvent::Error(robit_agent::AgentError::ToolError("boom".into())))
+            .await
+            .unwrap();
+        assert_eq!(
+            sender.typing_calls(),
+            vec![("group:1".to_string(), true), ("group:1".to_string(), false)]
+        );
+    }
+
+    #[tokio::test]
+    async fn typing_off_even_when_answer_is_empty() {
+        let sender = MockSender::new_with_edit(false);
+        let fe = make_frontend(sender.clone(), false).await.with_typing_enabled(true);
+        fe.notify_turn_started().await;
+        // No deltas at all: flush sends nothing, but the indicator must still
+        // be cancelled — turn end must not depend on a reply being delivered.
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+        assert!(sender.sent_texts().is_empty());
+        assert_eq!(
+            sender.typing_calls(),
+            vec![("group:1".to_string(), true), ("group:1".to_string(), false)]
+        );
+    }
+
+    #[tokio::test]
+    async fn typing_dedupes_repeated_events() {
+        let sender = MockSender::new_with_edit(false);
+        let fe = make_frontend(sender.clone(), true).await.with_typing_enabled(true);
+        fe.notify_turn_started().await;
+        for i in 0..5 {
+            fe.on_event(AgentEvent::TextDelta(format!("d{i}"))).await.unwrap();
+            fe.on_event(AgentEvent::ToolCallRequested {
+                tool_call_id: format!("tc{i}"),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            }).await.unwrap();
+        }
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+        // Exactly one transition each way despite 10 re-asserting events.
+        assert_eq!(
+            sender.typing_calls(),
+            vec![("group:1".to_string(), true), ("group:1".to_string(), false)]
+        );
+    }
+
+    #[tokio::test]
+    async fn typing_disabled_never_calls_the_hook() {
+        let sender = MockSender::new_with_edit(false);
+        let fe = make_frontend(sender.clone(), true).await; // default: disabled
+        fe.notify_turn_started().await;
+        fe.on_event(AgentEvent::TextDelta("答案".into())).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+        assert!(sender.typing_calls().is_empty());
+        // The answer path is untouched.
+        assert_eq!(sender.sent_texts().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn typing_hook_error_does_not_fail_the_turn() {
+        let sender = MockSender::new_failing_typing();
+        let fe = make_frontend(sender.clone(), false).await.with_typing_enabled(true);
+        fe.notify_turn_started().await;
+        fe.on_event(AgentEvent::TextDelta("答案".into())).await.unwrap();
+        fe.on_event(AgentEvent::TurnComplete).await.unwrap();
+        // Hook errors are swallowed; the answer is still delivered.
+        assert_eq!(sender.sent_texts(), vec!["答案".to_string()]);
+        assert_eq!(sender.typing_calls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn typing_no_pause_in_auto_approve_mode() {
+        let sender = MockSender::new_with_edit(false);
+        let fe = make_frontend(sender.clone(), true).await.with_typing_enabled(true);
+        fe.notify_turn_started().await;
+        let info = ToolCallInfo {
+            id: "tc1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        };
+        assert!(fe.request_tool_confirmation(&info).await.unwrap());
+        // Immediate decision: no cancel/re-light flicker.
+        assert_eq!(sender.typing_calls(), vec![("group:1".to_string(), true)]);
+    }
+
+    #[tokio::test]
+    async fn typing_pauses_while_awaiting_manual_confirmation() {
+        let sender = MockSender::new_with_edit(false);
+        let fe = Arc::new(
+            make_frontend(sender.clone(), false).await.with_typing_enabled(true),
+        );
+        fe.notify_turn_started().await;
+        let info = ToolCallInfo {
+            id: "tc1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        };
+        let fe2 = Arc::clone(&fe);
+        let handle = tokio::spawn(async move { fe2.request_tool_confirmation(&info).await });
+
+        // Wait for the confirmation prompt; by then typing must be paused.
+        let mut prompt_seen = false;
+        for _ in 0..400 {
+            if !sender.sent_texts().is_empty() {
+                prompt_seen = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(prompt_seen, "confirmation prompt must be sent");
+        assert_eq!(
+            sender.typing_calls(),
+            vec![("group:1".to_string(), true), ("group:1".to_string(), false)],
+            "typing must be off while waiting for the user"
+        );
+
+        // Approve; the decision re-lights typing (turn end turns it off later).
+        let mut approved = None;
+        for _ in 0..400 {
+            if let Some(v) = fe.confirmer.check_confirmation_response("group:1", "确认") {
+                approved = Some(v);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(approved, Some(true));
+        assert!(handle.await.unwrap().unwrap());
+        assert_eq!(
+            sender.typing_calls(),
+            vec![
+                ("group:1".to_string(), true),
+                ("group:1".to_string(), false),
+                ("group:1".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn platform_caps_default_baseline_and_constructors() {
+        let d = PlatformCaps::default();
+        assert!(!d.supports_edit && !d.supports_typing);
+        assert_eq!(d.progress_hints, HintPolicy::Off);
+        assert_eq!(d.max_message_length, 2000);
+        // Capability declarations (regression pin for QQ/Feishu/WeChat).
+        assert!(!PlatformCaps::qq().supports_typing);
+        assert!(!PlatformCaps::feishu().supports_typing);
+        assert!(PlatformCaps::wechat().supports_typing);
+        assert!(PlatformCaps::qq().supports_edit);
+        assert!(!PlatformCaps::wechat().supports_edit);
     }
 
 }

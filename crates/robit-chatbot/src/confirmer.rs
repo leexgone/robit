@@ -264,11 +264,11 @@ mod tests {
                     returns_msg_id: true,
                     supports_markdown: true,
                     markdown_features: MarkdownFeatures::qq(),
-                    max_message_length: 2000,
                     supports_images: true,
                     supports_files: true,
                     max_upload_size: 20 * 1024 * 1024,
                     progress_hints: crate::adapter::HintPolicy::Always,
+                    ..Default::default()
                 },
             })
         }

@@ -77,6 +77,11 @@ impl<T: PlatformAdapter> PlatformSender for PlatformSenderBridge<T> {
     ) -> robit_agent::error::Result<Option<SendResult>> {
         self.platform.send_message_best_effort(chat_id, text).await
     }
+    /// Must delegate explicitly: the trait's default is a no-op, which would
+    /// silently swallow the platform's typing implementation.
+    async fn set_typing(&self, chat_id: &str, active: bool) -> robit_agent::error::Result<()> {
+        self.platform.set_typing(chat_id, active).await
+    }
     async fn edit(&self, chat_id: &str, msg_id: &str, text: &str) -> robit_agent::error::Result<()> {
         self.platform.edit_message(chat_id, msg_id, text).await
     }
@@ -425,6 +430,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             attachments: attachments.clone(),
         };
         if tx.send(input).await.is_ok() {
+            frontend.notify_turn_started().await;
             frontend.save_user_message(archive_text).await;
             return Ok(());
         }
@@ -440,6 +446,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         tx.send(input).await.map_err(|e| {
             AgentError::InternalError(format!("Failed to deliver message after respawn: {}", e))
         })?;
+        frontend.notify_turn_started().await;
         frontend.save_user_message(archive_text).await;
         Ok(())
     }
@@ -493,6 +500,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             })?;
             frontend
         };
+        frontend.notify_turn_started().await;
         frontend
             .save_user_message_with_source(text, Some(source))
             .await;
@@ -813,7 +821,8 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                 Arc::clone(&self.db),
                 self.auto_approve,
             )
-            .with_hint_policy(self.platform.hint_policy()),
+            .with_hint_policy(self.platform.hint_policy())
+            .with_typing_enabled(self.platform.typing_enabled()),
         );
 
         let (message_tx, message_rx) = mpsc::channel::<FrontendMessage>(16);
