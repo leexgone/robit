@@ -8,13 +8,19 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-23
+
+Bot 忙碌状态信号（typing）统一抽象（chatbot 层）+ `PlatformCaps` 一次性破坏加固。设计见 `docs/robit-rfc-bot-typing-design.md`（W-D 终态、路径 B）。微信 typing 实际实现依赖上游 weixin-agent 0.4.0（[PR #4](https://github.com/SpenserCai/weixin-agent-sdk-rs/pull/4)），在 `feat/wechat-typing` 分支等待上游发版后合并，**不含在本版本**。
+
+> **升级提示（0.5.x → 0.6.0）**：唯一破坏点是 `PlatformCaps` 加 `#[non_exhaustive]`——crate 外**结构体字面量构造（含 `..Default::default()` 更新语法）编译失败**，迁移为 `let mut caps = PlatformCaps::default(); caps.xxx = ...;` 逐字段赋值。读字段、调 `qq()/wechat()/feishu()` 构造器、实现 `PlatformAdapter`/`PlatformSender`（新方法带默认实现）、`ChatbotFrontend::new()` 与 `ChatbotManager` API 均不受影响。**运行时行为零变化**：typing 钩子全为默认 no-op，无平台启用。0.x semver 以 minor 为不兼容边界，`"0.5"` 依赖不会自动升级到本版。
+
 ### Added
 
 - **robit-chatbot / 忙碌状态信号（typing）统一抽象**：新增 `PlatformCaps::supports_typing` 能力声明（微信 true，QQ/飞书 false）与 `PlatformAdapter::set_typing(chat_id, active)` / `typing_enabled()` 钩子（默认 no-op / 读能力声明，既有实现者零改动）；`ChatbotFrontend` 持有期望态去重闸与轮次生命周期——注入成功即点亮（`notify_turn_started`，覆盖 LLM 首 token 延迟）、busy 事件 re-assert、TurnComplete/Error 灭灯、手动确认等待期间暂停/决议后复亮（auto_approve 不暂停）；best-effort 契约（钩子失败仅记日志绝不影响答案投递，adapter 实现须立即返回）。设计见 `docs/robit-rfc-bot-typing-design.md`（W-D 终态：协议始终在 SDK；微信实现随上游 weixin-agent 0.4.0 在 feature 分支落地，见 `docs/upstream-pr-weixin-agent-typing.md`）。本条为 chatbot 层抽象，尚无平台启用 typing，行为与 0.5.1 一致。
 
 ### Changed
 
-- **robit-chatbot / `PlatformCaps` 破坏性重构**：加 `#[non_exhaustive]` + `Default`（保守基线：纯文本/无编辑/无媒体/提示关/无 typing），三平台构造器改结构更新语法。**下游自定义 adapter 若以结构体字面量构造 `PlatformCaps` 会一次性编译失败**，迁移为 `PlatformCaps::default()` + 字段覆写（字段仍 pub 可读写）；此后增补能力字段永久非破坏。破坏项随下个 0.6.0 发布（0.x 阶段 minor 即不兼容位）。
+- **robit-chatbot / `PlatformCaps` 破坏性重构**：加 `#[non_exhaustive]` + `Default`（保守基线：纯文本/无编辑/无媒体/提示关/无 typing），三平台构造器改结构更新语法。**下游自定义 adapter 若以结构体字面量构造 `PlatformCaps` 会一次性编译失败**，迁移为 `PlatformCaps::default()` + 字段覆写（字段仍 pub 可读写）；此后增补能力字段永久非破坏。破坏项自 0.6.0 起生效（0.x 阶段 minor 即不兼容位）。
 
 ## [0.5.1] - 2026-11-22
 
