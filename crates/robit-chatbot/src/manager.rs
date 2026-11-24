@@ -17,6 +17,10 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use robit_agent::event::{FrontendMessage, SessionId};
 use robit_agent::frontend::Frontend;
+use robit_agent::schedule::{
+    self, FireInfo, Owner, ScheduleBinding, ScheduleContext, ScheduleDelivery, ScheduleSettings,
+    ScheduleStore, ScheduledTask, Scheduler, TaskScope, TaskStatus,
+};
 use robit_agent::storage::{self, resolve_db_path};
 use robit_agent::tool::ToolCallInfo;
 use robit_agent::{Agent, AgentError, SkillRegistry, ToolRegistry};
@@ -109,6 +113,16 @@ impl<T: PlatformAdapter> PlatformSender for PlatformSenderBridge<T> {
     }
 }
 
+/// Shared scheduled-task handle (store + wake + resolved settings), present
+/// only when `[app.schedule] enabled = true`. Cloned into every session's
+/// `ScheduleContext` and into the host-level scheduler loop.
+#[derive(Clone)]
+struct ScheduleShared {
+    store: ScheduleStore,
+    wake: Arc<tokio::sync::Notify>,
+    settings: ScheduleSettings,
+}
+
 /// Core orchestrator for multi-session Bot operations.
 pub struct ChatbotManager<T: PlatformAdapter> {
     /// The connected platform adapter, shared with the sender bridge.
@@ -140,6 +154,8 @@ pub struct ChatbotManager<T: PlatformAdapter> {
     context_window: Option<u64>,
     /// Idle session expiry.
     session_timeout: Duration,
+    /// Scheduled-task handle (`[app.schedule]`); `None` = feature off.
+    schedule: Option<ScheduleShared>,
 }
 
 impl<T: PlatformAdapter> ChatbotManager<T> {
@@ -211,6 +227,21 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         storage::init_db(&conn).map_err(ManagerError::DbInit)?;
         let db = Arc::new(Mutex::new(conn));
 
+        // Scheduled tasks: open a second connection to the same DB (same
+        // pattern as the memory tools) only when the feature is enabled.
+        let schedule_settings = ScheduleSettings::from_config(&config);
+        let schedule = if schedule_settings.enabled {
+            let store = ScheduleStore::open(&db_path)
+                .map_err(|e| ManagerError::ScheduleOpen(e.to_string()))?;
+            Some(ScheduleShared {
+                store,
+                wake: Arc::new(tokio::sync::Notify::new()),
+                settings: schedule_settings,
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             platform,
             agents: Arc::new(Mutex::new(HashMap::new())),
@@ -229,6 +260,7 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             auto_approve,
             context_window,
             session_timeout,
+            schedule,
         })
     }
 
@@ -257,6 +289,44 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             .await;
         });
 
+        // ── Scheduler wiring (RFC M1) ──
+        // Fires route back through THIS loop via mpsc, so injection reuses
+        // `inject_message` (dead-handle self-healing, source marking) and
+        // serializes with platform messages. The scheduler is stopped before
+        // drain_agents on exit (RFC §5.3 ordering).
+        let (inj_tx, mut inj_rx) = mpsc::channel::<(ScheduledTask, FireInfo)>(16);
+        let mut inj_closed = false;
+        let sched_shutdown = CancellationToken::new();
+        let sched_handle = if let Some(shared) = &self.schedule {
+            let delivery: Arc<dyn ScheduleDelivery> =
+                Arc::new(BotInjectionDelivery { tx: inj_tx.clone() });
+            let handle = Scheduler::spawn(
+                shared.store.clone(),
+                Owner {
+                    source: self.source.to_string(),
+                    namespace: self.namespace.clone(),
+                },
+                shared.settings.clone(),
+                Arc::clone(&shared.wake),
+                delivery,
+                sched_shutdown.clone(),
+            );
+            // Propagate process shutdown into the scheduler's own token
+            // (platform disconnect cancels it explicitly below).
+            let outer = shutdown.clone();
+            let inner = sched_shutdown.clone();
+            Some((
+                handle,
+                tokio::spawn(async move {
+                    outer.cancelled().await;
+                    inner.cancel();
+                }),
+            ))
+        } else {
+            drop(inj_tx);
+            None
+        };
+
         let result = loop {
             tokio::select! {
                 event = self.platform.recv_event() => {
@@ -277,6 +347,29 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                         }
                     }
                 }
+                fire = inj_rx.recv(), if !inj_closed => {
+                    match fire {
+                        Some((task, info)) => {
+                            if let Some(chat_id) = task.target_chat_id() {
+                                let text = schedule::wrap_prompt(&task, &info);
+                                if let Err(e) =
+                                    self.inject_message(chat_id, &text, "scheduler").await
+                                {
+                                    tracing::error!(
+                                        "schedule injection failed for chat {}: {}",
+                                        chat_id, e
+                                    );
+                                }
+                            } else {
+                                tracing::error!(
+                                    "schedule task {} has no chat target; cannot deliver",
+                                    task.id
+                                );
+                            }
+                        }
+                        None => inj_closed = true,
+                    }
+                }
                 // Level-triggered: the cancellation is remembered even when it
                 // arrives while `handle_message` is running, unlike
                 // `Notify::notify_waiters`, which is edge-triggered and would
@@ -287,6 +380,17 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
                 }
             }
         };
+
+        // Stop the scheduler BEFORE draining agents: no new turns may be
+        // injected while sessions are closing. In-flight fires left 'claimed'
+        // are reconciled at the next startup (RFC §5.3).
+        sched_shutdown.cancel();
+        if let Some((handle, linker)) = sched_handle {
+            linker.abort();
+            if tokio::time::timeout(Duration::from_secs(2), handle).await.is_err() {
+                tracing::warn!("Scheduler did not stop within 2s; abandoning");
+            }
+        }
 
         // Close every session's input channel and give the Agent tasks a
         // bounded window to finish the turn they are already running, so a
@@ -340,6 +444,12 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
         }
         if trimmed_text.to_lowercase().starts_with("/switch ") {
             self.handle_switch_command(&chat_id, &trimmed_text["/switch ".len()..]).await;
+            return;
+        }
+        if trimmed_text.eq_ignore_ascii_case("/schedule")
+            || trimmed_text.to_lowercase().starts_with("/schedule ")
+        {
+            self.handle_schedule_command(&chat_id, trimmed_text).await;
             return;
         }
         if trimmed_text.eq_ignore_ascii_case("/help") {
@@ -728,10 +838,144 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
 - /new - 创建新会话（旧会话归档）
 - /list - 列出所有历史会话
 - /switch <序号> - 切换到指定会话
+- /schedule [list] - 列出本聊天的计划任务
+- /schedule pause|resume|delete <id前缀> - 管理计划任务
 - /help - 显示此帮助
 
 提示：直接发送消息与机器人对话即可。"#;
         let _ = self.platform_sender.send(chat_id, help_text).await;
+    }
+
+    /// Handle `/schedule` — direct user management of this chat's scheduled
+    /// tasks (no LLM round-trip). Shares the ScheduleStore with the tools;
+    /// scoped to (source, namespace, chat_id) so chats stay isolated.
+    async fn handle_schedule_command(&self, chat_id: &str, text: &str) {
+        let Some(shared) = &self.schedule else {
+            let _ = self
+                .platform_sender
+                .send(chat_id, "计划任务未启用（需配置 [app.schedule] enabled = true）。")
+                .await;
+            return;
+        };
+        let scope = TaskScope {
+            source: self.source.to_string(),
+            namespace: self.namespace.clone(),
+            chat_id: Some(chat_id.to_string()),
+        };
+        let args = text.trim()["/schedule".len()..].trim();
+        let (sub, rest) = match args.split_once(char::is_whitespace) {
+            Some((s, r)) => (s, r.trim()),
+            None => (args, ""),
+        };
+
+        let reply = match sub {
+            "" | "list" => match shared.store.list_scoped(&scope, None, 20, 0) {
+                Ok(tasks) if tasks.is_empty() => "当前聊天没有计划任务。".to_string(),
+                Ok(tasks) => {
+                    let mut s = String::from("⏰ 计划任务：\n");
+                    for t in tasks {
+                        let next = t
+                            .next_run_at
+                            .map(|dt| {
+                                dt.with_timezone(&chrono::Local)
+                                    .format("%m-%d %H:%M")
+                                    .to_string()
+                            })
+                            .unwrap_or_else(|| "-".into());
+                        s.push_str(&format!(
+                            "• {} | {} | {} | 下次: {}\n",
+                            &t.id[..8.min(t.id.len())],
+                            t.title,
+                            t.status.as_str(),
+                            next
+                        ));
+                    }
+                    s.push_str("管理：/schedule pause|resume|delete <id前缀>");
+                    s
+                }
+                Err(e) => format!("❌ 查询失败：{}", e),
+            },
+            "pause" | "resume" | "delete" => {
+                if rest.is_empty() {
+                    format!("用法：/schedule {} <id前缀>", sub)
+                } else {
+                    self.apply_schedule_action(shared, &scope, sub, rest).await
+                }
+            }
+            _ => "用法：/schedule [list] | pause <id前缀> | resume <id前缀> | delete <id前缀>"
+                .to_string(),
+        };
+        let _ = self.platform_sender.send(chat_id, &reply).await;
+    }
+
+    /// Resolve a task by id prefix within scope and apply pause/resume/delete.
+    async fn apply_schedule_action(
+        &self,
+        shared: &ScheduleShared,
+        scope: &TaskScope,
+        action: &str,
+        id_prefix: &str,
+    ) -> String {
+        let candidates = match shared.store.list_scoped(scope, None, 100, 0) {
+            Ok(tasks) => tasks
+                .into_iter()
+                .filter(|t| t.id.starts_with(id_prefix))
+                .collect::<Vec<_>>(),
+            Err(e) => return format!("❌ 查询失败：{}", e),
+        };
+        let mut task = match candidates.len() {
+            0 => return format!("未找到 id 以 '{}' 开头的任务。", id_prefix),
+            1 => candidates.into_iter().next().unwrap(),
+            _ => return format!("id 前缀 '{}' 匹配到多个任务，请加长前缀。", id_prefix),
+        };
+        let expected = schedule::fmt_ts(task.updated_at);
+        let now = chrono::Utc::now();
+        match action {
+            "pause" => {
+                task.status = TaskStatus::Paused;
+                task.next_run_at = None;
+            }
+            "resume" => {
+                let tz = match task.tz() {
+                    Ok(tz) => tz,
+                    Err(e) => return format!("❌ 时区错误：{}", e),
+                };
+                task.next_run_at = task.schedule.next_after(now, &tz, task.created_at);
+                task.status = if task.next_run_at.is_none() {
+                    TaskStatus::Completed
+                } else {
+                    TaskStatus::Active
+                };
+            }
+            "delete" => {
+                task.status = TaskStatus::Deleted;
+                task.next_run_at = None;
+            }
+            _ => return format!("未知操作：{}", action),
+        }
+        task.updated_at = now;
+        match shared.store.save_expected(&task, &expected) {
+            Ok(true) => {
+                shared.wake.notify_one();
+                let next = task
+                    .next_run_at
+                    .map(schedule::local_display)
+                    .unwrap_or_else(|| "-".into());
+                format!(
+                    "✅ 任务「{}」已{}。状态：{}，下次触发：{}",
+                    task.title,
+                    match action {
+                        "pause" => "暂停",
+                        "resume" => "恢复",
+                        _ => "删除",
+                    },
+                    task.status.as_str(),
+                    next
+                )
+            }
+            Ok(false) => "❌ 任务刚被并发修改，请重试。".to_string(),
+            Err(e) => format!("❌ 保存失败：{}", e),
+        }
     }
 
     /// Get an existing Agent session for `chat_id`, or create a new one.
@@ -864,6 +1108,22 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             memory,
             self.custom_prompt.clone(),
         );
+        // Attach the scheduled-task handle bound to this chat/session so the
+        // schedule_* tools create tasks owned by (source, namespace, chat_id).
+        let agent = match &self.schedule {
+            Some(shared) => agent.with_schedule(ScheduleContext {
+                store: shared.store.clone(),
+                wake: Arc::clone(&shared.wake),
+                settings: shared.settings.clone(),
+                binding: ScheduleBinding {
+                    source: self.source.to_string(),
+                    namespace: self.namespace.clone(),
+                    session_id: session_id.to_string(),
+                    chat_id: Some(chat_id.to_string()),
+                },
+            }),
+            None => agent,
+        };
 
         let sid = session_id.to_string();
         let cid = chat_id.to_string();
@@ -934,6 +1194,23 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
     }
 }
 
+/// Scheduler delivery terminal: hands fires back to the manager run loop via
+/// mpsc. Success = queued for injection (the loop calls `inject_message`);
+/// a closed channel means the host is shutting down.
+struct BotInjectionDelivery {
+    tx: mpsc::Sender<(ScheduledTask, FireInfo)>,
+}
+
+#[async_trait]
+impl ScheduleDelivery for BotInjectionDelivery {
+    async fn deliver(&self, task: &ScheduledTask, fire: &FireInfo) -> Result<(), AgentError> {
+        self.tx
+            .send((task.clone(), fire.clone()))
+            .await
+            .map_err(|e| AgentError::InternalError(format!("injection channel closed: {}", e)))
+    }
+}
+
 /// Errors that can occur while constructing a [`ChatbotManager`].
 #[derive(Debug, thiserror::Error)]
 pub enum ManagerError {
@@ -943,6 +1220,8 @@ pub enum ManagerError {
     DbOpen(#[from] rusqlite::Error),
     #[error("Failed to initialize database: {0}")]
     DbInit(rusqlite::Error),
+    #[error("Failed to open schedule store: {0}")]
+    ScheduleOpen(String),
 }
 
 /// Build archive/title text: raw message text plus one annotation line per
@@ -1383,6 +1662,144 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manager = make_manager(dir.path().to_path_buf(), offline_config());
         assert!(manager.inject_message("group:1", "hi", "  ").await.is_err());
+    }
+
+    // ========================================================================
+    // Scheduled tasks (RFC M1)
+    // ========================================================================
+
+    fn schedule_config() -> RobitConfig {
+        toml::from_str(
+            r#"
+            default_model = "test/text"
+            [providers.test]
+            base_url = "http://127.0.0.1:1"
+            api_key = "sk-test"
+            [[providers.test.models]]
+            id = "text"
+            [app.schedule]
+            enabled = true
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn mock_task(id: &str, chat_id: &str, next: Option<chrono::DateTime<chrono::Utc>>) -> ScheduledTask {
+        let now = chrono::Utc::now();
+        ScheduledTask {
+            id: id.into(),
+            title: format!("任务{id}"),
+            prompt: "生成日报".into(),
+            schedule: robit_agent::schedule::ScheduleSpec::Interval {
+                every_secs: 3600,
+                anchor: None,
+            },
+            timezone: String::new(),
+            target: robit_agent::schedule::TargetSpec::ThisSession {
+                session_id: "s".into(),
+                chat_id: Some(chat_id.into()),
+            },
+            source: "mock".into(),
+            namespace: String::new(),
+            status: TaskStatus::Active,
+            max_runs: None,
+            run_count: 0,
+            next_run_at: next,
+            last_run_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn schedule_command_disabled_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), offline_config());
+        assert!(manager.schedule.is_none());
+        manager.handle_schedule_command("group:1", "/schedule").await;
+        let sent = manager.platform.sent();
+        assert!(sent.iter().any(|(_, t)| t.contains("未启用")), "{:?}", sent);
+    }
+
+    #[tokio::test]
+    async fn schedule_command_lists_and_manages_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), schedule_config());
+        let shared = manager.schedule.as_ref().expect("schedule enabled");
+        let future = chrono::Utc::now() + chrono::TimeDelta::hours(1);
+        shared.store.insert(&mock_task("abcd1234-rest", "group:1", Some(future))).unwrap();
+        // Another chat's task must stay invisible.
+        shared.store.insert(&mock_task("ffff9999-rest", "group:2", Some(future))).unwrap();
+
+        manager.handle_schedule_command("group:1", "/schedule").await;
+        let sent = manager.platform.sent();
+        let list = sent.iter().find(|(_, t)| t.contains("计划任务")).unwrap();
+        assert!(list.1.contains("abcd1234"));
+        assert!(!list.1.contains("ffff9999"));
+
+        manager.handle_schedule_command("group:1", "/schedule pause abcd").await;
+        let scope = TaskScope { source: "mock".into(), namespace: String::new(), chat_id: Some("group:1".into()) };
+        let t = shared.store.get_scoped("abcd1234-rest", &scope).unwrap().unwrap();
+        assert_eq!(t.status, TaskStatus::Paused);
+        assert!(t.next_run_at.is_none());
+
+        manager.handle_schedule_command("group:1", "/schedule resume abcd").await;
+        let t = shared.store.get_scoped("abcd1234-rest", &scope).unwrap().unwrap();
+        assert_eq!(t.status, TaskStatus::Active);
+        assert!(t.next_run_at.is_some());
+
+        manager.handle_schedule_command("group:1", "/schedule delete abcd").await;
+        let t = shared.store.get_scoped("abcd1234-rest", &scope).unwrap().unwrap();
+        assert_eq!(t.status, TaskStatus::Deleted);
+
+        // Ambiguous prefix is refused.
+        shared.store.insert(&mock_task("zzzz0001", "group:1", Some(future))).unwrap();
+        shared.store.insert(&mock_task("zzzz0002", "group:1", Some(future))).unwrap();
+        manager.handle_schedule_command("group:1", "/schedule pause zzzz").await;
+        let sent = manager.platform.sent();
+        assert!(sent.iter().any(|(_, t)| t.contains("多个任务")));
+    }
+
+    #[tokio::test]
+    async fn scheduler_fire_injects_wrapped_turn_via_run_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = make_manager(dir.path().to_path_buf(), schedule_config());
+        let shared = manager.schedule.as_ref().unwrap();
+        // Due immediately → startup catch-up fire → injection channel → run
+        // loop → inject_message → archive row marked source="scheduler".
+        let now = chrono::Utc::now();
+        let mut task = mock_task("fire-1", "group:sched", Some(now));
+        task.schedule = robit_agent::schedule::ScheduleSpec::Once {
+            at: schedule::fmt_ts(now),
+        };
+        shared.store.insert(&task).unwrap();
+
+        let shutdown = CancellationToken::new();
+        let run_shutdown = shutdown.clone();
+        let handle = tokio::spawn(async move { manager.run(run_shutdown).await });
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        shutdown.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(20), handle).await;
+
+        // Re-open the DB to inspect the archived injection.
+        let db_path = resolve_db_path(dir.path(), false).unwrap();
+        let conn = Connection::open(&db_path).unwrap();
+        let session = storage::find_session_by_chat_id(&conn, "group:sched", "mock", "")
+            .unwrap()
+            .expect("session created by injection");
+        let messages = storage::get_messages(&conn, &session.id).unwrap();
+        assert!(
+            messages.iter().any(|m| m.source.as_deref() == Some("scheduler")
+                && m.content.contains("[计划任务「任务fire-1」")
+                && m.content.contains("生成日报")),
+            "expected wrapped scheduler turn, got {:?}",
+            messages.iter().map(|m| (&m.source, &m.content)).collect::<Vec<_>>()
+        );
+        // Run row finalized as delivered.
+        let store = ScheduleStore::open(&db_path).unwrap();
+        let runs = store.runs_for("fire-1", 10).unwrap();
+        assert_eq!(runs[0].status, "delivered");
+        assert!(runs[0].catch_up);
     }
 
     #[tokio::test]

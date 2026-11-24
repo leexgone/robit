@@ -589,6 +589,7 @@ mod tests {
             async_runner: crate::tool::async_runner::AsyncTaskRunner::new(done_tx),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             task_registry: crate::tool::task_registry::TaskRegistry::new(),
+            schedule: None,
         }
     }
 

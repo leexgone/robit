@@ -82,7 +82,7 @@ pub struct ToolCallInfoData {
 }
 
 /// Current schema version. Increment when the schema changes.
-const CURRENT_SCHEMA_VERSION: i32 = 7;
+const CURRENT_SCHEMA_VERSION: i32 = 8;
 
 // ============================================================================
 // Memory data structures
@@ -345,6 +345,7 @@ fn create_all_tables(conn: &Connection) -> SqliteResult<()> {
             INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
         END;",
     )?;
+    conn.execute_batch(SCHEDULE_TABLES_SQL)?;
     Ok(())
 }
 
@@ -360,6 +361,7 @@ fn migrate(conn: &Connection, from: i32, to: i32) -> SqliteResult<()> {
             4 => migrate_v4_to_v5(conn)?,
             5 => migrate_v5_to_v6(conn)?,
             6 => migrate_v6_to_v7(conn)?,
+            7 => migrate_v7_to_v8(conn)?,
             other => {
                 return Err(rusqlite::Error::InvalidParameterName(format!(
                     "Unknown schema version: {}",
@@ -494,6 +496,53 @@ fn migrate_v6_to_v7(conn: &Connection) -> SqliteResult<()> {
     )?;
     Ok(())
 }
+
+/// v7 → v8: scheduled tasks + run audit log (计划任务 RFC M1).
+///
+/// Ownership mirrors the v7 session identity key: `(source, namespace)` scopes
+/// every CRUD/claim query so frontends sharing one DB never fire each other's
+/// tasks. `task_runs.status = 'claimed'` rows are written in the same
+/// transaction that advances `next_run_at`; startup reconciliation resolves
+/// rows left behind by a crash between claim and delivery.
+fn migrate_v7_to_v8(conn: &Connection) -> SqliteResult<()> {
+    conn.execute_batch(SCHEDULE_TABLES_SQL)?;
+    Ok(())
+}
+
+/// DDL shared by the fresh-DB path and the v7→v8 migration.
+const SCHEDULE_TABLES_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id              TEXT PRIMARY KEY,
+        title           TEXT NOT NULL,
+        prompt          TEXT NOT NULL,
+        schedule        TEXT NOT NULL,
+        timezone        TEXT NOT NULL DEFAULT '',
+        target          TEXT NOT NULL,
+        source          TEXT NOT NULL,
+        namespace       TEXT NOT NULL DEFAULT '',
+        status          TEXT NOT NULL DEFAULT 'active',
+        max_runs        INTEGER,
+        run_count       INTEGER NOT NULL DEFAULT 0,
+        next_run_at     TEXT,
+        last_run_at     TEXT,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due
+        ON scheduled_tasks(status, next_run_at);
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_owner
+        ON scheduled_tasks(source, namespace);
+
+    CREATE TABLE IF NOT EXISTS task_runs (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id         TEXT NOT NULL REFERENCES scheduled_tasks(id),
+        scheduled_at    TEXT NOT NULL,
+        fired_at        TEXT NOT NULL,
+        catch_up        INTEGER NOT NULL DEFAULT 0,
+        status          TEXT NOT NULL,
+        error           TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, fired_at);";
 
 // ============================================================================
 // Schema version helpers (private)
@@ -1654,6 +1703,69 @@ mod tests {
             .unwrap();
         let messages = get_messages(&conn, "s-1").unwrap();
         assert_eq!(messages[1].source.as_deref(), Some("scheduler"));
+    }
+
+    #[test]
+    fn migrates_v7_to_v8_schedule_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Simulate a v7 database: sessions with namespace + triple unique
+        // index, messages with source; no schedule tables yet.
+        ensure_meta_table(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id          TEXT PRIMARY KEY,
+                chat_id     TEXT,
+                title       TEXT NOT NULL,
+                model       TEXT NOT NULL,
+                source      TEXT NOT NULL DEFAULT 'gui',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                is_active   INTEGER DEFAULT 1,
+                namespace   TEXT NOT NULL DEFAULT ''
+            );
+            CREATE UNIQUE INDEX idx_sessions_chat_id
+                ON sessions(chat_id, source, namespace)
+                WHERE chat_id IS NOT NULL AND is_active = 1;
+            CREATE TABLE messages (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT NOT NULL REFERENCES sessions(id),
+                role         TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                tool_name    TEXT,
+                tool_call_id TEXT,
+                tool_info    TEXT,
+                tokens       INTEGER,
+                created_at   TEXT NOT NULL,
+                source       TEXT
+            );
+            INSERT INTO sessions (id, chat_id, title, model, source, created_at, updated_at)
+            VALUES ('s-1', 'group:abc', 'T', 'model', 'qq', '2020-01-01', '2020-01-01');",
+        )
+        .unwrap();
+        write_schema_version(&conn, 7).unwrap();
+
+        init_db(&conn).unwrap();
+        assert_eq!(read_schema_version(&conn).unwrap(), CURRENT_SCHEMA_VERSION);
+
+        // Schedule tables exist and accept rows; existing session data intact.
+        conn.execute(
+            "INSERT INTO scheduled_tasks (id, title, prompt, schedule, target, source, created_at, updated_at)
+             VALUES ('t-1', 'T', 'p', '{\"kind\":\"interval\",\"every_secs\":3600}',
+                     '{\"kind\":\"this_session\",\"session_id\":\"s-1\",\"chat_id\":\"group:abc\"}',
+                     'qq', '2020-01-01', '2020-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO task_runs (task_id, scheduled_at, fired_at, status)
+             VALUES ('t-1', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', 'claimed')",
+            [],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]

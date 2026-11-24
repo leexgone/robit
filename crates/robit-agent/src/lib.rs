@@ -15,6 +15,7 @@ pub mod lock;
 pub mod media;
 pub mod memory;
 pub mod prompt;
+pub mod schedule;
 pub mod skill;
 pub mod storage;
 pub mod tool;
@@ -34,6 +35,10 @@ pub use media::{
     encode_file_base64_with_mime, MediaDownloadOptions, MediaError,
 };
 pub use memory::{build_memory_section, resolve_memory_settings, MemorySettings, MAX_MEMORY_INJECT_BYTES};
+pub use schedule::{
+    wrap_prompt, FireInfo, MissedPolicy, ScheduleBinding, ScheduleContext, ScheduleDelivery,
+    ScheduleSettings, ScheduleSpec, ScheduleStore, ScheduledTask, Scheduler, TargetSpec, TaskStatus,
+};
 pub use frontend::{create_channels, AgentChannels, Frontend, FrontendChannels};
 pub use skill::{load_skills_from_dirs, Skill, SkillFrontmatter, SkillLoadError, SkillRegistry};
 pub use storage::{

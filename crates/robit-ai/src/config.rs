@@ -215,6 +215,9 @@ pub struct AppConfig {
     pub memory_mode: Option<MemoryMode>,
     /// Bot platform settings (shared across Bot frontends).
     pub bot: Option<BotConfig>,
+    /// Scheduled-task settings (`[app.schedule]`). Absent = disabled:
+    /// no schedule tools registered, no scheduler loop started.
+    pub schedule: Option<ScheduleConfig>,
 }
 
 /// Selector for the `[app] memory_mode` long-term memory mechanism.
@@ -287,6 +290,33 @@ pub struct RetryConfig {
     pub max_retries: Option<u32>,
     pub initial_backoff_ms: Option<u64>,
     pub max_backoff_ms: Option<u64>,
+}
+
+/// Scheduled-task settings (`[app.schedule]`).
+///
+/// Every field is optional; missing ones fall back to the defaults documented
+/// per field (resolved in `robit_agent::schedule::ScheduleSettings`). The
+/// section being absent — or `enabled` unset/false — keeps the feature fully
+/// off: no tools, no scheduler loop, behavior byte-identical to older builds.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ScheduleConfig {
+    /// Master switch (default `false`).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Downtime catch-up policy: `latest` (default, fire only the most recent
+    /// missed occurrence) or `skip` (advance to the next future occurrence).
+    #[serde(default)]
+    pub missed_policy: Option<String>,
+    /// Minimum interval between fires, seconds (default 60). Gates both
+    /// `interval.every_secs` and the effective gap of cron expressions.
+    #[serde(default)]
+    pub min_interval_secs: Option<u64>,
+    /// Max active+paused tasks per owner (per chat / per session, default 50).
+    #[serde(default)]
+    pub max_active_tasks: Option<usize>,
+    /// Delivery failure retries (default 3; backoff 5s/30s/120s).
+    #[serde(default)]
+    pub delivery_retries: Option<u32>,
 }
 
 // ============================================================================
@@ -953,6 +983,44 @@ mod tests {
         assert!(config.default_model.is_none());
         assert!(config.app.is_none());
         assert_eq!(config.providers.len(), 1);
+    }
+
+    /// 计划任务配置兼容性：`[app.schedule]` 全字段/部分字段/缺省都能解析，
+    /// 保证任何前端（含不支持调度的 TUI）加载含该节的配置时启动不报错。
+    #[test]
+    fn test_parse_schedule_config_compat() {
+        // Full section.
+        let config: RobitConfig = toml::from_str(
+            r#"
+            [providers.default]
+            base_url = "https://example.com/v1"
+            api_key = "sk-test"
+            [[providers.default.models]]
+            id = "m"
+            [app.schedule]
+            enabled = true
+            missed_policy = "skip"
+            min_interval_secs = 30
+            max_active_tasks = 10
+            delivery_retries = 1
+            "#,
+        )
+        .unwrap();
+        let s = config.app.unwrap().schedule.unwrap();
+        assert_eq!(s.enabled, Some(true));
+        assert_eq!(s.missed_policy.as_deref(), Some("skip"));
+        assert_eq!(s.min_interval_secs, Some(30));
+        assert_eq!(s.max_active_tasks, Some(10));
+        assert_eq!(s.delivery_retries, Some(1));
+
+        // Partial section (only the switch) and absent section both parse.
+        let partial: RobitConfig = toml::from_str(
+            "[providers]\n[app.schedule]\nenabled = false\n",
+        )
+        .unwrap();
+        assert_eq!(partial.app.unwrap().schedule.unwrap().enabled, Some(false));
+        let absent: RobitConfig = toml::from_str("[providers]\n[app]\nmax_steps = 10\n").unwrap();
+        assert!(absent.app.unwrap().schedule.is_none());
     }
 
     #[test]

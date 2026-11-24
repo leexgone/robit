@@ -29,6 +29,9 @@ encoding_rs = "0.8"
 globset.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
+cron.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
 reqwest.workspace = true
 base64.workspace = true
 image.workspace = true
@@ -36,3 +39,4 @@ fs2.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+toml.workspace = true

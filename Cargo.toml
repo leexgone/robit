@@ -82,6 +82,12 @@ regex = "1.13"
 time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
 rusqlite = { version = "0.43", features = ["bundled", "bundled-full"] }
 fs2 = "0.4"
+# 计划任务（robit-agent::schedule）：cron 表达式解析 + IANA 时区求值。
+# schedule 模块内部统一 chrono（cron crate 生态绑定），与既有 time crate 并存，
+# 边界处转字符串，不向外扩散 chrono 类型。
+cron = "0.15"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+chrono-tz = "0.10"
 
 # TUI
 ratatui = "0.30"

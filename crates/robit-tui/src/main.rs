@@ -160,6 +160,24 @@ fn main() -> Result<()> {
         app.status.tools_enabled = tools.tool_names().len();
         app.status.tools_total = tools.tool_names().len();
 
+        // Config compatibility: `[app.schedule]` is a shared config section
+        // (the Bot frontends schedule tasks). The TUI deliberately does not
+        // run a scheduler — short-lived interactive sessions are not the
+        // value scenario (RFC §11 decision). Startup must succeed regardless;
+        // when the section is enabled, tell the user tasks will not fire here
+        // instead of leaving them guessing.
+        let schedule_enabled = config
+            .app
+            .as_ref()
+            .and_then(|a| a.schedule.as_ref())
+            .and_then(|s| s.enabled)
+            .unwrap_or(false);
+        if schedule_enabled {
+            app.conversation.push(app::ConversationEntry::SystemNotice(
+                "⏰ 已配置计划任务（[app.schedule] enabled = true），但 TUI 不支持调度——任务不会在此触发。请使用常驻 Bot 前端（robit-qq / robit-wechat）。".to_string(),
+            ));
+        }
+
         run_event_loop(
             &mut terminal,
             &mut app,

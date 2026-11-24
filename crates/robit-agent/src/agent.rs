@@ -135,6 +135,9 @@ pub struct Agent {
     /// Memory directory resolved from the host's storage scope; passed to
     /// tools via ToolContext so memory tools share the session DB (H5).
     memory_dir: PathBuf,
+    /// Scheduled-task handle attached by the host via [`Agent::with_schedule`]
+    /// when `[app.schedule] enabled = true`. Cloned into every ToolContext.
+    schedule: Option<crate::schedule::ScheduleContext>,
 }
 
 /// Bookkeeping for one in-flight async task.
@@ -197,7 +200,18 @@ impl Agent {
             pending_tasks: HashMap::new(),
             task_registry,
             memory_dir: memory.dir.clone(),
+            schedule: None,
         }
+    }
+
+    /// Attach the scheduled-task handle (builder-style, no signature churn).
+    /// Hosts that enable `[app.schedule]` call this after `new`/`with_history`
+    /// with a context bound to the current session/chat. Without it the
+    /// `schedule_*` tools (even if registered) report the feature as
+    /// unavailable.
+    pub fn with_schedule(mut self, ctx: crate::schedule::ScheduleContext) -> Self {
+        self.schedule = Some(ctx);
+        self
     }
 
     /// Create Agent with pre-loaded history (for resuming sessions)
@@ -297,6 +311,7 @@ impl Agent {
             pending_tasks: HashMap::new(),
             task_registry,
             memory_dir: memory.dir.clone(),
+            schedule: None,
         }
     }
 
@@ -947,6 +962,7 @@ impl Agent {
                     async_runner: self.async_runner.clone(),
                     cancel_token: cancel_token.clone(),
                     task_registry: self.task_registry.clone(),
+                    schedule: self.schedule.clone(),
                 };
 
                 let result = self.tools.execute(&tc.function.name, args, &ctx).await;

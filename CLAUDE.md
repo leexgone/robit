@@ -81,6 +81,7 @@
 | `memorize` / `recall` / `forget` / `list_memories` | SQLite 长期记忆工具，仅在 `memory_mode = "tools"` 时注册 | 否（默认关闭） | 仅 `forget` 需确认 |
 | `generate_image` | 文生图（异步执行），使用配置的 `default_image_model` 指定的模型（万相/OpenAI 兼容） | 否（需显式配置 `image_providers`） | 是 |
 | `query_task` | 查询异步后台任务状态（如生图进度/结果） | 是 | 否 |
+| `schedule_create` / `schedule_edit` / `schedule_list` / `schedule_view` | 计划任务：登记/管理定时或周期触发的提示词任务，到点注入所属会话（`robit-agent::schedule`，设计见 `docs/robit-rfc-scheduled-tasks.md`） | 否（需 `[app.schedule] enabled = true`） | create/edit 需确认 |
 
 ## 技能系统
 
@@ -198,7 +199,7 @@ log_level = "DEBUG"
 log_file = true                        # 可选，是否写入日志文件（默认 false）。启用后写入 .robit/logs/robit-YYYY-MM-DD.log（按本地日期轮转，时间戳为本地时间）
 log_retention_days = 14                # 可选，历史日志保留天数（默认 14）。启动时删除超过 N 天的 robit-*.log；0 表示禁用清理（保留全部）
 max_steps = 10
-enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]  # 可选，工具白名单。不配置时启用所有工具；只控制通用工具（bash/write/edit/ls/find/grep/generate_image/read_image），系统工具（read/load_skill/search_history/query_task 及记忆工具）始终注册，不受白名单影响；记忆工具另受 memory_mode 约束
+enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]  # 可选，工具白名单。不配置时启用所有工具；只控制通用工具（bash/write/edit/ls/find/grep/generate_image/read_image），系统工具（read/load_skill/search_history/query_task、记忆工具及 schedule_* 工具）始终注册，不受白名单影响；记忆工具另受 memory_mode 约束，schedule_* 另受 [app.schedule] enabled 约束
 auto_approve = false                   # 可选，是否自动批准所有工具调用（默认 false）
 global_storage = false                 # 可选，是否使用全局会话存储 ~/.robit/memory/robit.db（默认 false，使用 cwd/.robit/memory/robit.db）
 memory_mode = "file"                   # 可选，记忆机制：tools（SQLite 记忆工具）/ file（文件记忆：memory.md + 每日文件，主记忆注入系统提示词）/ off，默认 file
@@ -225,6 +226,13 @@ max_media_bytes = 20971520              # 单次媒体下载上限（字节）�
 max_retries = 3
 initial_backoff_ms = 1000
 max_backoff_ms = 30000
+
+[app.schedule]                         # 计划任务（可选，缺省全 off：不注册工具、不启动调度器，行为与旧版一致）
+enabled = false                        # 总开关；true 时注册 schedule_* 系统工具（不受 enabled_tools 白名单影响），宿主启动 Scheduler
+missed_policy = "latest"               # 停机补触发：latest（只补最近一次，默认）/ skip（全部跳过）
+min_interval_secs = 60                 # interval 下限与 cron 最小有效间隔（秒）
+max_active_tasks = 50                  # 每归属（每 chat/每会话）active+paused 任务上限
+delivery_retries = 3                   # 投递失败重试次数（退避 5s/30s/120s）
 
 # 通信渠道配置（可选，QQ/飞书等 Bot 平台接入）
 [channels.qq_bot]                      # QQ 官方 Bot 渠道

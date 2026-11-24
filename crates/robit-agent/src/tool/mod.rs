@@ -11,6 +11,7 @@ pub mod ls;
 pub mod find;
 pub mod grep;
 pub mod memory;
+pub mod schedule;
 pub mod search_history;
 pub mod async_runner;
 pub mod task_registry;
@@ -212,6 +213,12 @@ pub struct ToolContext {
     /// `query_task` tool reads this; async tools register themselves here via
     /// the Agent when they submit. Cheap to clone (shared `Arc`).
     pub task_registry: TaskRegistry,
+    /// Scheduled-task handle, present only when `[app.schedule] enabled = true`
+    /// and the host attached it via `Agent::with_schedule`. The four
+    /// `schedule_*` tools read it; same shared-handle pattern as
+    /// `task_registry` (binding travels with the context, tools stay
+    /// stateless singletons). Cheap to clone.
+    pub schedule: Option<crate::schedule::ScheduleContext>,
 }
 
 // ============================================================================

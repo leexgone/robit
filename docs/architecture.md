@@ -368,7 +368,7 @@ enabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
 
 **规则（工具分两类）：**
 
-- **系统工具**：`read`、`load_skill`、`search_history`、`query_task` 与记忆工具（`memorize` / `recall` / `forget` / `list_memories`）。始终注册、不受 `enabled_tools` / 白名单控制——它们是 Agent 自身机制（文件读取、技能加载、会话历史检索、异步任务可见性）的一部分。记忆工具属系统工具但另受 `memory_mode = "tools"` 约束，非该模式时不注册
+- **系统工具**：`read`、`load_skill`、`search_history`、`query_task`、记忆工具（`memorize` / `recall` / `forget` / `list_memories`）与计划任务工具（`schedule_create` / `schedule_edit` / `schedule_list` / `schedule_view`）。始终注册、不受 `enabled_tools` / 白名单控制——它们是 Agent 自身机制（文件读取、技能加载、会话历史检索、异步任务可见性）的一部分。记忆工具属系统工具但另受 `memory_mode = "tools"` 约束，非该模式时不注册；计划任务工具另受 `[app.schedule] enabled` 约束（默认关闭），设计见 [`robit-rfc-scheduled-tasks.md`](robit-rfc-scheduled-tasks.md)
 - **通用工具**：`bash`、`write`、`edit`、`ls`、`find`、`grep`、`generate_image`、`read_image`。不配置 `enabled_tools` 时全部注册；配置后仅注册列表中列出的
 - **`read_image`**：属通用工具，且仅当主模型 `supports_images = false` 且顶层 `default_vision_model`（指向普通 `providers` 中的多模态模型）已配置并解析成功时才可注册。主模型支持图片时 `read` 已直接注入图片，`read_image` 不注册（`default_vision_model` 被忽略并打 info 日志）
 
@@ -430,7 +430,7 @@ let result = bootstrap_with(
 要点：
 
 - `extra_skill_dirs`：技能作为产品资产随仓库版本化的官方入口，宿主不再需要自写 loader；
-- `standard_tools`：白名单语义与 `config.app.enabled_tools` 一致但优先级更高，只控制**通用工具**（`bash`/`write`/`edit`/`ls`/`find`/`grep`/`generate_image`/`read_image`）；**系统工具**（`read`/`load_skill`/`search_history`/`query_task` 与记忆工具）始终注册，不受白名单影响，记忆工具仍由 `memory_mode = "tools"` 决定；
+- `standard_tools`：白名单语义与 `config.app.enabled_tools` 一致但优先级更高，只控制**通用工具**（`bash`/`write`/`edit`/`ls`/`find`/`grep`/`generate_image`/`read_image`）；**系统工具**（`read`/`load_skill`/`search_history`/`query_task`、记忆工具与 `schedule_*` 工具）始终注册，不受白名单影响，记忆工具仍由 `memory_mode = "tools"` 决定、`schedule_*` 仍由 `[app.schedule] enabled` 决定；
 - `extra_tools`：领域工具名会自动并入 `SkillRegistry` 校验 `tools_required` 的可用工具清单（与 `base_tool_names` 合并），声明了领域工具依赖的技能不会误报 warning。
 
 ### BootstrapResult

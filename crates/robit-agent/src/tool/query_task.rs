@@ -233,6 +233,7 @@ mod tests {
             async_runner: crate::tool::async_runner::AsyncTaskRunner::new(done_tx),
             cancel_token: CancellationToken::new(),
             task_registry: registry,
+            schedule: None,
         }
     }
 }

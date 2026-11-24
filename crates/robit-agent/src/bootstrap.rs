@@ -25,6 +25,9 @@ use crate::tool::memory::{ForgetTool, ListMemoriesTool, MemorizeTool, RecallTool
 use crate::tool::query_task::QueryTaskTool;
 use crate::tool::read::ReadTool;
 use crate::tool::read_image::ReadImageTool;
+use crate::tool::schedule::{
+    ScheduleCreateTool, ScheduleEditTool, ScheduleListTool, ScheduleViewTool,
+};
 use crate::tool::search_history::SearchHistoryTool;
 use crate::tool::write::WriteTool;
 use crate::tool::{Tool, ToolRegistry};
@@ -351,6 +354,25 @@ pub fn create_tools_from_config_with(
     tools.register(SearchHistoryTool::new());
     tools.register(QueryTaskTool::new());
 
+    // Schedule tools are system tools gated by `[app.schedule] enabled`
+    // (default false), mirroring the memory tools' `memory_mode` gate: the
+    // whitelist does not apply, but the config switch does. Registration
+    // alone is not enough — the host must also attach a ScheduleContext via
+    // `Agent::with_schedule` and run a Scheduler; without the context the
+    // tools report the feature as unavailable.
+    let schedule_enabled = config
+        .app
+        .as_ref()
+        .and_then(|a| a.schedule.as_ref())
+        .and_then(|s| s.enabled)
+        .unwrap_or(false);
+    if schedule_enabled {
+        tools.register(ScheduleCreateTool::new());
+        tools.register(ScheduleEditTool::new());
+        tools.register(ScheduleListTool::new());
+        tools.register(ScheduleViewTool::new());
+    }
+
     // Try to build the image generation client. Returns None when no image
     // providers are configured (the tool is simply not registered in that case).
     let mut image_client = build_image_client(config);
@@ -390,6 +412,18 @@ pub fn create_tools_from_config_with(
                 match tool_name.as_str() {
                     // System tools: already registered above; whitelist has no effect.
                     "read" | "load_skill" | "search_history" | "query_task" => {}
+                    "schedule_create" | "schedule_edit" | "schedule_list" | "schedule_view" => {
+                        // Schedule tools are system tools gated by
+                        // [app.schedule] enabled; listing them while disabled
+                        // is a config mistake worth surfacing.
+                        if !schedule_enabled {
+                            tracing::warn!(
+                                "schedule tool {} listed in enabled_tools but [app.schedule] \
+                                 enabled != true, skipping",
+                                tool_name
+                            );
+                        }
+                    }
                     "memorize" | "recall" | "forget" | "list_memories" => {
                         // Memory tools are system tools: registered above when
                         // memory_mode = "tools"; listing them in another mode is
@@ -752,6 +786,55 @@ mod tests {
         assert_eq!(missing_file_memory_tools(&["read", "edit"]), vec!["write"]);
         assert_eq!(missing_file_memory_tools(&["read", "write"]), vec!["edit"]);
         assert_eq!(missing_file_memory_tools(&["read"]), vec!["write", "edit"]);
+    }
+
+    const SCHEDULE_TOOL_NAMES: [&str; 4] =
+        ["schedule_create", "schedule_edit", "schedule_list", "schedule_view"];
+
+    fn config_with_schedule(enabled: Option<bool>) -> RobitConfig {
+        use robit_ai::config::ScheduleConfig;
+        RobitConfig {
+            default_model: None,
+            providers: HashMap::new(),
+            app: Some(AppConfig {
+                schedule: Some(ScheduleConfig {
+                    enabled,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            channels: None,
+            default_image_model: None,
+            image_providers: HashMap::new(),
+            default_vision_model: None,
+        }
+    }
+
+    #[test]
+    fn schedule_tools_not_registered_by_default() {
+        // Absent section and enabled=false both keep the surface unchanged.
+        for config in [
+            config_with_memory_mode(None),
+            config_with_schedule(None),
+            config_with_schedule(Some(false)),
+        ] {
+            let registry = registry_for(&config);
+            let names = registry.tool_names();
+            for tool in SCHEDULE_TOOL_NAMES {
+                assert!(!names.contains(&tool), "{} should be off by default", tool);
+            }
+        }
+    }
+
+    #[test]
+    fn schedule_tools_registered_when_enabled_despite_whitelist() {
+        let config = config_with_schedule(Some(true));
+        let registry = registry_for_with(&config, Some(&whitelist(&["read"])));
+        let names = registry.tool_names();
+        for tool in SCHEDULE_TOOL_NAMES {
+            assert!(names.contains(&tool), "missing {}", tool);
+        }
+        assert!(!names.contains(&"bash"));
     }
 
     /// Config with a valid main model (image support configurable) and an

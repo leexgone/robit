@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **计划任务（Scheduled Tasks）M1：核心 + Bot 接线**。新增 `robit-agent::schedule` 模块：SQLite 持久化（schema v8：`scheduled_tasks` + `task_runs` 审计）、三种触发器（once / interval / 标准 5 段 cron，任务级 IANA 时区）、宿主级 Scheduler 循环（事件驱动零空转、停机补触发 latest/skip、投递失败退避重试、认领事务 + 崩溃对账）。新增系统工具 `schedule_create` / `schedule_edit` / `schedule_list` / `schedule_view`（受 `[app.schedule] enabled` 门控，默认关闭；create/edit 需用户确认），经 `ToolContext.schedule` + `Agent::with_schedule` 注入（零签名变更）。`ChatbotManager` 接线：Scheduler 随 run 启停（先停调度再排水）、触发经 mpsc 回路复用 `inject_message`（档案 `source="scheduler"`）、`/schedule [list|pause|resume|delete]` 直管命令。任务归属沿用 `(source, namespace[, chat_id])` 会话隔离键，共库多前端/多实例互不串台。设计与实施注记见 `docs/robit-rfc-scheduled-tasks.md`。**不配置 `[app.schedule]` 时行为与旧版逐字节一致**。GUI/Web 接线（M2）与管理面板（M3）待后续版本；TUI 接线经评估取消（短命交互会话，价值场景在常驻 Bot，见 RFC §11 决策记录）。
+
 ## [0.6.0] - 2026-11-23
 
 Bot 忙碌状态信号（typing）统一抽象（chatbot 层）+ `PlatformCaps` 一次性破坏加固。设计见 `docs/robit-rfc-bot-typing-design.md`（W-D 终态、路径 B）。微信 typing 实际实现依赖上游 weixin-agent 0.4.0（[PR #4](https://github.com/SpenserCai/weixin-agent-sdk-rs/pull/4)），在 `feat/wechat-typing` 分支等待上游发版后合并，**不含在本版本**。
