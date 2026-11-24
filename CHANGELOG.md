@@ -8,9 +8,25 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-24
+
+计划任务（Scheduled Tasks）M1：核心调度 + Bot 接线。设计见 `docs/robit-rfc-scheduled-tasks.md`（含 §14 实施注记与 TUI 取消决策）。**不配置 `[app.schedule]` 时行为与 0.6.0 逐字节一致**；`Agent`/`ChatbotManager` 公共 API 零签名变更（`with_schedule` 为新增 builder 方法）。
+
 ### Added
 
-- **计划任务（Scheduled Tasks）M1：核心 + Bot 接线**。新增 `robit-agent::schedule` 模块：SQLite 持久化（schema v8：`scheduled_tasks` + `task_runs` 审计）、三种触发器（once / interval / 标准 5 段 cron，任务级 IANA 时区）、宿主级 Scheduler 循环（事件驱动零空转、停机补触发 latest/skip、投递失败退避重试、认领事务 + 崩溃对账）。新增系统工具 `schedule_create` / `schedule_edit` / `schedule_list` / `schedule_view`（受 `[app.schedule] enabled` 门控，默认关闭；create/edit 需用户确认），经 `ToolContext.schedule` + `Agent::with_schedule` 注入（零签名变更）。`ChatbotManager` 接线：Scheduler 随 run 启停（先停调度再排水）、触发经 mpsc 回路复用 `inject_message`（档案 `source="scheduler"`）、`/schedule [list|pause|resume|delete]` 直管命令。任务归属沿用 `(source, namespace[, chat_id])` 会话隔离键，共库多前端/多实例互不串台。设计与实施注记见 `docs/robit-rfc-scheduled-tasks.md`。**不配置 `[app.schedule]` 时行为与旧版逐字节一致**。GUI/Web 接线（M2）与管理面板（M3）待后续版本；TUI 接线经评估取消（短命交互会话，价值场景在常驻 Bot，见 RFC §11 决策记录）。
+- **robit-agent / `schedule` 模块**：SQLite 持久化（schema v8：`scheduled_tasks` + `task_runs` 审计，含 v7→v8 迁移）；三种触发器 `once` / `interval` / 标准 5 段 `cron`（任务级 IANA 时区，cron 星期映射适配层）；宿主级事件驱动 Scheduler（零任务零空转、停机补触发 `latest`/`skip`、投递失败退避重试 5s/30s/120s、认领事务 + 崩溃对账、shutdown 先停调度再排水）。
+- **robit-agent / 系统工具 `schedule_create` / `schedule_edit` / `schedule_list` / `schedule_view`**：受 `[app.schedule] enabled` 门控（默认关闭），不受 `enabled_tools` 白名单影响；create/edit 需用户确认；经 `ToolContext.schedule` + `Agent::with_schedule` 注入（零签名变更）。乐观并发令牌 `expected_updated_at`（毫秒精度 + 逐行单调）。
+- **robit-ai / `[app.schedule]` 配置节**：`enabled` / `missed_policy` / `min_interval_secs` / `max_active_tasks` / `delivery_retries`，全部可选；任何前端（含 TUI）加载含该节的配置均正常启动（配置兼容回归测试）。
+- **robit-chatbot / Bot 接线**：Scheduler 随 `ChatbotManager::run` 启停；触发经 mpsc 回路复用 `inject_message`（档案 `source="scheduler"`，绕过斜杠解析，正常工具确认流程）；`/schedule [list|pause|resume|delete <id前缀>]` 直管命令 + `/help` 更新。任务归属沿用 `(source, namespace[, chat_id])` 会话隔离键，共库多前端/多实例互不串台、不重复触发。
+- **robit-tui / 配置兼容提示**：TUI 不做调度（短命交互会话，价值场景在常驻 Bot，用户拍板）；检测到 `[app.schedule] enabled = true` 时启动显示系统提示，任务不会在 TUI 触发。
+
+### 依赖
+
+- 新增 `cron` 0.15、`chrono` 0.4、`chrono-tz` 0.10（workspace 登记，robit-agent 使用；robit-chatbot 引 chrono）。
+
+### 后续
+
+- GUI/Web 接线（M2）与管理面板、`new_session` 目标（M3）待后续版本；TUI 接线已取消。
 
 ## [0.6.0] - 2026-11-23
 
