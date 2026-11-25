@@ -36,15 +36,21 @@ pub enum LockError {
         username: String,
         started_at: String,
     },
-    /// IO 错误
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    /// IO 错误（携带具体操作与路径：Windows 的 os error 5/32/33 在不同
+    /// API 上含义不同，不带上下文根本无从判断是哪一步被拒绝）
+    #[error("I/O error while {action} {path}: {source}")]
+    Io {
+        /// 失败的操作（如 "opening lock file"）
+        action: &'static str,
+        /// 涉及的路径
+        path: PathBuf,
+        /// 底层 IO 错误
+        #[source]
+        source: std::io::Error,
+    },
     /// 序列化/反序列化错误
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
-    /// 无法创建 .robit 目录
-    #[error("Failed to create .robit directory: {0}")]
-    CreateDir(std::io::Error),
 }
 
 /// 文件锁守护对象，RAII 模式，析构时自动释放锁
@@ -73,7 +79,7 @@ impl DirectoryLock {
         if !robit_dir.exists() {
             tracing::debug!("Creating .robit directory at: {}", robit_dir.display());
             std::fs::create_dir_all(&robit_dir)
-                .map_err(LockError::CreateDir)?;
+                .map_err(|e| Self::io_err("creating directory", &robit_dir, e))?;
         }
 
         // 获取当前用户名
@@ -113,6 +119,16 @@ impl DirectoryLock {
         }
     }
 
+    /// 把所有 IO 错误补上“正在做什么 + 哪个路径”，否则 Windows 上只会看到
+    /// 一句 “os error 5”，无法判断是准备目录、打开锁文件还是写锁文件失败。
+    fn io_err(action: &'static str, path: &Path, source: std::io::Error) -> LockError {
+        LockError::Io {
+            action,
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+
     /// 尝试获取锁（单次尝试）
     fn try_acquire(lock_path: &Path, info: &LockInfo) -> Result<Self, LockError> {
         // 打开或创建锁文件
@@ -120,17 +136,23 @@ impl DirectoryLock {
             .read(true)
             .write(true)
             .create(true)
-            .open(lock_path)?;
+            .truncate(false)
+            .open(lock_path)
+            .map_err(|e| Self::io_err("opening lock file", lock_path, e))?;
 
         // 尝试获取排他锁（非阻塞）
         match file.try_lock_exclusive() {
             Ok(_) => {
                 // 获取锁成功，写入信息
-                file.set_len(0)?;
-                file.seek(SeekFrom::Start(0))?;
+                file.set_len(0)
+                    .map_err(|e| Self::io_err("truncating lock file", lock_path, e))?;
+                file.seek(SeekFrom::Start(0))
+                    .map_err(|e| Self::io_err("seeking in lock file", lock_path, e))?;
                 serde_json::to_writer_pretty(&mut file, info)?;
-                file.flush()?;
-                file.sync_data()?;
+                file.flush()
+                    .map_err(|e| Self::io_err("writing lock info to", lock_path, e))?;
+                file.sync_data()
+                    .map_err(|e| Self::io_err("flushing lock file", lock_path, e))?;
 
                 tracing::info!("Acquired directory lock at: {}", lock_path.display());
                 tracing::debug!("Lock info: {:?}", info);
@@ -144,8 +166,10 @@ impl DirectoryLock {
             Err(_) => {
                 // 获取锁失败，读取现有锁信息
                 let mut content = String::new();
-                file.seek(SeekFrom::Start(0))?;
-                file.read_to_string(&mut content)?;
+                file.seek(SeekFrom::Start(0))
+                    .map_err(|e| Self::io_err("seeking in lock file", lock_path, e))?;
+                file.read_to_string(&mut content)
+                    .map_err(|e| Self::io_err("reading lock file", lock_path, e))?;
 
                 let existing_info: LockInfo = match serde_json::from_str(&content) {
                     Ok(info) => info,

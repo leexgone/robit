@@ -48,7 +48,7 @@ fn main() {
     let lock = match robit_agent::DirectoryLock::acquire(&working_dir, "robit-gui") {
         Ok(lock) => lock,
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("无法锁定工作目录 {}：{e}", working_dir.display());
             std::process::exit(1);
         }
     };

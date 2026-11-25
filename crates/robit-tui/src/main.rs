@@ -44,6 +44,33 @@ struct Cli {
     workdir: Option<std::path::PathBuf>,
 }
 
+/// 终端初始化失败的统一报错：保留底层 io::Error（便于看到 os error 码），
+/// 同时给出可操作的排查方向。
+fn terminal_init_error(step: &str, err: io::Error) -> anyhow::Error {
+    let hint = if err.raw_os_error() == Some(5) {
+        "（Windows 上通常是当前控制台不可用：旧版 conhost 的窗口/缓冲区尺寸或字体设置异常、\
+ 当前进程没有可用的控制台，或被安全软件拦截。请换一个新的终端窗口重试，或重置\
+ HKCU\\Console 下的 WindowSize/ScreenBufferSize）"
+    } else {
+        ""
+    };
+    anyhow::anyhow!("{step}失败：{err}{hint}")
+}
+
+/// `enable_raw_mode` 失败时的报错：绝大多数是终端不支持/不可用，而非程序缺陷。
+fn raw_mode_error(err: io::Error) -> anyhow::Error {
+    if err.raw_os_error() == Some(5) {
+        return anyhow::anyhow!(
+            "无法切换到 raw 模式：{err}。当前控制台拒绝了控制台模式设置，常见原因：\
+1) 正在使用旧版 Windows 控制台（conhost），其窗口/缓冲区尺寸或字体配置异常；\
+2) 进程没有可用的控制台（stdio 被重定向到管道/文件且没有终端）；\
+3) 终端或安全软件禁止该操作。建议改用 Windows Terminal 并新开一个窗口重试；\
+若必须在旧控制台运行，可重置 HKCU\\Console 下的 WindowSize、ScreenBufferSize"
+        );
+    }
+    anyhow::anyhow!("无法切换到 raw 模式：{err}（当前终端可能不是交互式 TTY）")
+}
+
 fn main() -> Result<()> {
     // Parse CLI args first
     let cli = Cli::parse();
@@ -65,7 +92,7 @@ fn main() -> Result<()> {
     let _lock = match robit_agent::DirectoryLock::acquire(&working_dir, "robit-tui") {
         Ok(lock) => lock,
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("无法锁定工作目录 {}：{e}", working_dir.display());
             std::process::exit(1);
         }
     };
@@ -124,10 +151,16 @@ fn main() -> Result<()> {
     );
 
     // Setup terminal
-    enable_raw_mode()?;
+    // 终端初始化失败时，原始 io::Error 只会显示成 “拒绝访问。 (os error 5)”，
+    // 看不出是哪一步、也无法对症处理，这里逐个补上下文。
+    enable_raw_mode().map_err(raw_mode_error)?;
     let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    stdout.execute(EnableMouseCapture)?;
+    stdout
+        .execute(EnterAlternateScreen)
+        .map_err(|e| terminal_init_error("进入备用屏幕", e))?;
+    stdout
+        .execute(EnableMouseCapture)
+        .map_err(|e| terminal_init_error("启用鼠标捕获", e))?;
     // Raw mode / alternate screen can leave the cursor steady; explicitly
     // re-enable blinking. Two sequences for coverage:
     //   - DECSET 12 keeps the user's cursor shape on terminals that honor it
@@ -139,7 +172,8 @@ fn main() -> Result<()> {
     stdout.execute(EnableBlinking)?;
     stdout.execute(SetCursorStyle::BlinkingBlock)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(backend)
+        .map_err(|e| terminal_init_error("初始化终端尺寸", e))?;
 
     // Panic hook: restore terminal on panic
     let original_hook = std::panic::take_hook();
