@@ -8,8 +8,13 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-25
+
+计划任务 M2/M3（GUI/Web 接线 + GUI 管理面板）与 LLM 请求挂起修复。**不配置 `[app.schedule]` 时计划任务行为与 0.7.0 一致**；LLM 调用默认获得超时 + 重试保护（见 Fixed），`[app.retry]` 配置节自此真正生效。
+
 ### Added
 
+- **计划任务 M2：GUI / Web 接线**（TUI 已取消，见 RFC §11 决策）。核心新增 `FrontendMessage::ScheduledInput`（绕过斜杠/技能解析的调度注入回合）与 `AgentEvent::ScheduledTaskFired`（触发提示，additive）；`Agent::with_schedule` 同时向系统提示词追加计划任务纪律段（幂等）。GUI：`AppState` 改 `Arc` 共享，`[app.schedule] enabled` 时 Tauri setup 启动宿主 Scheduler（`RunEvent::Exit` 取消），投递经 `AppState.agents` 会话注册表路由、关闭会话自动从库复活，注入回合档案 `source="scheduler"`；React 侧触发提示 + 消息刷新 + 计划任务消息徽章（⏰）。Web：`WebBridge::send_scheduled_input` / `schedule_delivery()`（`ScheduleDelivery` 适配器）+ `scheduled_task_fired` wire 帧（protocol.md 已登记，golden 测试）。不配置 `[app.schedule]` 时行为与 0.7.0 一致。
 - **计划任务 M3：GUI 管理面板**。StatusBar 新增闹钟按钮，点击打开右侧抽屉面板：任务列表（标题/触发器/状态/下次触发）、展开查看详情（提示词/运行历史/时区/ID）、暂停/恢复/删除操作、刷新按钮。Tauri commands：`list_scheduled_tasks` / `get_scheduled_task` / `pause_scheduled_task` / `resume_scheduled_task` / `delete_scheduled_task`。创建仍走 LLM 对话（`schedule_create` 工具）。不配置 `[app.schedule] enabled = true` 时面板显示"未启用"提示。
 
 ### Fixed
@@ -19,6 +24,7 @@
   - **robit-agent / 调用层超时**：`run_one_step` 中流创建包 60s 首包超时、每个 SSE chunk 包 90s 空闲超时（`RetrySettings` 可配），超时转为新增的 `LlmError::Timeout` 走既有 `AgentEvent::Error` 路径通知用户并释放循环。
   - **robit-agent / `[app.retry]` 真正生效**：此前该配置节只被解析从未使用。新增 `robit_agent::retry` 模块（`RetrySettings` / `retry_backoff`），瞬时错误（超时/连接失败/5xx/408/429/网关 502-504，见 `LlmError::is_retryable`）按指数退避重试（默认 3 次，1s→30s 封顶）；**已有内容流式输出后不再重试**（避免用户侧重复文本）；重试耗尽后报错结束本轮，排队消息得以继续处理。四个宿主（chatbot/TUI/GUI/example）经新增 builder `Agent::with_retry_settings` 接线配置，未配置时用文档默认值。
   - 错误分类增强：`LlmError::from_reqwest_error`（超时/连接区分）、typed 路径 mid-stream `Transport error:` 字符串还原分类、SSE 旁路 mid-stream 超时归类为可重试。
+- **锁与终端初始化失败输出可定位的错误上下文**。`LockError::Io` 携带 action + path + source（原 `CreateDir` 变体并入 `Io`），`try_acquire` 各调用点补齐上下文（打开/截断/seek/flush 锁文件、写锁信息等）；robit-tui/gui/qq/wechat 锁失败提示统一为"无法锁定工作目录 <workdir>：<原因>"；TUI 终端初始化（raw mode/备用屏幕/鼠标捕获/Terminal::new）逐步补上下文，os error 5 附带 Windows 侧排查方向。
 
 ## [0.7.0] - 2026-11-24
 
