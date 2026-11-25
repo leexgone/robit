@@ -146,6 +146,21 @@ struct PendingTask {
     tool_name: String,
 }
 
+/// Schedule discipline appended to the system prompt by [`Agent::with_schedule`].
+const SCHEDULE_PROMPT_SECTION: &str = "\
+## Scheduled tasks (计划任务)
+The schedule_create / schedule_edit / schedule_list / schedule_view tools manage \
+scheduled tasks that deliver a prompt to this session at configured times.
+- Only create a task when the user EXPLICITLY asks for a reminder, a timed action, \
+or a recurring job. Never register tasks on your own initiative from things the \
+user merely mentioned.
+- Task prompts must be self-contained: at fire time there is no fresh conversation \
+context to rely on.
+- A message starting with [计划任务…触发] is a scheduled task firing, not the user \
+typing; execute its instruction and report results normally.
+- Before editing, read the task with schedule_view and pass its updated_at as \
+expected_updated_at; on conflict, re-read and retry.";
+
 impl Agent {
     /// Create a new Agent with the given dependencies.
     pub fn new(
@@ -209,8 +224,25 @@ impl Agent {
     /// with a context bound to the current session/chat. Without it the
     /// `schedule_*` tools (even if registered) report the feature as
     /// unavailable.
+    ///
+    /// Also appends the schedule discipline section to the system prompt
+    /// (M2; idempotent) — the creation gate's prompt-side half.
     pub fn with_schedule(mut self, ctx: crate::schedule::ScheduleContext) -> Self {
         self.schedule = Some(ctx);
+        const MARKER: &str = "## Scheduled tasks (计划任务)";
+        for session in self.sessions.values_mut() {
+            if let Some(ChatCompletionRequestMessage::System(sys)) = session.history.first_mut() {
+                if let async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(
+                    text,
+                ) = &mut sys.content
+                {
+                    if !text.contains(MARKER) {
+                        text.push_str("\n\n");
+                        text.push_str(SCHEDULE_PROMPT_SECTION);
+                    }
+                }
+            }
+        }
         self
     }
 
@@ -439,6 +471,15 @@ impl Agent {
                         }
                         FrontendMessage::CancelTask { task_id } => {
                             self.handle_cancel_task(&task_id).await;
+                        }
+                        FrontendMessage::ScheduledInput { task_id, title, text } => {
+                            // Scheduler-origin turn: no slash/skill parsing —
+                            // the wrapped prompt reaches the model verbatim.
+                            let _ = self
+                                .frontend
+                                .on_event(AgentEvent::ScheduledTaskFired { task_id, title })
+                                .await;
+                            self.run_turn(&text, vec![]).await;
                         }
                         FrontendMessage::ConfirmationResponse { .. } => {
                             // Confirmation is handled via frontend.request_tool_confirmation()
@@ -2032,6 +2073,37 @@ mod tests {
             },
             None,
         )
+    }
+
+    /// M2: with_schedule appends the discipline section to the system prompt
+    /// exactly once, even when called twice.
+    #[test]
+    fn with_schedule_appends_prompt_section_idempotently() {
+        let ctx = crate::schedule::ScheduleContext {
+            store: crate::schedule::ScheduleStore::open_in_memory().unwrap(),
+            wake: Arc::new(tokio::sync::Notify::new()),
+            settings: crate::schedule::ScheduleSettings::default(),
+            binding: crate::schedule::ScheduleBinding {
+                source: "gui".into(),
+                namespace: String::new(),
+                session_id: "s".into(),
+                chat_id: None,
+            },
+        };
+        let agent = agent_with(text_llm_client())
+            .with_schedule(ctx.clone())
+            .with_schedule(ctx);
+        let session = agent.sessions.get(&agent.default_session_id).unwrap();
+        match &session.history[0] {
+            ChatCompletionRequestMessage::System(sys) => match &sys.content {
+                async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(t) => {
+                    assert_eq!(t.matches("## Scheduled tasks (计划任务)").count(), 1);
+                    assert!(t.contains("EXPLICITLY"));
+                }
+                _ => panic!("expected text system content"),
+            },
+            _ => panic!("expected system message first"),
+        }
     }
 
     fn att(content_type: &str, filename: Option<&str>, url: &str, local: Option<PathBuf>) -> MediaAttachment {

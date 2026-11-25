@@ -8,6 +8,7 @@ mod config;
 mod db;
 mod events;
 mod frontend;
+mod schedule;
 mod state;
 
 use std::sync::Arc;
@@ -65,10 +66,25 @@ fn main() {
 
     let app_state = AppState::new(client, config, cli.workdir, cli.global_storage)
         .expect("Failed to initialize app state");
+    let app_state = Arc::new(app_state);
+
+    // Scheduler shutdown token: cancelled on RunEvent::Exit (the only
+    // reliable cleanup point — Tauri skips destructors).
+    let sched_shutdown = tokio_util::sync::CancellationToken::new();
+    let sched_for_setup = sched_shutdown.clone();
+    let sched_for_exit = sched_shutdown.clone();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(app_state)
+        .manage(Arc::clone(&app_state))
+        .setup(move |app| {
+            use tauri::Manager;
+            let state = app.state::<Arc<AppState>>().inner().clone();
+            // spawn_scheduler returns Some(()) when enabled, None when off.
+            // The scheduler task is detached; the shutdown token stops it on Exit.
+            schedule::spawn_scheduler(state, app.handle().clone(), sched_for_setup.clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::create_session,
             commands::list_sessions,
@@ -89,7 +105,8 @@ fn main() {
         // RunEvent::Exit fires before the process terminates — the only
         // reliable place to run cleanup, since destructors are skipped.
         if let tauri::RunEvent::Exit = event {
-            tracing::info!("Application exiting, releasing directory lock");
+            tracing::info!("Application exiting, stopping scheduler and releasing directory lock");
+            sched_for_exit.cancel();
             if let Ok(mut guard) = lock_for_exit.lock() {
                 // Take the lock out and drop it: DirectoryLock's Drop
                 // unlocks the file handle and deletes the LOCK file.

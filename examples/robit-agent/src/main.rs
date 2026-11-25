@@ -262,6 +262,9 @@ fn render_event(event: &AgentEvent) {
                 task_id, tool_call_id, result.is_error
             );
         }
+        AgentEvent::ScheduledTaskFired { task_id, title } => {
+            println!("\n[Scheduled task fired] {} (id={})", title, task_id);
+        }
     }
 }
 

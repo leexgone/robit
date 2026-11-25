@@ -3,4 +3,5 @@ pub mod config;
 pub mod db;
 pub mod events;
 pub mod frontend;
+pub mod schedule;
 pub mod state;

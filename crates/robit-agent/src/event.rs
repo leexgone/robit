@@ -129,6 +129,12 @@ pub enum AgentEvent {
         tool_call_id: String,
         result: ToolResult,
     },
+
+    /// A scheduled task fired and its wrapped prompt is being delivered as a
+    /// user turn (计划任务 RFC). Frontends may render a system notice; the
+    /// turn itself streams via the usual TextDelta/ToolCall events. Frontends
+    /// without schedule support may safely ignore this event.
+    ScheduledTaskFired { task_id: String, title: String },
 }
 
 /// Messages sent from Frontend to Agent.
@@ -151,6 +157,17 @@ pub enum FrontendMessage {
 
     /// User requested cancellation of a specific async background task.
     CancelTask { task_id: String },
+
+    /// A scheduled task fired: deliver `text` (already wrapped with the
+    /// scheduler-origin header by the delivery side) as a user turn. Unlike
+    /// `UserInput` this bypasses slash-command and skill-trigger parsing —
+    /// the text reaches the model verbatim (same discipline as the Bot
+    /// `inject_message` path). Archive rows should carry source="scheduler".
+    ScheduledInput {
+        task_id: String,
+        title: String,
+        text: String,
+    },
 }
 
 // Keep backward compatibility: from String to UserInput with no attachments.

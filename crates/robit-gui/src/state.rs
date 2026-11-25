@@ -20,6 +20,16 @@ use crate::db;
 use crate::events::{ConfigInfo, SessionInfo};
 use crate::frontend::GuiFrontend;
 
+/// Shared scheduled-task handle (store + wake + resolved settings), present
+/// only when `[app.schedule] enabled = true`. Cloned into every session's
+/// `ScheduleContext` and into the host-level scheduler loop.
+#[derive(Clone)]
+pub struct ScheduleShared {
+    pub store: robit_agent::schedule::ScheduleStore,
+    pub wake: Arc<tokio::sync::Notify>,
+    pub settings: robit_agent::schedule::ScheduleSettings,
+}
+
 fn resolve_working_dir(working_dir: Option<PathBuf>) -> Result<PathBuf, String> {
     match working_dir {
         Some(path) => {
@@ -109,6 +119,9 @@ pub struct AppState {
 
     /// Pending tool confirmation responders, keyed by "session_id:tool_call_id".
     pub confirmations: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+
+    /// Scheduled-task handle (`[app.schedule]`); `None` = feature off.
+    pub schedule: Option<ScheduleShared>,
 }
 
 impl AppState {
@@ -168,6 +181,21 @@ impl AppState {
         let tool_registry = bootstrap_result.tool_registry;
         let total_skills = bootstrap_result.total_skills_loaded;
 
+        // Scheduled tasks: second connection to the same DB (memory-tool
+        // pattern), only when the feature is enabled.
+        let schedule_settings = robit_agent::schedule::ScheduleSettings::from_config(&config);
+        let schedule = if schedule_settings.enabled {
+            let store = robit_agent::schedule::ScheduleStore::open(&db_path)
+                .map_err(|e| format!("Failed to open schedule store: {}", e))?;
+            Some(ScheduleShared {
+                store,
+                wake: Arc::new(tokio::sync::Notify::new()),
+                settings: schedule_settings,
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             db,
             llm_client,
@@ -182,6 +210,7 @@ impl AppState {
             context_config,
             context_window,
             confirmations: Arc::new(Mutex::new(HashMap::new())),
+            schedule,
         })
     }
 
@@ -276,6 +305,22 @@ impl AppState {
             memory,
             None,
         );
+        // Attach the scheduled-task handle bound to this session so the
+        // schedule_* tools create tasks owned by (source="gui", session_id).
+        let agent = match &self.schedule {
+            Some(shared) => agent.with_schedule(robit_agent::schedule::ScheduleContext {
+                store: shared.store.clone(),
+                wake: Arc::clone(&shared.wake),
+                settings: shared.settings.clone(),
+                binding: robit_agent::schedule::ScheduleBinding {
+                    source: "gui".to_string(),
+                    namespace: String::new(),
+                    session_id: session_id.to_string(),
+                    chat_id: None,
+                },
+            }),
+            None => agent,
+        };
 
         let cancel_token = CancellationToken::new();
         let sid = session_id.to_string();

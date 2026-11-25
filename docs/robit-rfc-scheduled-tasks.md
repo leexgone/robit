@@ -1,6 +1,6 @@
 # RFC：智能体计划任务（Scheduled Tasks）
 
-- 状态：M1 已实现（核心 + Bot）；M2/M3 待启动
+- 状态：M1 + M2 已实现（核心 + Bot + GUI + Web）；M3 待启动
 - 日期：2026-11-24
 - 涉及 crate：`robit-agent`（核心）、`robit-chatbot`（首个接线前端）、`robit-gui` / `robit-tui` / `robit-web`（后续接线）
 
@@ -322,9 +322,9 @@ delivery_retries = 3       # 投递失败重试次数（退避 5s/30s/120s）
 | 前端 | Scheduler 宿主 | Delivery 实现 | 里程碑 |
 | --- | --- | --- | --- |
 | `robit-chatbot`（QQ/微信） | `ChatbotManager::run` 旁 spawn（与 cleanup_loop 并列，共享 shutdown） | `inject_message(chat_id, wrapped, "scheduler")` | **M1（首个消费者）** |
-| `robit-gui` | App 级单例（多会话共享） | 按 session_id 路由到对应 Agent 的 message_tx，发 `ScheduledInput`；会话已关闭则从库复活或记 failed | M2 |
+| `robit-gui` | Tauri setup 启动，`RunEvent::Exit` 取消 | `AppState.agents` 注册表路由 `ScheduledInput`；会话关闭从库复活一次 | M2 ✅ |
 | `robit-tui` | — | **不做**（2026-11-24 用户拍板：短命交互会话，价值场景在常驻 Bot） | 取消 |
-| `robit-web` | 宿主自便（桥基座不内置 HTTP/调度生命周期） | `WebBridge::send_message(ScheduledInput)`；robit-web 只导出适配 helper | M2 |
+| `robit-web` | 宿主自便（桥基座不内置 HTTP/调度生命周期） | `WebBridge::schedule_delivery()` / `send_scheduled_input` | M2 ✅ |
 
 Bot 选为首个消费者的理由：常驻进程（Ubuntu 部署）+ 注入 API 现成 + 提醒/日报是最强需求场景；且 M1 对 agent 核心的侵入最小（ToolContext 一个字段 + 四个工具 + schedule 模块，`FrontendMessage` 变体可延后到 M2）。
 
@@ -347,13 +347,14 @@ Bot 选为首个消费者的理由：常驻进程（Ubuntu 部署）+ 注入 API
 - 测试：迁移链（v7→v8、旧库直升）、触发器求值（cron/interval/once、DST、时区）、missed policy、归属隔离、乐观并发、配额校验、inject 端到端（复用 manager 现有测试基建）、**关停与崩溃对账**（优雅关停不再认领、claimed 残留行启动补触发/跳过、认领事务原子性）。
 - 验收：QQ 群里「每天 9 点发日报」→ 重启进程 → 次日准时收到，档案行 source="scheduler"；停机一晚 → 只补最近一次。
 
-### M2：GUI / Web 接线（TUI 已评估不做）
+### M2：GUI / Web 接线（TUI 已评估不做）——已实现
 
 > **决策（2026-11-24，用户拍板）**：TUI 支持计划任务意义不大——TUI 是短命交互式会话，调度只在窗口开着时运行，用户本就坐在终端前，提醒/周期任务的价值场景在常驻 Bot。**TUI 接线取消**；M2 收窄为 GUI / Web 按需接线。
 
-- `FrontendMessage::ScheduledInput` + `AgentEvent::ScheduledTaskFired` + run() 分支 + GUI 落库 with_source（届时各前端 exhaustive match 同步加臂）。
-- GUI 宿主 Scheduler + 会话路由投递；GUI 渲染触发提示条。
-- robit-web 导出投递 helper + 协议文档补 `scheduled_input` 帧说明。
+- [x] `FrontendMessage::ScheduledInput` + `AgentEvent::ScheduledTaskFired` + run() 分支 + GUI 落库 with_source（各前端 exhaustive match 同步加臂）。
+- [x] GUI 宿主 Scheduler + 会话路由投递；GUI 渲染触发提示条。
+- [x] robit-web 导出投递 helper + 协议文档补 `scheduled_task_fired` 帧说明。
+- [x] 系统提示词 schedule 段（经 `Agent::with_schedule` 幂等追加，M1 注 5 的遗留项）。
 
 ### M3：管理体验与 new_session
 
@@ -389,3 +390,11 @@ Bot 选为首个消费者的理由：常驻进程（Ubuntu 部署）+ 注入 API
 4. **Bot 投递走 mpsc 回路**：Scheduler 的 BotDelivery 把触发事件发回 `ChatbotManager::run` 循环，由循环调 `inject_message`——避免 `Arc<Self>` 重构，且注入与平台消息天然串行。关停顺序：先 cancel 调度器 token（2s 宽限 await）再 `drain_agents`。
 5. **提示词纪律 M1 仅落在工具 description**（系统提示词 schedule 段留待 M2，避免 Agent 构造期签名改动）；工具确认弹窗为第二道闸，不变。
 6. **`/schedule` 命令**：list / pause / resume / delete，id 前缀匹配（多匹配拒绝），与工具共用 Store 与归属隔离。
+
+## 15. M2 实施注记
+
+1. **GUI 会话注册表现成**：RFC §13 预警的「路由表收敛重构」实际不需要——`AppState.agents: Mutex<HashMap<SessionId, AgentHandle>>` 本就是可查询注册表；只需把 `AppState` 改为 `Arc` 共享（Tauri `manage(Arc<AppState>)`，命令签名 `State<Arc<AppState>>`），调度投递即可持 `Arc<AppState>` 跨任务访问。
+2. **GUI 投递自愈**：目标会话不在注册表或通道已死 → `spawn_agent` 从库复活一次再投；会话已从 DB 删除 → 记 failed（不复活幽灵会话）。档案先落库（`source="scheduler"`）再注入，与 `send_message` 同纪律。
+3. **系统提示词纪律段**：不经 `PromptBuilder` 模板（避免构造期签名改动），由 `Agent::with_schedule` 向各会话首条系统消息幂等追加 `## Scheduled tasks (计划任务)` 段。
+4. **GUI 关停**：`RunEvent::Exit` 取消调度 token（Tauri 跳过析构，Exit 是唯一可靠清理点）；未落定的 claimed run 由下次启动对账。
+5. **Web 帧命名**：wire 帧为 `scheduled_task_fired`（事件投影）；注入方向是 `FrontendMessage::ScheduledInput`（宿主→Agent，不上 wire）。

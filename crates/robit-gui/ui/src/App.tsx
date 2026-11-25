@@ -4,7 +4,7 @@ import { StatusBar } from "@/components/StatusBar";
 import { SessionSidebar } from "@/components/SessionSidebar";
 import { ChatPanel } from "@/components/ChatPanel";
 import { useStore } from "@/lib/store";
-import { listSessions, getConfig } from "@/lib/commands";
+import { listSessions, getConfig, getMessages } from "@/lib/commands";
 import type { UiEvent, MessageData, ToolCallInfo } from "@/lib/types";
 
 function App() {
@@ -129,6 +129,24 @@ function App() {
         case "SessionRenamed":
           updateSessionTitle(payload.session_id, payload.title);
           break;
+
+        case "ScheduledTaskFired": {
+          // Show a notice, then refresh from the DB so the archived
+          // scheduler-origin user row (source="scheduler") becomes visible;
+          // the turn's reply streams in via the usual deltas afterwards.
+          const notice: MessageData = {
+            id: Date.now(),
+            role: "system",
+            content: `⏰ 计划任务「${payload.title}」触发 (id=${payload.task_id})`,
+            created_at: new Date().toISOString(),
+          };
+          const curMsgs = useStore.getState().messages[sid] || [];
+          setMessages(sid, [...curMsgs, notice]);
+          getMessages(sid)
+            .then((msgs) => setMessages(sid, msgs))
+            .catch((e) => console.error("Failed to refresh messages after schedule fire:", e));
+          break;
+        }
       }
     });
 

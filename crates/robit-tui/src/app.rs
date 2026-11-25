@@ -196,6 +196,8 @@ impl App {
                 // panel is future work; for now the fields are just dropped.
                 let _ = (task_id, tool_call_id, result);
             }
+            // TUI 不运行调度器（RFC §11 决策），此事件不会到达；静默忽略。
+            AgentEvent::ScheduledTaskFired { .. } => {}
         }
     }
 

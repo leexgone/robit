@@ -48,6 +48,11 @@ pub enum WebEvent {
         is_error: bool,
     },
 
+    /// A scheduled task fired; its wrapped prompt is being delivered as a user
+    /// turn (计划任务 RFC). Additive frame — clients that only recognize known
+    /// types can safely ignore it; the turn streams via the usual frames.
+    ScheduledTaskFired { task_id: String, title: String },
+
     /// A tool call needs user confirmation. The agent task is suspended until
     /// the host calls `WebBridge::resolve_confirm` with this `tool_call_id`.
     ConfirmRequest {
@@ -95,6 +100,10 @@ impl WebEvent {
                 task_id: task_id.clone(),
                 tool_call_id: tool_call_id.clone(),
                 is_error: result.is_error,
+            },
+            AgentEvent::ScheduledTaskFired { task_id, title } => WebEvent::ScheduledTaskFired {
+                task_id: task_id.clone(),
+                title: title.clone(),
             },
             AgentEvent::TurnComplete => WebEvent::TurnComplete,
             AgentEvent::Error(e) => WebEvent::Error {
@@ -172,6 +181,13 @@ mod tests {
                     result: ToolResult::error("boom"),
                 },
                 json!({"type": "async_tool_completed", "task_id": "t1", "tool_call_id": "tc1", "is_error": true}),
+            ),
+            (
+                AgentEvent::ScheduledTaskFired {
+                    task_id: "st1".into(),
+                    title: "每日日报".into(),
+                },
+                json!({"type": "scheduled_task_fired", "task_id": "st1", "title": "每日日报"}),
             ),
             (
                 AgentEvent::TurnComplete,

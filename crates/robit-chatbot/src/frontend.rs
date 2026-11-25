@@ -567,6 +567,14 @@ impl Frontend for ChatbotFrontend {
                     self.chat_id, task_id, tool_call_id, result.is_error
                 );
             }
+            AgentEvent::ScheduledTaskFired { task_id, title } => {
+                // Silent: the injected turn's reply is delivered via TextDelta
+                // as usual. Traced so fires are observable in logs.
+                tracing::trace!(
+                    "[chatbot] ScheduledTaskFired: chat_id='{}', task_id='{}', title='{}'",
+                    self.chat_id, task_id, title
+                );
+            }
         }
         Ok(())
     }

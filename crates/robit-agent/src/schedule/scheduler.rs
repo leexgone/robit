@@ -66,6 +66,20 @@ impl Scheduler {
             run_loop(store, owner, settings, wake, delivery, shutdown).await;
         })
     }
+
+    /// Run the scheduler loop directly (for hosts that manage their own async
+    /// runtime, e.g. Tauri's `async_runtime::spawn`). Returns when `shutdown`
+    /// is cancelled.
+    pub async fn run(
+        store: ScheduleStore,
+        owner: Owner,
+        settings: ScheduleSettings,
+        wake: Arc<Notify>,
+        delivery: Arc<dyn ScheduleDelivery>,
+        shutdown: CancellationToken,
+    ) {
+        run_loop(store, owner, settings, wake, delivery, shutdown).await;
+    }
 }
 
 async fn run_loop(

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use base64::Engine;
 use robit_agent::event::{FrontendMessage, new_session_id};
@@ -40,7 +41,7 @@ mod tests {
 #[tauri::command]
 pub async fn create_session(
     app_handle: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     model: String,
 ) -> Result<SessionInfo, String> {
     let session_id = new_session_id();
@@ -83,7 +84,7 @@ pub async fn create_session(
 /// List all active sessions.
 #[tauri::command]
 pub async fn list_sessions(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<SessionInfo>, String> {
     state.session_list().await
 }
@@ -92,7 +93,7 @@ pub async fn list_sessions(
 #[tauri::command]
 pub async fn switch_session(
     app_handle: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<MessageData>, String> {
     // Ensure Agent exists for this session (create if not)
@@ -122,7 +123,7 @@ pub async fn switch_session(
 #[tauri::command]
 pub async fn send_message(
     app_handle: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
     content: String,
 ) -> Result<(), String> {
@@ -174,7 +175,7 @@ pub async fn send_message(
 /// Cancel the running Agent in a session.
 #[tauri::command]
 pub async fn cancel(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<(), String> {
     let agents = state.agents.lock().await;
@@ -187,7 +188,7 @@ pub async fn cancel(
 /// Soft-delete a session.
 #[tauri::command]
 pub async fn delete_session(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<(), String> {
     // Cancel agent if running
@@ -226,7 +227,7 @@ pub async fn delete_session(
 /// Rename a session.
 #[tauri::command]
 pub async fn rename_session(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
     title: String,
 ) -> Result<(), String> {
@@ -238,7 +239,7 @@ pub async fn rename_session(
 /// Get messages for a session.
 #[tauri::command]
 pub async fn get_messages(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<MessageData>, String> {
     let db = state.db.lock().await;
@@ -248,7 +249,7 @@ pub async fn get_messages(
 /// Respond to a tool confirmation request.
 #[tauri::command]
 pub async fn confirm_tool(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
     tool_call_id: String,
     approved: bool,
@@ -264,7 +265,7 @@ pub async fn confirm_tool(
 /// Get non-sensitive configuration for the frontend.
 #[tauri::command]
 pub async fn get_config(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
 ) -> Result<ConfigInfo, String> {
     Ok(state.config_info())
 }
@@ -273,7 +274,7 @@ pub async fn get_config(
 /// `image_path` is the relative path from the working directory (e.g. "images/foo.png").
 #[tauri::command]
 pub async fn read_image_file(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     image_path: String,
 ) -> Result<String, String> {
     // Reject path traversal attempts

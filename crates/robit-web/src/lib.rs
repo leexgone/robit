@@ -36,5 +36,5 @@
 pub mod bridge;
 pub mod event;
 
-pub use bridge::{FrontendGone, PendingConfirm, WebBridge, WebFrontend};
+pub use bridge::{FrontendGone, PendingConfirm, WebBridge, WebFrontend, WebScheduleDelivery};
 pub use event::WebEvent;

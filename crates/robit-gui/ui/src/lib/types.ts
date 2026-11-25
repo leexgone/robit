@@ -15,6 +15,8 @@ export interface MessageData {
   tool_call_id?: string;
   tool_info?: ToolCallInfo;
   created_at: string;
+  /** Origin marker for host-injected turns (e.g. "scheduler"); null/absent = real user. */
+  source?: string | null;
 }
 
 export interface ConfigInfo {
@@ -66,4 +68,10 @@ export type UiEvent =
       name: string;
       description: string;
     }
-  | { type: "SessionRenamed"; session_id: string; title: string };
+  | { type: "SessionRenamed"; session_id: string; title: string }
+  | {
+      type: "ScheduledTaskFired";
+      session_id: string;
+      task_id: string;
+      title: string;
+    };

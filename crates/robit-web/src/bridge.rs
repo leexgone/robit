@@ -176,6 +176,33 @@ impl WebBridge {
         self.message_tx.send(msg).await.map_err(|_| FrontendGone)
     }
 
+    /// Inject a scheduled-task turn: `text` should be the wrapped prompt
+    /// (see [`robit_agent::schedule::wrap_prompt`]); the agent delivers it
+    /// verbatim, bypassing slash/skill parsing.
+    pub async fn send_scheduled_input(
+        &self,
+        task_id: impl Into<String>,
+        title: impl Into<String>,
+        text: impl Into<String>,
+    ) -> std::result::Result<(), FrontendGone> {
+        self.send_message(FrontendMessage::ScheduledInput {
+            task_id: task_id.into(),
+            title: title.into(),
+            text: text.into(),
+        })
+        .await
+    }
+
+    /// A [`ScheduleDelivery`](robit_agent::schedule::ScheduleDelivery) terminal
+    /// for this bridge. The host owns the scheduler loop
+    /// (`robit_agent::schedule::Scheduler::spawn`) and hands it this delivery;
+    /// each fire wraps the task prompt and injects a `ScheduledInput` turn.
+    pub fn schedule_delivery(&self) -> WebScheduleDelivery {
+        WebScheduleDelivery {
+            message_tx: self.message_tx.clone(),
+        }
+    }
+
     /// Answer a pending confirmation. Returns `false` when there is no
     /// pending request matching `tool_call_id` (stale or wrong id).
     pub async fn resolve_confirm(&self, tool_call_id: &str, approved: bool) -> bool {
@@ -196,6 +223,36 @@ impl WebBridge {
     /// "deny all" control). Returns whether there was a pending request.
     pub async fn reject_pending_confirms(&self) -> bool {
         self.confirm_slot.lock().await.take().is_some()
+    }
+}
+
+/// [`ScheduleDelivery`](robit_agent::schedule::ScheduleDelivery) adapter for
+/// one bridge (single session). Created via [`WebBridge::schedule_delivery`].
+pub struct WebScheduleDelivery {
+    message_tx: mpsc::Sender<FrontendMessage>,
+}
+
+#[async_trait]
+impl robit_agent::schedule::ScheduleDelivery for WebScheduleDelivery {
+    async fn deliver(
+        &self,
+        task: &robit_agent::schedule::ScheduledTask,
+        fire: &robit_agent::schedule::FireInfo,
+    ) -> Result<()> {
+        let text = robit_agent::schedule::wrap_prompt(task, fire);
+        self.message_tx
+            .send(FrontendMessage::ScheduledInput {
+                task_id: task.id.clone(),
+                title: task.title.clone(),
+                text,
+            })
+            .await
+            .map_err(|e| {
+                robit_agent::AgentError::InternalError(format!(
+                    "web schedule injection channel closed: {}",
+                    e
+                ))
+            })
     }
 }
 
@@ -297,5 +354,51 @@ mod tests {
         let rx = bridge.take_message_rx();
         drop(rx); // agent loop exited
         assert_eq!(bridge.send_user_text("hi").await, Err(FrontendGone));
+    }
+
+    #[tokio::test]
+    async fn schedule_delivery_injects_wrapped_scheduled_input() {
+        use robit_agent::schedule::{ScheduleDelivery, ScheduledTask, TargetSpec, TaskStatus};
+        let mut bridge = WebBridge::new(16, 16);
+        let mut rx = bridge.take_message_rx();
+        let delivery = bridge.schedule_delivery();
+        let now = chrono::Utc::now();
+        let task = ScheduledTask {
+            id: "st1".into(),
+            title: "每日日报".into(),
+            prompt: "生成日报".into(),
+            schedule: robit_agent::schedule::ScheduleSpec::Once {
+                at: robit_agent::schedule::fmt_ts(now),
+            },
+            timezone: String::new(),
+            target: TargetSpec::ThisSession { session_id: "s1".into(), chat_id: None },
+            source: "web".into(),
+            namespace: String::new(),
+            status: TaskStatus::Active,
+            max_runs: None,
+            run_count: 0,
+            next_run_at: Some(now),
+            last_run_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let fire = robit_agent::schedule::FireInfo {
+            scheduled_at: now,
+            fired_at: now,
+            catch_up: false,
+        };
+        delivery.deliver(&task, &fire).await.unwrap();
+        match rx.recv().await.unwrap() {
+            FrontendMessage::ScheduledInput { task_id, title, text } => {
+                assert_eq!(task_id, "st1");
+                assert_eq!(title, "每日日报");
+                assert!(text.contains("[计划任务「每日日报」(id=st1)"));
+                assert!(text.contains("生成日报"));
+            }
+            other => panic!("expected ScheduledInput, got {:?}", other),
+        }
+        // Agent loop gone → delivery errors (scheduler records failed).
+        drop(rx);
+        assert!(delivery.deliver(&task, &fire).await.is_err());
     }
 }

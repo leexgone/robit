@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **计划任务 M2：GUI / Web 接线**（TUI 已取消，见 RFC §11 决策）。核心新增 `FrontendMessage::ScheduledInput`（绕过斜杠/技能解析的调度注入回合）与 `AgentEvent::ScheduledTaskFired`（触发提示，additive）；`Agent::with_schedule` 同时向系统提示词追加计划任务纪律段（幂等）。GUI：`AppState` 改 `Arc` 共享，`[app.schedule] enabled` 时 Tauri setup 启动宿主 Scheduler（`RunEvent::Exit` 取消），投递经 `AppState.agents` 会话注册表路由、关闭会话自动从库复活，注入回合档案 `source="scheduler"`；React 侧触发提示 + 消息刷新 + 计划任务消息徽章（⏰）。Web：`WebBridge::send_scheduled_input` / `schedule_delivery()`（`ScheduleDelivery` 适配器）+ `scheduled_task_fired` wire 帧（protocol.md 已登记，golden 测试）。不配置 `[app.schedule]` 时行为与 0.7.0 一致。
+
 ## [0.7.0] - 2026-11-24
 
 计划任务（Scheduled Tasks）M1：核心调度 + Bot 接线。设计见 `docs/robit-rfc-scheduled-tasks.md`（含 §14 实施注记与 TUI 取消决策）。**不配置 `[app.schedule]` 时行为与 0.6.0 逐字节一致**；`Agent`/`ChatbotManager` 公共 API 零签名变更（`with_schedule` 为新增 builder 方法）。

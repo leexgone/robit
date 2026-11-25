@@ -25,6 +25,9 @@ config.toml
 # robit runtime directories
 .robit/
 
+# Local dev signing script (self-signed cert, machine-specific)
+sign-dev.ps1
+
 # inbound bot media downloads ({working_dir}/media)
 media/
 

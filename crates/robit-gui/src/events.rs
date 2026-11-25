@@ -47,6 +47,14 @@ pub enum UiEvent {
         tool_call_id: String,
         is_error: bool,
     },
+    /// A scheduled task fired; its wrapped prompt was archived as a user row
+    /// (source="scheduler") and the turn is streaming. The UI refreshes the
+    /// message list and shows a notice.
+    ScheduledTaskFired {
+        session_id: String,
+        task_id: String,
+        title: String,
+    },
 }
 
 /// Non-sensitive configuration exposed to the frontend.

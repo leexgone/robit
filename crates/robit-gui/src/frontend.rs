@@ -91,6 +91,11 @@ impl Frontend for GuiFrontend {
                 tool_call_id,
                 is_error: result.is_error,
             },
+            AgentEvent::ScheduledTaskFired { task_id, title } => UiEvent::ScheduledTaskFired {
+                session_id: self.session_id.clone(),
+                task_id,
+                title,
+            },
         };
 
         let _ = self.event_tx.send(ui_event).await;

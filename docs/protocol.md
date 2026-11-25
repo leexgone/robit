@@ -64,13 +64,14 @@ pub struct ToolCall {
 | `tool_result` | `tool_call_id` `is_error` `content` | `AgentEvent::ToolCallResult` |
 | `skill_triggered` | `name` `description` | `AgentEvent::SkillTriggered` |
 | `async_tool_completed` | `task_id` `tool_call_id` `is_error` | `AgentEvent::AsyncToolCompleted` |
+| `scheduled_task_fired` | `task_id` `title` | `AgentEvent::ScheduledTaskFired`（additive：计划任务触发提示，回合本身走常规帧；见 [`robit-rfc-scheduled-tasks.md`](robit-rfc-scheduled-tasks.md)） |
 | `confirm_request` | `tool_call_id` `name` `arguments` | 桥内 `request_tool_confirmation` 被调用时推送（非 AgentEvent 投影） |
 | `turn_complete` | — | `AgentEvent::TurnComplete` |
 | `error` | `message` | `AgentEvent::Error`（Display 文案） |
 
 **确认握手**：客户端收到 `confirm_request` 后经宿主自己的 HTTP 端点把答复送回；宿主调用 `WebBridge::resolve_confirm(tool_call_id, approved)` 唤醒挂起的 `request_tool_confirmation`（Web 路径不使用 `FrontendMessage::ConfirmationResponse`）。responder 被 drop（新请求顶替、`reject_pending_confirms`、桥销毁）一律按**拒绝**处理。
 
-**消息注入**：用户输入由宿主经 `WebBridge::send_user_text` / `send_message` 注入（内部构造 `FrontendMessage`）；Agent 循环退出后注入返回 `FrontendGone`，宿主应据此降级（如 HTTP 503）。
+**消息注入**：用户输入由宿主经 `WebBridge::send_user_text` / `send_message` 注入（内部构造 `FrontendMessage`）；Agent 循环退出后注入返回 `FrontendGone`，宿主应据此降级（如 HTTP 503）。计划任务触发经 `WebBridge::send_scheduled_input`（或把 `WebBridge::schedule_delivery()` 交给宿主自持的 `robit_agent::schedule::Scheduler`）注入 `FrontendMessage::ScheduledInput`——包装后的提示词直达模型，绕过斜杠/技能解析；宿主负责档案落库时标记 `source="scheduler"`。
 
 **宿主职责边界**：SSE/WS 编码、keep-alive、断线重连、`connected` 等元数据首帧都在宿主侧——`robit-web` 零 HTTP 框架依赖，只保证事件投影与通道语义。
 

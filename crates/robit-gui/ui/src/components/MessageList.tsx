@@ -101,7 +101,7 @@ const MessageItem = memo(function MessageItem({ msg, pendingConfirms }: MessageI
   }, [msg.tool_call_id, pendingConfirms, toolInfo]);
 
   if (msg.role === "user") {
-    return <MemoizedUserMessage content={msg.content} />;
+    return <MemoizedUserMessage content={msg.content} source={msg.source} />;
   }
   if (msg.role === "assistant") {
     // Assistant rows persisted with tool_calls have empty content (they only
