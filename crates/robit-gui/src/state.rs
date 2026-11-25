@@ -305,6 +305,10 @@ impl AppState {
             memory,
             None,
         );
+        // LLM-call retry + timeout policy from [app.retry] (defaults when absent).
+        let agent = agent.with_retry_settings(robit_agent::RetrySettings::from_config(
+            self.config.app.as_ref().and_then(|a| a.retry.as_ref()),
+        ));
         // Attach the scheduled-task handle bound to this session so the
         // schedule_* tools create tasks owned by (source="gui", session_id).
         let agent = match &self.schedule {

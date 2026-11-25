@@ -11,6 +11,12 @@ pub enum LlmError {
     #[error("Network connection failed: {0}")]
     ConnectionError(String),
 
+    /// The request hung and was cut by a timeout (connect / response headers /
+    /// SSE read idle). Without this classification a silent connection would
+    /// block the agent loop forever — see the 2026-11-25 robit-qq incident.
+    #[error("LLM 请求超时：{detail}")]
+    Timeout { detail: String },
+
     #[error("Authentication failed, please check your API key configuration")]
     AuthenticationError,
 
@@ -70,6 +76,28 @@ impl LlmError {
     pub fn from_openai_error(err: async_openai::error::OpenAIError) -> Self {
         use async_openai::error::OpenAIError;
         match err {
+            // Transport-level failure (connect refused, TLS, timeouts on the
+            // injected reqwest client). Classify timeouts distinctly so the
+            // retry layer can treat them as transient.
+            OpenAIError::Reqwest(e) => Self::from_reqwest_error(e),
+            // Mid-stream failure on the typed path: async-openai stringifies
+            // the eventsource error ("Transport error: <reqwest display>"),
+            // losing the typed reqwest::Error. Recover the classification
+            // from the transport prefix; timeout wording maps to Timeout.
+            OpenAIError::StreamError(se) => {
+                use async_openai::error::StreamError;
+                match &*se {
+                    StreamError::EventStream(msg) if msg.contains("Transport error:") => {
+                        let lower = msg.to_lowercase();
+                        if lower.contains("timed out") || lower.contains("timeout") {
+                            LlmError::Timeout { detail: msg.clone() }
+                        } else {
+                            LlmError::ConnectionError(msg.clone())
+                        }
+                    }
+                    _ => LlmError::OpenAiError(OpenAIError::StreamError(se)),
+                }
+            }
             OpenAIError::ApiError(resp) => {
                 let api = &resp.api_error;
                 match api
@@ -139,6 +167,49 @@ impl LlmError {
                 message: truncate_raw(raw),
             },
             None => LlmError::ParseError(truncate_raw(raw)),
+        }
+    }
+
+    /// Classify a raw reqwest transport error. Timeouts (connect or read idle,
+    /// produced by the timeout-configured client in [`crate::client`]) become
+    /// [`LlmError::Timeout`]; everything else stays a connection error.
+    pub fn from_reqwest_error(err: reqwest::Error) -> Self {
+        if err.is_timeout() {
+            LlmError::Timeout {
+                detail: err.to_string(),
+            }
+        } else {
+            LlmError::ConnectionError(err.to_string())
+        }
+    }
+
+    /// Whether retrying the same request has a reasonable chance of success.
+    ///
+    /// Transient transport/server-side failures (timeouts, connection drops,
+    /// 5xx/408/429, gateway 502/503/504) are retryable; permanent failures
+    /// (auth, moderation, invalid request, parse errors) are not — retrying
+    /// them only wastes time and can deepen rate limits.
+    pub fn is_retryable(&self) -> bool {
+        use async_openai::error::OpenAIError;
+        match self {
+            LlmError::Timeout { .. }
+            | LlmError::ConnectionError(_)
+            | LlmError::RateLimitError { .. } => true,
+            LlmError::ServerError { status, .. } => *status >= 500 || *status == 408,
+            // Gateway HTML pages carry the status in the title (e.g. "502 Bad
+            // Gateway"); 413 and other 4xx rejections are permanent.
+            LlmError::GatewayError { title, .. } => {
+                ["500", "502", "503", "504"].iter().any(|s| title.contains(s))
+            }
+            LlmError::OpenAiError(e) => match e {
+                OpenAIError::Reqwest(e) => e.is_timeout() || e.is_connect() || e.is_body(),
+                OpenAIError::ApiError(resp) => {
+                    let s = resp.status_code.as_u16();
+                    s >= 500 || s == 408 || s == 429
+                }
+                _ => false,
+            },
+            _ => false,
         }
     }
 }
@@ -399,5 +470,151 @@ mod tests {
             LlmError::GatewayError { title, .. } => assert_eq!(title, "网关超时"),
             other => panic!("expected GatewayError, got {:?}", other),
         }
+    }
+
+    // ========================================================================
+    // Retry classification (2026-11-25 hang incident)
+    // ========================================================================
+
+    #[test]
+    fn transient_errors_are_retryable() {
+        assert!(LlmError::Timeout { detail: "read idle".into() }.is_retryable());
+        assert!(LlmError::ConnectionError("reset".into()).is_retryable());
+        assert!(LlmError::RateLimitError { retry_after: None }.is_retryable());
+        assert!(LlmError::ServerError { status: 500, message: "boom".into() }.is_retryable());
+        assert!(LlmError::ServerError { status: 503, message: "boom".into() }.is_retryable());
+        assert!(LlmError::ServerError { status: 408, message: "boom".into() }.is_retryable());
+    }
+
+    #[test]
+    fn permanent_errors_are_not_retryable() {
+        assert!(!LlmError::AuthenticationError.is_retryable());
+        assert!(!LlmError::ConfigError("bad".into()).is_retryable());
+        assert!(!LlmError::ParseError("bad".into()).is_retryable());
+        assert!(!LlmError::ModelNotFound { model: "m".into() }.is_retryable());
+        assert!(!LlmError::ContentModeration { detail: "x".into() }.is_retryable());
+        assert!(!LlmError::ContentModerationInput { detail: "x".into() }.is_retryable());
+        assert!(!LlmError::ProviderError { code: "c".into(), message: "m".into() }.is_retryable());
+        assert!(!LlmError::ServerError { status: 400, message: "bad".into() }.is_retryable());
+        assert!(!LlmError::ServerError { status: 413, message: "big".into() }.is_retryable());
+    }
+
+    #[test]
+    fn gateway_5xx_retryable_but_413_not() {
+        let g502 = LlmError::GatewayError { title: "502 Bad Gateway".into(), hint: String::new() };
+        let g504 = LlmError::GatewayError { title: "504 Gateway Time-out".into(), hint: String::new() };
+        let g413 = LlmError::GatewayError { title: "413 Request Entity Too Large".into(), hint: String::new() };
+        assert!(g502.is_retryable());
+        assert!(g504.is_retryable());
+        assert!(!g413.is_retryable());
+    }
+
+    fn api_err_with_status(status: reqwest::StatusCode) -> LlmError {
+        let api_error = async_openai::error::ApiError {
+            message: "err".to_string(),
+            r#type: Some("server_error".to_string()),
+            param: None,
+            code: None,
+            misalignment: None,
+        };
+        LlmError::OpenAiError(async_openai::error::OpenAIError::ApiError(
+            async_openai::error::ApiErrorResponse { status_code: status, api_error },
+        ))
+    }
+
+    #[test]
+    fn openai_api_error_retryability_follows_status() {
+        assert!(api_err_with_status(reqwest::StatusCode::BAD_GATEWAY).is_retryable());
+        assert!(api_err_with_status(reqwest::StatusCode::TOO_MANY_REQUESTS).is_retryable());
+        assert!(!api_err_with_status(reqwest::StatusCode::BAD_REQUEST).is_retryable());
+        assert!(!api_err_with_status(reqwest::StatusCode::UNAUTHORIZED).is_retryable());
+    }
+
+    fn stream_err(msg: &str) -> async_openai::error::OpenAIError {
+        async_openai::error::OpenAIError::StreamError(Box::new(
+            async_openai::error::StreamError::EventStream(msg.to_string()),
+        ))
+    }
+
+    /// Typed-path mid-stream transport errors are stringified by async-openai
+    /// ("Transport error: …"); timeouts must still classify as retryable.
+    #[test]
+    fn typed_stream_transport_timeout_classifies_as_timeout() {
+        let llm = LlmError::from_openai_error(stream_err("Transport error: operation timed out"));
+        assert!(matches!(llm, LlmError::Timeout { .. }), "got: {llm:?}");
+        assert!(llm.is_retryable());
+    }
+
+    #[test]
+    fn typed_stream_transport_drop_classifies_as_connection_error() {
+        let llm = LlmError::from_openai_error(stream_err(
+            "Transport error: error reading a body from connection: connection closed",
+        ));
+        assert!(matches!(llm, LlmError::ConnectionError(_)), "got: {llm:?}");
+        assert!(llm.is_retryable());
+    }
+
+    #[test]
+    fn typed_stream_parse_error_passes_through_not_retryable() {
+        let llm = LlmError::from_openai_error(stream_err("UTF8 error: invalid utf-8"));
+        assert!(matches!(llm, LlmError::OpenAiError(_)), "got: {llm:?}");
+        assert!(!llm.is_retryable());
+    }
+
+    /// A real reqwest read-timeout error (tiny client timeout against a
+    /// wiremock response delayed past it) must classify as retryable Timeout.
+    #[tokio::test]
+    async fn reqwest_read_timeout_maps_to_retryable_timeout() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(5)),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .read_timeout(std::time::Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let err = client.get(server.uri()).send().await.unwrap_err();
+        assert!(err.is_timeout(), "expected a timeout error, got: {err:?}");
+
+        let llm = LlmError::from_reqwest_error(err);
+        assert!(matches!(llm, LlmError::Timeout { .. }), "got: {llm:?}");
+        assert!(llm.is_retryable());
+        assert!(llm.to_string().contains("超时"));
+    }
+
+    /// A dead endpoint (nothing listening) must classify as a retryable
+    /// transport error. Platforms differ in the raw shape: Linux refuses the
+    /// connection instantly (ConnectionError), Windows may blackhole the SYN
+    /// until connect_timeout fires (Timeout) — both are transient.
+    #[tokio::test]
+    async fn reqwest_dead_endpoint_maps_to_retryable_transport_error() {
+        // Bind then drop to obtain a port with no listener.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://{addr}/v1/chat/completions"))
+            .send()
+            .await
+            .unwrap_err();
+        let llm = LlmError::from_reqwest_error(err);
+        assert!(
+            matches!(llm, LlmError::ConnectionError(_) | LlmError::Timeout { .. }),
+            "got: {llm:?}"
+        );
+        assert!(llm.is_retryable());
     }
 }

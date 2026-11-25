@@ -1108,6 +1108,12 @@ impl<T: PlatformAdapter> ChatbotManager<T> {
             memory,
             self.custom_prompt.clone(),
         );
+        // LLM-call retry + timeout policy from [app.retry] (defaults apply
+        // when the section is absent). Guards against hung requests freezing
+        // this chat's loop — see robit_agent::retry.
+        let agent = agent.with_retry_settings(robit_agent::RetrySettings::from_config(
+            self.config.app.as_ref().and_then(|a| a.retry.as_ref()),
+        ));
         // Attach the scheduled-task handle bound to this chat/session so the
         // schedule_* tools create tasks owned by (source, namespace, chat_id).
         let agent = match &self.schedule {

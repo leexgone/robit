@@ -15,6 +15,7 @@ pub mod lock;
 pub mod media;
 pub mod memory;
 pub mod prompt;
+pub mod retry;
 pub mod schedule;
 pub mod skill;
 pub mod storage;
@@ -35,6 +36,7 @@ pub use media::{
     encode_file_base64_with_mime, MediaDownloadOptions, MediaError,
 };
 pub use memory::{build_memory_section, resolve_memory_settings, MemorySettings, MAX_MEMORY_INJECT_BYTES};
+pub use retry::{retry_backoff, RetrySettings};
 pub use schedule::{
     wrap_prompt, FireInfo, MissedPolicy, ScheduleBinding, ScheduleContext, ScheduleDelivery,
     ScheduleSettings, ScheduleSpec, ScheduleStore, ScheduledTask, Scheduler, TargetSpec, TaskStatus,

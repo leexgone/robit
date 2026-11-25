@@ -129,9 +129,14 @@ where
     Box::pin(
         bytes.eventsource().filter_map(|event| async move {
             match event {
-                // Transport-level failure mid-stream (connection dropped etc.).
-                Err(e) => Some(Err(LlmError::ConnectionError(format!(
-                    "SSE stream read failed: {e}"
+                // Transport-level failure mid-stream (connection dropped,
+                // read-idle timeout on the shared client, ...). Timeouts
+                // classify as LlmError::Timeout so they stay retryable.
+                Err(eventsource_stream::EventStreamError::Transport(e)) => {
+                    Some(Err(LlmError::from_reqwest_error(e)))
+                }
+                Err(other) => Some(Err(LlmError::ConnectionError(format!(
+                    "SSE stream read failed: {other}"
                 )))),
                 Ok(ev) => {
                     let data = ev.data;

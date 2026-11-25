@@ -100,7 +100,10 @@ fn main() -> anyhow::Result<()> {
         std::collections::HashMap::new(),
         memory,
         None,
-    );
+    )
+    .with_retry_settings(robit_agent::RetrySettings::from_config(
+        config.app.as_ref().and_then(|a| a.retry.as_ref()),
+    ));
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {

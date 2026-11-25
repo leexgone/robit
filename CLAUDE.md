@@ -222,7 +222,7 @@ max_merges_per_segment = 2             # 单条摘要最多被合并次数，超
 max_image_dimension = 1024              # 图片进入上下文前的最大边长（像素），超过则等比缩放并重编码为 JPEG（默认 1024；0 禁用压缩，保持原始字节）
 max_media_bytes = 20971520              # 单次媒体下载上限（字节），附件落盘与 vision url 兜底编码共用（默认 20MB；0 不限）。Content-Length 预检 + 流式累加，超限拒收
 
-[app.retry]                            # 重试策略配置（可选，以下为默认值）
+[app.retry]                            # 重试策略配置（可选，以下为默认值）。作用于 Agent 的 LLM 调用：瞬时错误（超时/连接失败/5xx/408/429）指数退避重试；已有内容流式输出后不重试（防重复文本）；重试耗尽显式报错并释放会话循环。另有固定传输层超时（connect 10s / 读空闲 90s）与调用层超时（首包 60s / SSE 空闲 90s，见 robit_agent::retry::RetrySettings），防止请求挂起卡死会话
 max_retries = 3
 initial_backoff_ms = 1000
 max_backoff_ms = 30000

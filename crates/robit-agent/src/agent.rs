@@ -15,11 +15,12 @@ use async_openai::types::chat::{
 use async_openai::types::chat::ImageUrl;
 use futures_util::StreamExt;
 use robit_ai::config::ContextConfig;
-use robit_ai::LlmClient;
+use robit_ai::{LlmClient, LlmError};
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::context::{ContextManager, TruncationAction, TruncationResult};
@@ -29,6 +30,7 @@ use crate::frontend::Frontend;
 use crate::media;
 use crate::memory::MemorySettings;
 use crate::prompt::PromptBuilder;
+use crate::retry::{retry_backoff, RetrySettings};
 use crate::skill::SkillRegistry;
 use crate::tool::async_runner::{AsyncTaskDone, AsyncTaskRunner};
 use crate::tool::task_registry::{AsyncTaskRecord, AsyncTaskStatus, TaskRegistry};
@@ -138,6 +140,9 @@ pub struct Agent {
     /// Scheduled-task handle attached by the host via [`Agent::with_schedule`]
     /// when `[app.schedule] enabled = true`. Cloned into every ToolContext.
     schedule: Option<crate::schedule::ScheduleContext>,
+    /// Retry + timeout policy for LLM calls (`[app.retry]`; defaults apply
+    /// when the host does not call [`Agent::with_retry_settings`]).
+    retry: RetrySettings,
 }
 
 /// Bookkeeping for one in-flight async task.
@@ -216,7 +221,17 @@ impl Agent {
             task_registry,
             memory_dir: memory.dir.clone(),
             schedule: None,
+            retry: RetrySettings::default(),
         }
+    }
+
+    /// Override the LLM-call retry + timeout policy (builder-style).
+    /// Hosts pass `RetrySettings::from_config(config.app.retry)`; without
+    /// this call the documented defaults apply (3 retries, 1s→30s backoff,
+    /// 60s first-byte / 90s stream-idle timeouts).
+    pub fn with_retry_settings(mut self, settings: RetrySettings) -> Self {
+        self.retry = settings;
+        self
     }
 
     /// Attach the scheduled-task handle (builder-style, no signature churn).
@@ -344,6 +359,7 @@ impl Agent {
             task_registry,
             memory_dir: memory.dir.clone(),
             schedule: None,
+            retry: RetrySettings::default(),
         }
     }
 
@@ -699,93 +715,187 @@ impl Agent {
             sanitize_history_for_model(&mut session.history, false);
         }
 
-        // Call LLM (streaming)
-        let mut stream = match self
-            .llm_client
-            .chat_stream(session.history.clone(), tools_param)
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("LLM chat_stream failed: {:?}", e);
-                return Err(e.into());
-            }
-        };
-        tracing::trace!("LLM stream obtained, starting to collect response");
+        // Call LLM (streaming) with timeout guards + [app.retry] retries.
+        //
+        // A hung request (no response headers, or an SSE stream that goes
+        // silent mid-way) used to block this session's loop forever — every
+        // later message queued behind it (2026-11-25 robit-qq incident).
+        // Timeouts turn the hang into a classified LlmError; transient
+        // failures retry with exponential backoff, but only while nothing
+        // has been streamed to the frontend yet (retrying after partial
+        // output would duplicate user-visible text). When the budget is
+        // exhausted the error surfaces via AgentEvent::Error upstream,
+        // releasing the loop for queued messages.
+        let retry = self.retry;
+        let first_byte_timeout = Duration::from_secs(retry.first_byte_timeout_secs);
+        let idle_timeout = Duration::from_secs(retry.stream_idle_timeout_secs);
 
-        // Collect streaming response
         let mut full_text = String::new();
         let mut tool_call_chunks: HashMap<usize, ToolCallAccumulator> = HashMap::new();
-        let mut api_usage: Option<async_openai::types::chat::CompletionUsage> = None;
+        // Assigned at the top of every attempt below (no initial value needed).
+        let mut api_usage: Option<async_openai::types::chat::CompletionUsage>;
+        let mut chunk_count: usize;
+        // Whether any thinking/text delta reached the frontend during this
+        // call; once true, retrying is disabled (would duplicate output).
+        let mut emitted_delta = false;
 
-        let mut chunk_count = 0;
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = match chunk_result {
-                Ok(c) => c,
+        let mut attempt = 0u32;
+        loop {
+            // Fresh accumulators per attempt. History is untouched until the
+            // assistant message is appended after a successful collection,
+            // so resending the same request is safe.
+            full_text.clear();
+            tool_call_chunks.clear();
+            api_usage = None;
+            chunk_count = 0;
+
+            // Phase 1: create the stream (connect + send + response headers),
+            // bounded by the first-byte timeout.
+            let created = tokio::time::timeout(
+                first_byte_timeout,
+                self.llm_client
+                    .chat_stream(session.history.clone(), tools_param.clone()),
+            )
+            .await;
+            let created = match created {
+                Ok(inner) => inner,
+                Err(_) => Err(LlmError::Timeout {
+                    detail: format!(
+                        "{}s 内未收到服务商响应（连接/响应头阶段）",
+                        retry.first_byte_timeout_secs
+                    ),
+                }),
+            };
+            let mut stream = match created {
+                Ok(s) => s,
                 Err(e) => {
-                    // Stream items already carry classified LlmError values:
-                    // provider error events pushed into the stream (e.g.
-                    // content moderation) and gateway HTML pages were
-                    // recovered from the raw payload inside robit-ai (see
-                    // robit_ai::stream), same friendly surfaces as before.
-                    tracing::error!("Stream chunk error: {}", e);
-                    return Err(AgentError::LlmError(e));
+                    tracing::error!("LLM chat_stream failed: {:?}", e);
+                    if let Some(backoff_ms) = retry_backoff(&retry, &e, attempt, emitted_delta) {
+                        tracing::warn!(
+                            "LLM call failed (attempt {}/{}), retrying in {}ms: {}",
+                            attempt + 1,
+                            retry.max_retries + 1,
+                            backoff_ms,
+                            e
+                        );
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(e.into());
                 }
             };
-            chunk_count += 1;
+            tracing::trace!("LLM stream obtained, starting to collect response");
 
-            // Capture usage info if present in this chunk (some providers include it in final chunk)
-            if let Some(ref usage) = chunk.usage {
-                api_usage = Some(usage.clone());
-            }
+            // Phase 2: collect chunks; each next() is bounded by the idle
+            // timeout so a silent stream errors out instead of hanging.
+            let mut failure: Option<LlmError> = None;
+            loop {
+                let next = tokio::time::timeout(idle_timeout, stream.next()).await;
+                let chunk_result = match next {
+                    Ok(Some(r)) => r,
+                    Ok(None) => break, // stream finished normally
+                    Err(_) => {
+                        failure = Some(LlmError::Timeout {
+                            detail: format!(
+                                "{}s 内未收到新的流式数据（SSE 空闲超时）",
+                                retry.stream_idle_timeout_secs
+                            ),
+                        });
+                        break;
+                    }
+                };
+                let chunk = match chunk_result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        // Stream items already carry classified LlmError values:
+                        // provider error events pushed into the stream (e.g.
+                        // content moderation) and gateway HTML pages were
+                        // recovered from the raw payload inside robit-ai (see
+                        // robit_ai::stream), same friendly surfaces as before.
+                        tracing::error!("Stream chunk error: {}", e);
+                        failure = Some(e);
+                        break;
+                    }
+                };
+                chunk_count += 1;
 
-            // Display deltas: thinking first (provider convention: during the
-            // thinking phase `content` is an empty shell while
-            // `reasoning_content` carries the text). Thinking is display-only:
-            // never written to history and never counted into `full_text`.
-            let (thinking, text) = chunk_deltas(&chunk);
-            if let Some(thinking) = thinking {
-                let _ = self
-                    .frontend
-                    .on_event(AgentEvent::ThinkingDelta(thinking.to_string()))
-                    .await;
-            }
-            if let Some(text) = text {
-                full_text.push_str(text);
-                let _ = self
-                    .frontend
-                    .on_event(AgentEvent::TextDelta(text.to_string()))
-                    .await;
-            }
+                // Capture usage info if present in this chunk (some providers include it in final chunk)
+                if let Some(ref usage) = chunk.usage {
+                    api_usage = Some(usage.clone());
+                }
 
-            if let Some(choice) = chunk.choices.first() {
-                // Tool call deltas
-                if let Some(tool_calls) = &choice.delta.tool_calls {
-                    for tc in tool_calls {
-                        let acc = tool_call_chunks
-                            .entry(tc.index as usize)
-                            .or_insert_with(ToolCallAccumulator::new);
+                // Display deltas: thinking first (provider convention: during the
+                // thinking phase `content` is an empty shell while
+                // `reasoning_content` carries the text). Thinking is display-only:
+                // never written to history and never counted into `full_text`.
+                let (thinking, text) = chunk_deltas(&chunk);
+                if let Some(thinking) = thinking {
+                    if !thinking.is_empty() {
+                        emitted_delta = true;
+                    }
+                    let _ = self
+                        .frontend
+                        .on_event(AgentEvent::ThinkingDelta(thinking.to_string()))
+                        .await;
+                }
+                if let Some(text) = text {
+                    if !text.is_empty() {
+                        emitted_delta = true;
+                    }
+                    full_text.push_str(text);
+                    let _ = self
+                        .frontend
+                        .on_event(AgentEvent::TextDelta(text.to_string()))
+                        .await;
+                }
 
-                        if let Some(id) = &tc.id {
-                            // 只有当id非空时才更新
-                            if !id.is_empty() {
-                                acc.id = Some(id.clone());
-                            }
-                        }
-                        if let Some(function) = &tc.function {
-                            if let Some(name) = &function.name {
-                                // 只有当name非空时才更新
-                                if !name.is_empty() {
-                                    acc.name = Some(name.clone());
+                if let Some(choice) = chunk.choices.first() {
+                    // Tool call deltas
+                    if let Some(tool_calls) = &choice.delta.tool_calls {
+                        for tc in tool_calls {
+                            let acc = tool_call_chunks
+                                .entry(tc.index as usize)
+                                .or_insert_with(ToolCallAccumulator::new);
+
+                            if let Some(id) = &tc.id {
+                                // 只有当id非空时才更新
+                                if !id.is_empty() {
+                                    acc.id = Some(id.clone());
                                 }
                             }
-                            if let Some(args) = &function.arguments {
-                                acc.arguments.push_str(args);
+                            if let Some(function) = &tc.function {
+                                if let Some(name) = &function.name {
+                                    // 只有当name非空时才更新
+                                    if !name.is_empty() {
+                                        acc.name = Some(name.clone());
+                                    }
+                                }
+                                if let Some(args) = &function.arguments {
+                                    acc.arguments.push_str(args);
+                                }
                             }
                         }
                     }
                 }
             }
+
+            if let Some(e) = failure {
+                if let Some(backoff_ms) = retry_backoff(&retry, &e, attempt, emitted_delta) {
+                    tracing::warn!(
+                        "LLM stream failed (attempt {}/{}), retrying in {}ms: {}",
+                        attempt + 1,
+                        retry.max_retries + 1,
+                        backoff_ms,
+                        e
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    attempt += 1;
+                    continue;
+                }
+                return Err(AgentError::LlmError(e));
+            }
+            break; // collection succeeded
         }
 
         tracing::debug!("Stream collection complete: {} chunks, {} chars of text", chunk_count, full_text.len());
@@ -2482,5 +2592,187 @@ mod tests {
         let (thinking, text) = chunk_deltas(&c);
         assert_eq!(thinking, None);
         assert_eq!(text, None);
+    }
+
+    // ------------------------------------------------------------------
+    // LLM-call timeouts + retry (2026-11-25 robit-qq hang incident)
+    // ------------------------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Text-model client pointed at a test server URL.
+    fn llm_client_at(base_url: &str) -> Arc<LlmClient> {
+        let config = RobitConfig {
+            default_model: Some("test/text".to_string()),
+            providers: HashMap::from([(
+                "test".to_string(),
+                ProviderConfig {
+                    name: Some("Test".to_string()),
+                    base_url: base_url.to_string(),
+                    api_key: "sk-test".to_string(),
+                    models: vec![ModelConfig {
+                        id: "text".to_string(),
+                        name: Some("Text".to_string()),
+                        context_window: None,
+                        max_output_tokens: None,
+                        temperature: None,
+                        max_tokens: None,
+                        supports_images: Some(false),
+                        supports_tools: Some(true),
+                        thinking: None,
+                    }],
+                },
+            )]),
+            app: None,
+            channels: None,
+            default_image_model: None,
+            image_providers: HashMap::new(),
+            default_vision_model: None,
+        };
+        Arc::new(LlmClient::from_config(&config, None).unwrap())
+    }
+
+    /// TCP server that accepts connections but never sends a byte — the
+    /// "silently dropped keep-alive / stalled provider" shape from the
+    /// incident log. Returns its address and an accept counter.
+    async fn blackhole_server() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                c.fetch_add(1, Ordering::SeqCst);
+                held.push(sock); // keep the connection open and silent
+            }
+        });
+        (addr, count)
+    }
+
+    fn fast_retry_settings() -> RetrySettings {
+        RetrySettings {
+            max_retries: 1,
+            initial_backoff_ms: 10,
+            max_backoff_ms: 20,
+            first_byte_timeout_secs: 1,
+            stream_idle_timeout_secs: 1,
+        }
+    }
+
+    fn push_user_message(agent: &mut Agent, text: &str) {
+        let sid = agent.default_session_id.clone();
+        agent
+            .sessions
+            .get_mut(&sid)
+            .unwrap()
+            .history
+            .push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessage {
+                    content: text.to_string().into(),
+                    name: None,
+                },
+            ));
+    }
+
+    /// Hang #2 from the incident: the provider never answers the request.
+    /// Stream creation must time out, retry once (backoff), then surface a
+    /// Timeout error instead of blocking the session loop forever.
+    #[tokio::test]
+    async fn hung_stream_creation_times_out_retries_then_errors() {
+        let (addr, accepts) = blackhole_server().await;
+        let mut agent = agent_with(llm_client_at(&format!("http://{addr}/v1")))
+            .with_retry_settings(fast_retry_settings());
+        push_user_message(&mut agent, "hi");
+        let sid = agent.default_session_id.clone();
+
+        let started = std::time::Instant::now();
+        let err = agent.run_one_step(&sid).await.unwrap_err();
+        assert!(
+            matches!(err, AgentError::LlmError(LlmError::Timeout { .. })),
+            "expected Timeout, got: {err:?}"
+        );
+        // Initial attempt + 1 retry = 2 connections, each cut after ~1s.
+        assert_eq!(accepts.load(Ordering::SeqCst), 2, "retry must have happened");
+        assert!(started.elapsed() >= Duration::from_secs(2));
+    }
+
+    /// Hang #1 from the incident: headers + one chunk arrive, then the SSE
+    /// stream goes silent. The idle timeout must fire; because text was
+    /// already streamed to the frontend, NO retry may happen (it would
+    /// duplicate user-visible output).
+    #[tokio::test]
+    async fn silent_mid_stream_times_out_without_retry_after_output() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&accepts);
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((mut sock, _)) = listener.accept().await {
+                c.fetch_add(1, Ordering::SeqCst);
+                // Read the full request (headers + body) before responding,
+                // like a real server; responding mid-send upsets the client.
+                let mut buf: Vec<u8> = Vec::new();
+                let mut tmp = [0u8; 4096];
+                let header_end = loop {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        break None;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break Some(pos + 4);
+                    }
+                };
+                if let Some(he) = header_end {
+                    let head = String::from_utf8_lossy(&buf[..he]).to_lowercase();
+                    let content_len = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    while buf.len() < he + content_len {
+                        let n = sock.read(&mut tmp).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                    }
+                    let frame = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n";
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{}\r\n",
+                        frame.len(),
+                        frame
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.flush().await;
+                }
+                held.push(sock); // then go silent, keeping the stream open
+            }
+        });
+
+        let mut agent = agent_with(llm_client_at(&format!("http://{addr}/v1")))
+            .with_retry_settings(RetrySettings {
+                max_retries: 2, // budget exists, but the output gate must block it
+                ..fast_retry_settings()
+            });
+        push_user_message(&mut agent, "hi");
+        let sid = agent.default_session_id.clone();
+
+        let started = std::time::Instant::now();
+        let err = agent.run_one_step(&sid).await.unwrap_err();
+        assert!(
+            matches!(err, AgentError::LlmError(LlmError::Timeout { .. })),
+            "expected Timeout, got: {err:?}"
+        );
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            1,
+            "no retry allowed after partial output was streamed"
+        );
+        assert!(started.elapsed() >= Duration::from_secs(1));
     }
 }

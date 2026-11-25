@@ -290,6 +290,31 @@ pub struct LlmClient {
     http: reqwest::Client,
 }
 
+/// Build the shared HTTP client used by BOTH LLM paths (async-openai typed
+/// client and the SSE bypass).
+///
+/// reqwest defaults have NO timeouts at all: a silently dropped keep-alive
+/// connection (NAT/LB reaping idle sockets) or a stalled provider would block
+/// the request forever, freezing the whole agent session — the 2026-11-25
+/// robit-qq incident. The guards:
+///
+/// - `connect_timeout`: TCP+TLS handshake must finish in 10s.
+/// - `read_timeout`: max silence between two socket reads (90s). Applies per
+///   read, so long SSE generations stay fine as long as bytes keep flowing;
+///   a stream that goes silent mid-response errors out instead of hanging.
+///   Deliberately NOT a total `timeout`, which would kill long generations.
+/// - `pool_idle_timeout` + `tcp_keepalive`: retire pooled connections before
+///   middleboxes silently drop them, and detect dead peers at the TCP layer.
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(90))
+        .pool_idle_timeout(std::time::Duration::from_secs(15))
+        .tcp_keepalive(std::time::Duration::from_secs(30))
+        .build()
+        .expect("reqwest client with rustls backend must build")
+}
+
 impl LlmClient {
     /// Create a new LlmClient from loaded configuration.
     ///
@@ -309,13 +334,16 @@ impl LlmClient {
             .with_api_base(&resolved.base_url)
             .with_api_key(&resolved.api_key);
 
-        let client = async_openai::Client::with_config(oc);
+        // One timeout-configured client shared by both paths: async-openai's
+        // default internal client has no timeouts (see `build_http_client`).
+        let http = build_http_client();
+        let client = async_openai::Client::with_config(oc).with_http_client(http.clone());
 
         Self {
             client,
             model: resolved.model_id.clone(),
             resolved,
-            http: reqwest::Client::new(),
+            http,
         }
     }
 
@@ -400,8 +428,10 @@ impl LlmClient {
             .send()
             .await
             .map_err(|e| {
-                // Transport-level failure before any frame arrives.
-                let err = LlmError::ConnectionError(e.to_string());
+                // Transport-level failure before any frame arrives; timeouts
+                // classify as LlmError::Timeout so the retry layer sees them
+                // as transient.
+                let err = LlmError::from_reqwest_error(e);
                 tracing::error!("Chat stream creation failed: {}", err);
                 err
             })?;
