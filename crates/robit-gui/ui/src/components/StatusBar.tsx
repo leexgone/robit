@@ -1,4 +1,4 @@
-import { Bot, Folder } from "lucide-react";
+import { Bot, Folder, AlarmClock } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { ThemeToggle } from "./ThemeToggle";
 import type { ConfigInfo } from "@/lib/types";
@@ -40,6 +40,8 @@ function formatListTooltip(label: string, items?: string[]): string {
 
 export function StatusBar() {
   const config = useStore((s) => s.config);
+  const schedulePanelOpen = useStore((s) => s.schedulePanelOpen);
+  const toggleSchedulePanel = useStore((s) => s.toggleSchedulePanel);
   const workingDir = formatDisplayPath(config?.working_dir);
   const toolsTitle = formatListTooltip("Enabled tools", config?.tool_names);
   const skillsTitle = formatListTooltip("Enabled skills", config?.skill_names);
@@ -79,7 +81,14 @@ export function StatusBar() {
           </span>
         </div>
       </div>
-      <div className="shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
+        <button
+          className={`p-1 rounded hover:bg-accent transition-colors ${schedulePanelOpen ? "text-primary" : "text-muted-foreground"}`}
+          onClick={toggleSchedulePanel}
+          title="计划任务管理"
+        >
+          <AlarmClock className="h-3.5 w-3.5" />
+        </button>
         <ThemeToggle />
       </div>
     </div>

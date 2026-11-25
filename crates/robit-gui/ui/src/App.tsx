@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { StatusBar } from "@/components/StatusBar";
 import { SessionSidebar } from "@/components/SessionSidebar";
 import { ChatPanel } from "@/components/ChatPanel";
+import { SchedulePanel } from "@/components/SchedulePanel";
 import { useStore } from "@/lib/store";
 import { listSessions, getConfig, getMessages } from "@/lib/commands";
 import type { UiEvent, MessageData, ToolCallInfo } from "@/lib/types";
@@ -18,6 +19,8 @@ function App() {
   const updateToolCard = useStore((s) => s.updateToolCard);
   const updateSessionTitle = useStore((s) => s.updateSessionTitle);
   const setMessages = useStore((s) => s.setMessages);
+  const schedulePanelOpen = useStore((s) => s.schedulePanelOpen);
+  const toggleSchedulePanel = useStore((s) => s.toggleSchedulePanel);
 
   // Initialize app data
   useEffect(() => {
@@ -161,6 +164,11 @@ function App() {
       <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
         <SessionSidebar />
         <ChatPanel />
+        {schedulePanelOpen && (
+          <div className="w-80 shrink-0 border-l h-full min-h-0">
+            <SchedulePanel onClose={toggleSchedulePanel} />
+          </div>
+        )}
       </div>
     </div>
   );

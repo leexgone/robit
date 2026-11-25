@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { SessionInfo, MessageData, ConfigInfo, ToolCallInfo } from "./types";
+import type { SessionInfo, MessageData, ConfigInfo, ToolCallInfo, ScheduleTaskDto, ScheduleRunDto } from "./types";
 
 function convertMessageData(msg: any): MessageData {
   if (msg.tool_info) {
@@ -61,4 +61,30 @@ export async function confirmTool(
 
 export async function getConfig(): Promise<ConfigInfo> {
   return invoke("get_config");
+}
+
+// ============================================================================
+// Schedule management commands (M3: GUI panel)
+// ============================================================================
+
+export async function listScheduledTasks(): Promise<ScheduleTaskDto[]> {
+  return invoke("list_scheduled_tasks");
+}
+
+export async function getScheduledTask(
+  taskId: string
+): Promise<[ScheduleTaskDto, ScheduleRunDto[]]> {
+  return invoke("get_scheduled_task", { taskId });
+}
+
+export async function pauseScheduledTask(taskId: string): Promise<void> {
+  return invoke("pause_scheduled_task", { taskId });
+}
+
+export async function resumeScheduledTask(taskId: string): Promise<void> {
+  return invoke("resume_scheduled_task", { taskId });
+}
+
+export async function deleteScheduledTask(taskId: string): Promise<void> {
+  return invoke("delete_scheduled_task", { taskId });
 }

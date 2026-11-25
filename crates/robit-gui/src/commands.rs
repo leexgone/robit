@@ -6,7 +6,7 @@ use robit_agent::event::{FrontendMessage, new_session_id};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::db;
-use crate::events::{ConfigInfo, MessageData, SessionInfo, UiEvent};
+use crate::events::{ConfigInfo, MessageData, ScheduleRunDto, ScheduleTaskDto, SessionInfo, UiEvent};
 use crate::state::AppState;
 
 /// Generate a session title from user message content.
@@ -304,4 +304,170 @@ pub async fn read_image_file(
 
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(format!("data:{};base64,{}", mime, encoded))
+}
+
+// ============================================================================
+// Schedule management commands (M3: GUI panel)
+// ============================================================================
+
+fn task_to_dto(t: &robit_agent::schedule::ScheduledTask) -> ScheduleTaskDto {
+    ScheduleTaskDto {
+        id: t.id.clone(),
+        title: t.title.clone(),
+        prompt: t.prompt.clone(),
+        schedule: serde_json::to_value(&t.schedule).unwrap_or(serde_json::Value::Null),
+        timezone: t.timezone.clone(),
+        status: t.status.as_str().to_string(),
+        max_runs: t.max_runs,
+        run_count: t.run_count,
+        next_run_at: t.next_run_at.map(robit_agent::schedule::fmt_ts),
+        last_run_at: t.last_run_at.map(robit_agent::schedule::fmt_ts),
+        created_at: robit_agent::schedule::fmt_ts(t.created_at),
+        updated_at: robit_agent::schedule::fmt_ts(t.updated_at),
+    }
+}
+
+fn run_to_dto(r: &robit_agent::schedule::RunRecord) -> ScheduleRunDto {
+    ScheduleRunDto {
+        id: r.id,
+        scheduled_at: robit_agent::schedule::fmt_ts(r.scheduled_at),
+        fired_at: robit_agent::schedule::fmt_ts(r.fired_at),
+        catch_up: r.catch_up,
+        status: r.status.clone(),
+        error: r.error.clone(),
+    }
+}
+
+/// List all scheduled tasks across all sessions (GUI is single-user, no scope filter needed).
+#[tauri::command]
+pub async fn list_scheduled_tasks(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<ScheduleTaskDto>, String> {
+    let shared = state
+        .schedule
+        .as_ref()
+        .ok_or_else(|| "Scheduled tasks are not enabled".to_string())?;
+    // GUI: list all tasks for source="gui" regardless of session_id.
+    let scope = robit_agent::schedule::TaskScope {
+        source: "gui".to_string(),
+        namespace: String::new(),
+        chat_id: None, // None = no chat filter → all GUI tasks
+    };
+    let tasks = shared
+        .store
+        .list_scoped(&scope, None, 100, 0)
+        .map_err(|e| format!("Store error: {}", e))?;
+    Ok(tasks.iter().map(task_to_dto).collect())
+}
+
+/// Get one scheduled task's full details + recent runs.
+#[tauri::command]
+pub async fn get_scheduled_task(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<(ScheduleTaskDto, Vec<ScheduleRunDto>), String> {
+    let shared = state
+        .schedule
+        .as_ref()
+        .ok_or_else(|| "Scheduled tasks are not enabled".to_string())?;
+    let scope = robit_agent::schedule::TaskScope {
+        source: "gui".to_string(),
+        namespace: String::new(),
+        chat_id: None,
+    };
+    let task = shared
+        .store
+        .get_scoped(&task_id, &scope)
+        .map_err(|e| format!("Store error: {}", e))?
+        .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+    if task.status == robit_agent::schedule::TaskStatus::Deleted {
+        return Err(format!("Task '{}' is deleted", task_id));
+    }
+    let runs = shared
+        .store
+        .runs_for(&task_id, 20)
+        .map_err(|e| format!("Store error: {}", e))?;
+    Ok((task_to_dto(&task), runs.iter().map(run_to_dto).collect()))
+}
+
+/// Pause a scheduled task.
+#[tauri::command]
+pub async fn pause_scheduled_task(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<(), String> {
+    apply_schedule_action(state, &task_id, "pause").await
+}
+
+/// Resume a paused scheduled task.
+#[tauri::command]
+pub async fn resume_scheduled_task(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<(), String> {
+    apply_schedule_action(state, &task_id, "resume").await
+}
+
+/// Soft-delete a scheduled task.
+#[tauri::command]
+pub async fn delete_scheduled_task(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<(), String> {
+    apply_schedule_action(state, &task_id, "delete").await
+}
+
+async fn apply_schedule_action(
+    state: State<'_, Arc<AppState>>,
+    task_id: &str,
+    action: &str,
+) -> Result<(), String> {
+    let shared = state
+        .schedule
+        .as_ref()
+        .ok_or_else(|| "Scheduled tasks are not enabled".to_string())?;
+    let scope = robit_agent::schedule::TaskScope {
+        source: "gui".to_string(),
+        namespace: String::new(),
+        chat_id: None,
+    };
+    let mut task = shared
+        .store
+        .get_scoped(task_id, &scope)
+        .map_err(|e| format!("Store error: {}", e))?
+        .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+    if task.status == robit_agent::schedule::TaskStatus::Deleted {
+        return Err(format!("Task '{}' is already deleted", task_id));
+    }
+    let expected = robit_agent::schedule::fmt_ts(task.updated_at);
+    let now = chrono::Utc::now();
+    match action {
+        "pause" => {
+            task.status = robit_agent::schedule::TaskStatus::Paused;
+            task.next_run_at = None;
+        }
+        "resume" => {
+            let tz = task.tz().map_err(|e| format!("{}", e))?;
+            task.next_run_at = task.schedule.next_after(now, &tz, task.created_at);
+            task.status = if task.next_run_at.is_none() {
+                robit_agent::schedule::TaskStatus::Completed
+            } else {
+                robit_agent::schedule::TaskStatus::Active
+            };
+        }
+        "delete" => {
+            task.status = robit_agent::schedule::TaskStatus::Deleted;
+            task.next_run_at = None;
+        }
+        _ => return Err(format!("Unknown action: {}", action)),
+    }
+    task.updated_at = now;
+    match shared.store.save_expected(&task, &expected) {
+        Ok(true) => {
+            shared.wake.notify_one();
+            Ok(())
+        }
+        Ok(false) => Err("Conflict: task changed concurrently, please retry".to_string()),
+        Err(e) => Err(format!("Store error: {}", e)),
+    }
 }

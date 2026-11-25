@@ -10,7 +10,7 @@
 
 ### Added
 
-- **计划任务 M2：GUI / Web 接线**（TUI 已取消，见 RFC §11 决策）。核心新增 `FrontendMessage::ScheduledInput`（绕过斜杠/技能解析的调度注入回合）与 `AgentEvent::ScheduledTaskFired`（触发提示，additive）；`Agent::with_schedule` 同时向系统提示词追加计划任务纪律段（幂等）。GUI：`AppState` 改 `Arc` 共享，`[app.schedule] enabled` 时 Tauri setup 启动宿主 Scheduler（`RunEvent::Exit` 取消），投递经 `AppState.agents` 会话注册表路由、关闭会话自动从库复活，注入回合档案 `source="scheduler"`；React 侧触发提示 + 消息刷新 + 计划任务消息徽章（⏰）。Web：`WebBridge::send_scheduled_input` / `schedule_delivery()`（`ScheduleDelivery` 适配器）+ `scheduled_task_fired` wire 帧（protocol.md 已登记，golden 测试）。不配置 `[app.schedule]` 时行为与 0.7.0 一致。
+- **计划任务 M3：GUI 管理面板**。StatusBar 新增闹钟按钮，点击打开右侧抽屉面板：任务列表（标题/触发器/状态/下次触发）、展开查看详情（提示词/运行历史/时区/ID）、暂停/恢复/删除操作、刷新按钮。Tauri commands：`list_scheduled_tasks` / `get_scheduled_task` / `pause_scheduled_task` / `resume_scheduled_task` / `delete_scheduled_task`。创建仍走 LLM 对话（`schedule_create` 工具）。不配置 `[app.schedule] enabled = true` 时面板显示"未启用"提示。
 
 ## [0.7.0] - 2026-11-24
 

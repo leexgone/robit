@@ -38,6 +38,9 @@ interface AppStore {
   // Sidebar width
   sidebarWidth: number;
 
+  // Schedule management panel visibility
+  schedulePanelOpen: boolean;
+
   // Actions
   setSessions: (sessions: SessionInfo[]) => void;
   setActiveSession: (id: string | null) => void;
@@ -60,6 +63,7 @@ interface AppStore {
   removeToolCard: (sessionId: string, toolCallId: string) => void;
   setConfig: (config: ConfigInfo) => void;
   setSidebarWidth: (width: number) => void;
+  toggleSchedulePanel: () => void;
   addSession: (session: SessionInfo) => void;
   removeSession: (sessionId: string) => void;
   updateSessionTitle: (sessionId: string, title: string) => void;
@@ -77,6 +81,7 @@ export const useStore = create<AppStore>((set, get) => ({
   pendingConfirms: {},
   config: null,
   sidebarWidth: Number(localStorage.getItem("sidebarWidth") || 220),
+  schedulePanelOpen: false,
 
   setSessions: (sessions) => set({ sessions }),
 
@@ -239,6 +244,9 @@ export const useStore = create<AppStore>((set, get) => ({
     localStorage.setItem("sidebarWidth", String(width));
     set({ sidebarWidth: width });
   },
+
+  toggleSchedulePanel: () =>
+    set((state) => ({ schedulePanelOpen: !state.schedulePanelOpen })),
 
   addSession: (session) =>
     set((state) => ({

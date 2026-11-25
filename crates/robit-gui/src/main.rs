@@ -97,6 +97,11 @@ fn main() {
             commands::confirm_tool,
             commands::get_config,
             commands::read_image_file,
+            commands::list_scheduled_tasks,
+            commands::get_scheduled_task,
+            commands::pause_scheduled_task,
+            commands::resume_scheduled_task,
+            commands::delete_scheduled_task,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

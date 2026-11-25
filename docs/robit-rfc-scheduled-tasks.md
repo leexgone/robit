@@ -1,6 +1,6 @@
 # RFC：智能体计划任务（Scheduled Tasks）
 
-- 状态：M1 + M2 已实现（核心 + Bot + GUI + Web）；M3 待启动
+- 状态：M1 + M2 + M3 已实现（核心 + Bot + GUI/Web + GUI 管理面板）；全部里程碑完成
 - 日期：2026-11-24
 - 涉及 crate：`robit-agent`（核心）、`robit-chatbot`（首个接线前端）、`robit-gui` / `robit-tui` / `robit-web`（后续接线）
 
@@ -356,11 +356,13 @@ Bot 选为首个消费者的理由：常驻进程（Ubuntu 部署）+ 注入 API
 - [x] robit-web 导出投递 helper + 协议文档补 `scheduled_task_fired` 帧说明。
 - [x] 系统提示词 schedule 段（经 `Agent::with_schedule` 幂等追加，M1 注 5 的遗留项）。
 
-### M3：管理体验与 new_session
+### M3：管理体验（GUI 面板已实现；schedule_runs / new_session 已取消）
 
-- GUI 管理面板（列表/历史/启停删）。
-- `new_session` 目标落地（先拍「结果送达哪」）。
-- 运行历史查询工具化（可选 `schedule_runs`）。
+> **决策（2026-11-25，用户拍板）**：`schedule_runs` 工具和 `new_session` 目标不做——为智能体增加不必要的复杂度，当前 this_session + schedule_view 已覆盖需求。M3 收窄为 GUI 管理面板。
+
+- [x] GUI 管理面板：StatusBar 闹钟按钮 → 右侧抽屉；任务列表/详情/运行历史/暂停/恢复/删除/刷新。
+- [ ] ~~`new_session` 目标落地~~ — 已取消。
+- [ ] ~~运行历史查询工具化（`schedule_runs`）~~ — 已取消。
 
 ## 12. 拍板点汇总
 

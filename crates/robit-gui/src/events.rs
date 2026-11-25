@@ -2,6 +2,38 @@
 pub use robit_agent::storage::{MessageData, SessionInfo, ToolCallInfoData};
 use serde::Serialize;
 
+// ============================================================================
+// Schedule management DTOs (exposed to React via Tauri commands)
+// ============================================================================
+
+/// A scheduled task summary for the management panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduleTaskDto {
+    pub id: String,
+    pub title: String,
+    pub prompt: String,
+    pub schedule: serde_json::Value,
+    pub timezone: String,
+    pub status: String,
+    pub max_runs: Option<u32>,
+    pub run_count: u32,
+    pub next_run_at: Option<String>,
+    pub last_run_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A single run record for the management panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduleRunDto {
+    pub id: i64,
+    pub scheduled_at: String,
+    pub fired_at: String,
+    pub catch_up: bool,
+    pub status: String,
+    pub error: Option<String>,
+}
+
 /// Events pushed from Rust backend to React frontend via Tauri events.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]

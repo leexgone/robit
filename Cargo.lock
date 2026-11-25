@@ -4508,6 +4508,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "brotli-decompressor 5.0.1",
+ "chrono",
  "clap",
  "robit-agent",
  "robit-ai",

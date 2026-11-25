@@ -75,3 +75,31 @@ export type UiEvent =
       task_id: string;
       title: string;
     };
+
+// ============================================================================
+// Schedule management types (M3: GUI panel)
+// ============================================================================
+
+export interface ScheduleTaskDto {
+  id: string;
+  title: string;
+  prompt: string;
+  schedule: Record<string, unknown>;
+  timezone: string;
+  status: "active" | "paused" | "completed" | "deleted";
+  max_runs: number | null;
+  run_count: number;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScheduleRunDto {
+  id: number;
+  scheduled_at: string;
+  fired_at: string;
+  catch_up: boolean;
+  status: string;
+  error: string | null;
+}
