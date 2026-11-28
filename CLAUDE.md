@@ -22,12 +22,9 @@
 | `crates/robit-wechat` | 微信前端，实现 `PlatformAdapter` trait（微信官方 iLink Bot 渠道，长轮询收消息 + HTTP 发消息 + CDN 媒体 AES 解密），二进制名 `robit-wechat`。协议层依赖 `weixin-agent` crate；`robit-wechat login` 扫码换取长期 `bot_token`（存 `.robit/wechat-state.json`）。依赖 `robit-chatbot` |
 | `crates/robit-web` | Web 前端桥基座：`AgentEvent` 官方 JSON 序列化 schema（`WebEvent`）、broadcast 扇出 + 工具确认槽位的通用 `Frontend` 实现（`WebFrontend`）、消息注入与接线约定（`WebBridge`）。SSE/WS 编码留给宿主，无 HTTP 框架依赖。依赖 `robit-agent` |
 
-### 验证工程（`examples/`）
+### 验证工程（已移除）
 
-| 工程 | 说明 |
-| --- | --- |
-| `examples/robit-chat` | REPL 交互式对话，用于阶段 1 验证。依赖 `robit-ai` |
-| `examples/robit-agent` | 命令行 Agent 对话（stdin/stdout 前端），用于阶段 2 验证。依赖 `robit-agent` |
+阶段 1/2 的验证工程 `examples/robit-chat`（REPL 对话）与 `examples/robit-agent`（stdin/stdout Agent 前端）已随正式前端（`robit-tui` / `robit-gui` / Bot 平台）成熟而删除，仓库不再保留 `examples/` 目录。新增能力请直接接入 `crates/` 下的对应 crate 与前端。
 
 ## 技术选型
 

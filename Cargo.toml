@@ -8,8 +8,6 @@ members = [
     "crates/robit-qq",
     "crates/robit-wechat",
     "crates/robit-web",
-    "examples/robit-chat",
-    "examples/robit-agent",
 ]
 resolver = "2"
 

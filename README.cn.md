@@ -28,9 +28,6 @@ crates/
   robit-chatbot  # 多会话 Bot 基础设施（PlatformAdapter trait、ChatbotManager）
   robit-qq       # QQ 官方 Bot 前端（WebSocket + HTTP API），二进制命令 robit-qq
   robit-web      # Web 前端桥（AgentEvent JSON schema、SSE/WS 可用的 Frontend、确认槽位）
-examples/
-  robit-chat     # LLM API 层验证用 REPL
-  robit-agent    # Agent 运行时验证用 stdin/stdout 前端
 docs/            # 架构、协议、路线图和实现计划
 ```
 

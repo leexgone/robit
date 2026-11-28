@@ -386,7 +386,7 @@ Bot 平台（QQ 多会话）下所有聊天共享同一份 `memory.md`，不做�
 
 ## Bootstrap 模块
 
-为避免各前端（`robit-tui`、`robit-gui`、`examples/robit-agent`）重复实现技能和工具加载逻辑，`robit-agent` 提供 `bootstrap` 模块统一处理启动流程。
+为避免各前端（`robit-tui`、`robit-gui`、`robit-chatbot`、外部宿主）重复实现技能和工具加载逻辑，`robit-agent` 提供 `bootstrap` 模块统一处理启动流程。
 
 ### 核心功能
 

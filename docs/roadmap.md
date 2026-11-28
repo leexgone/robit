@@ -11,7 +11,7 @@
 - [x] 配置加载（统一 `robit.toml`，支持 `${ENV_VAR}` 替换）
 - [x] 配置格式重构（`providers` + `models` 嵌套结构，`default_model` 使用 `provider/model` 格式）
 
-**验证**：`cargo run -p robit-chat`（`examples/robit-chat`）启动 REPL 交互式对话测试。✅ 已通过
+**验证**：曾以 `cargo run -p robit-chat`（`examples/robit-chat`，该验证工程已移除）启动 REPL 交互式对话测试。✅ 已通过
 
 ## 阶段 2：Agent 运行时（`robit-agent`） ✅ 已完成
 
@@ -26,7 +26,7 @@
 - [x] 上下文管理（`context.rs` — 输出截断 + 历史按轮次截断 + token 估算 + 压缩策略）
 - [x] 技能系统（目录式技能，`SKILL.md` frontmatter，系统提示词注入，斜杠命令触发）
 
-**验证**：`cargo run -p robit-agent-cli` 启动命令行 Agent，使用 `read`/`bash` 工具完成任务。
+**验证**：曾以 `cargo run -p robit-agent-cli`（`examples/robit-agent`，该验证工程已移除）启动命令行 Agent，使用 `read`/`bash` 工具完成任务；现由 `robit`（TUI）与 GUI 覆盖。
 
 ## 阶段 3：TUI 前端（`robit`） ✅ 已完成
 

@@ -30,9 +30,6 @@ crates/
   robit-qq       # QQ Official Bot frontend (WebSocket + HTTP API), binary command robit-qq
   robit-wechat   # WeChat iLink Bot frontend (long-poll + HTTP API), binary command robit-wechat
   robit-web      # Web frontend bridge (AgentEvent JSON schema, SSE/WS-ready Frontend, confirmation slots)
-examples/
-  robit-chat     # REPL for validating the LLM API layer
-  robit-agent    # stdin/stdout frontend for validating the agent runtime
 docs/            # Architecture, protocol, roadmap, and implementation plans
 ```
 

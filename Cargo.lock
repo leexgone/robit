@@ -4431,22 +4431,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "robit-agent-cli"
-version = "0.8.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "dirs",
- "robit-agent",
- "robit-ai",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "robit-ai"
 version = "0.8.0"
 dependencies = [
@@ -4466,17 +4450,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wiremock",
-]
-
-[[package]]
-name = "robit-chat"
-version = "0.8.0"
-dependencies = [
- "anyhow",
- "async-openai",
- "futures-util",
- "robit-ai",
- "tokio",
 ]
 
 [[package]]

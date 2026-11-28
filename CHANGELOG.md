@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **仓库结构 / 删除 `examples/` 验证工程**：移除 `examples/robit-chat`（阶段 1 的 LLM API 层 REPL 验证）与 `examples/robit-agent`（阶段 2 的 stdin/stdout Agent 前端，包名 `robit-agent-cli`）。两者本是早期阶段的验收脚手架，能力现已被 `robit`（TUI）、`robit-gui`、Bot 平台前端与 `robit-web` 宿主完整覆盖；且长期只是跟随性维护负担——历史上每次内部 API 演进（`Agent::new` / `with_history` 加参、`AgentEvent` 穷举 match 新增臂、memory 设置参数等）都要连带改这两个 leaf 工程。根 `Cargo.toml` 的 workspace 成员同步移除，`Cargo.lock` 已重新解析（`robit-chat` / `robit-agent-cli` 条目消失）；二者均为 `publish = false`，CI 与 `release.yml` 从未构建，无发布与产物影响。`CLAUDE.md`、`README.md`、`README.cn.md`、`docs/architecture.md` 的相关表述同步更新，`docs/roadmap.md` 阶段 1/2 的验证命令改写为历史说明。
+
 ## [0.8.0] - 2026-11-25
 
 计划任务 M2/M3（GUI/Web 接线 + GUI 管理面板）与 LLM 请求挂起修复。**不配置 `[app.schedule]` 时计划任务行为与 0.7.0 一致**；LLM 调用默认获得超时 + 重试保护（见 Fixed），`[app.retry]` 配置节自此真正生效。
